@@ -19,13 +19,34 @@
 
 기준 전문은 [ip_finder/label/prompts/rubric.md](ip_finder/label/prompts/rubric.md), LLM에 들어가는 압축판은 [system.md](ip_finder/label/prompts/system.md)입니다. 회사 보고서에 맞게 고쳐 쓰면 됩니다.
 
+## 다운로드
+
+- 저장소: https://github.com/HyungKim/IP_finder
+- 소스 ZIP: https://github.com/HyungKim/IP_finder/archive/refs/heads/main.zip (저장소 페이지의 **Code → Download ZIP** 과 같음)
+- 릴리스: https://github.com/HyungKim/IP_finder/releases — 소스 ZIP과 함께 **윈도우 오프라인 설치용 wheel 번들**(`ip_finder_wheels_win_amd64_py312.zip`, Python 3.12 64비트용)이 있습니다.
+
+저장소가 비공개인 동안은 GitHub에 로그인한 브라우저에서만 받을 수 있습니다. 로그인 없이 받으려면 저장소를 공개로 바꾸면 됩니다 (Settings → General → Danger Zone → Change visibility).
+
+## 윈도우 간편 설치 (install.bat)
+
+1. Python 3.12 64비트를 설치합니다 (https://www.python.org/downloads/windows/ , "Add python.exe to PATH" 체크).
+2. Ollama를 설치합니다 (https://ollama.com/download/windows).
+3. 소스 ZIP을 풀고 `install.bat`를 더블클릭합니다. 가상환경 생성, 패키지 설치, 모델 내려받기(`qwen3:4b-instruct`, 약 2.5GB), 환경 확인까지 자동으로 진행됩니다.
+4. `extract.bat` 위로 보고서 파일이나 폴더를 끌어다 놓으면 원본 옆에 `이름_검토후보.xlsx`가 생깁니다. 명령줄에서는 `extract.bat 보고서.pptx`.
+
+인터넷이 막힌 PC라면:
+- 패키지: 릴리스의 wheel 번들을 받아 압축을 풀고, 생긴 `wheels` 폴더를 `install.bat` 옆에 둔 뒤 실행합니다. `wheels` 폴더가 있으면 PyPI에 접속하지 않습니다. 다른 Python 버전이면 인터넷이 되는 윈도우 PC에서 `tools\download_wheels.bat 3.13` 처럼 실행해 번들을 직접 만듭니다.
+- 모델: 다른 PC에서 `ollama pull qwen3:4b-instruct` 후 `%USERPROFILE%\.ollama\models` 폴더를 복사합니다.
+
+배치 파일은 패키지를 설치하지 않고 저장소 폴더에서 `python -m ip_finder.cli`로 실행하므로, 아래의 `pip install -e .` 없이도 동작합니다. 콘솔에 한글이 깨지면 `chcp 65001`을 먼저 실행하세요.
+
 ## 요구 사항
 
 - Windows 10/11 또는 macOS. Python 3.11 이상 (3.12 권장).
 - [Ollama](https://ollama.com) 와 모델 `qwen3:4b-instruct` (약 2.5GB). 메모리 약 3GB 사용.
 - 선택: 구형 `.ppt` 입력은 PowerPoint가 설치된 윈도우에서 `pywin32`로 자동 변환합니다.
 
-## 설치
+## 설치 (명령줄, macOS/Linux/윈도우 공통)
 
 ```bash
 git clone https://github.com/HyungKim/IP_finder.git
@@ -143,6 +164,8 @@ ip_finder/
   cache/     store.py           SQLite, 해시 + 라벨만
   eval/      gold.py, score.py  골드 세트
   cues.py, config.py, models.py, pipeline.py, cli.py, samples.py
+install.bat, extract.bat, tools/download_wheels.bat   윈도우 설치·실행·오프라인 번들 스크립트
+requirements.txt, requirements-windows.txt
 tests/       오프라인 테스트
 demo/        가짜 샘플, 시연·속도 실험 스크립트와 결과
 archive/     이전 제안서(v1 마킹, v2 추출 초안)

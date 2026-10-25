@@ -9,7 +9,7 @@ description = "보고자료(PDF/PPTX)에서 특허 검토 후보 문장을 온�
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "pymupdf>=1.24",
+  "pymupdf>=1.24,<2",
   "python-pptx>=0.6.23",
   "openpyxl>=3.1",
 ]

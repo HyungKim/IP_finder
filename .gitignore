@@ -19,3 +19,6 @@ gold/
 *_검토후보.xlsx
 !demo/*_검토후보.xlsx
 *_gold.xlsx
+
+# 오프라인 설치용 wheel 번들 (릴리스 자산으로 배포)
+wheels/
