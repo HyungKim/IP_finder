@@ -185,3 +185,4 @@ MVP 1단계를 이 저장소에 구현했다. 사용법은 README.md. 구성은 
 - 2026-10-26 MVP 구현 완료, GitHub 비공개 저장소에 업로드: https://github.com/HyungKim/IP_finder
 - 2026-10-26 윈도우 설치 배치(install.bat, extract.bat), 오프라인 wheel 번들 스크립트, v0.1.0 릴리스 추가. PyMuPDF는 1.x로 고정(2.0은 onnxruntime 등 90MB 부속이 따라옴).
 - 2026-10-26 저장소 공개 전환, v0.1.0 릴리스 게시(wheel 번들 첨부), 전체 커밋 작성자 이메일을 GitHub noreply로 통일. 공개 저장소이므로 실제 자료는 절대 올리지 않는다.
+- 2026-10-26 v0.1.1: 회사 PC에서 install.bat 가 '내부 또는 외부 명령...' 오류. 원인은 cmd.exe 의 UTF-8 배치 파싱 결함(다중 바이트 문자 줄의 위치 오산). 배치 파일을 ASCII 전용으로 다시 쓰고 한글 안내·설치 절차를 tools/setup_windows.py 로 이관, 줄바꿈 CRLF 고정(.gitattributes).

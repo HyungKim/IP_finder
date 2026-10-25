@@ -23,7 +23,7 @@
 
 - 저장소: https://github.com/HyungKim/IP_finder
 - 소스 ZIP: https://github.com/HyungKim/IP_finder/archive/refs/heads/main.zip (저장소 페이지의 **Code → Download ZIP** 과 같음)
-- 릴리스: https://github.com/HyungKim/IP_finder/releases/tag/v0.1.0 — 소스 ZIP과 **윈도우 오프라인 설치용 wheel 번들** `ip_finder_wheels_win_amd64_py312.zip`(Python 3.12 64비트용, 38MB). 다른 Python 버전용 번들은 `tools\download_wheels.bat`로 만듭니다.
+- 릴리스: https://github.com/HyungKim/IP_finder/releases/latest — 소스 ZIP과 **윈도우 오프라인 설치용 wheel 번들** `ip_finder_wheels_win_amd64_py312.zip`(Python 3.12 64비트용, 38MB). 다른 Python 버전용 번들은 `tools\download_wheels.bat`로 만듭니다.
 
 저장소는 공개이므로 로그인 없이 받을 수 있습니다. 실제 보고서, 골드 세트, 결과 파일은 절대 이 저장소에 올리지 마세요.
 
@@ -38,7 +38,12 @@
 - 패키지: 릴리스의 wheel 번들을 받아 압축을 풀고, 생긴 `wheels` 폴더를 `install.bat` 옆에 둔 뒤 실행합니다. `wheels` 폴더가 있으면 PyPI에 접속하지 않습니다. 다른 Python 버전이면 인터넷이 되는 윈도우 PC에서 `tools\download_wheels.bat 3.13` 처럼 실행해 번들을 직접 만듭니다.
 - 모델: 다른 PC에서 `ollama pull qwen3:4b-instruct` 후 `%USERPROFILE%\.ollama\models` 폴더를 복사합니다.
 
-배치 파일은 패키지를 설치하지 않고 저장소 폴더에서 `python -m ip_finder.cli`로 실행하므로, 아래의 `pip install -e .` 없이도 동작합니다. 콘솔에 한글이 깨지면 `chcp 65001`을 먼저 실행하세요.
+배치 파일은 Python을 찾아 가상환경을 만드는 일만 하고, 패키지 설치, Ollama와 모델 확인, 환경 점검은 `tools/setup_windows.py`가 합니다. 그래서 Python을 찾기 전까지의 메시지는 영어이고 그 뒤부터 한글입니다. 패키지를 설치하지 않고 저장소 폴더에서 `python -m ip_finder.cli`로 실행하므로 아래의 `pip install -e .` 없이도 동작합니다.
+
+문제 해결
+- `'...'은(는) 내부 또는 외부 명령, 실행할 수 있는 프로그램, 또는 배치 파일이 아닙니다.` — v0.1.0의 배치 파일에 한글이 들어 있어 생기던 문제입니다. 한글 Windows의 cmd.exe는 UTF-8 모드에서 다중 바이트 문자가 있는 줄의 위치를 잘못 계산해 줄의 나머지를 명령으로 실행합니다. v0.1.1부터 배치 파일은 ASCII만 쓰므로 최신 ZIP을 다시 받으세요.
+- 콘솔에서 한글이 네모로 보이면 창 속성에서 글꼴을 '맑은 고딕'이나 'Consolas'로 바꾸세요.
+- `py` 런처도 `python`도 없다고 나오면 Python 설치 시 "Add python.exe to PATH"를 체크하지 않은 것입니다. 재설치하거나 PATH에 추가하세요.
 
 ## 요구 사항
 

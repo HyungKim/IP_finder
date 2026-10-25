@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.bat -text
+*.pptx -text
+*.pdf -text
+*.xlsx -text
+*.zip -text

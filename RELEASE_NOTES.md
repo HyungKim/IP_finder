@@ -1,4 +1,6 @@
-# IP Finder v0.1.0 (MVP)
+# IP Finder v0.1.1
+
+v0.1.0에서 `install.bat` 실행 시 "내부 또는 외부 명령, 실행할 수 있는 프로그램, 또는 배치 파일이 아닙니다" 오류가 나던 문제를 고쳤습니다. 한글 Windows의 cmd.exe가 UTF-8 배치 파일의 한글을 잘못 해석해 생긴 문제로, 배치 파일을 ASCII 전용으로 다시 쓰고 한글 안내와 설치 절차는 `tools/setup_windows.py`로 옮겼습니다. 줄바꿈도 윈도우식(CRLF)으로 고정했습니다. 도구 본체(추출 로직)는 v0.1.0과 같습니다.
 
 보고자료(PDF/PPTX)에서 특허 검토 후보 문장을 온디바이스 LLM(Ollama qwen3 4B)으로 추출해 단서 등급(A/B/C/D)을 붙인 Excel 목록을 만드는 도구의 첫 릴리스입니다.
 
@@ -17,4 +19,4 @@
 - 캐시(해시+라벨만), 골드 세트 생성·채점(`gold-sheet`, `eval`), 환경 점검(`check`)
 - 오프라인 테스트 23건, 가짜 샘플과 결과 예시, 제안서(PROPOSAL.md)와 출력 예시(EXAMPLE.md)
 
-릴리스 만들기(저장소 소유자): `gh release create v0.1.0 dist/ip_finder_wheels_win_amd64_py312.zip --title "IP Finder v0.1.0 (MVP)" --notes-file RELEASE_NOTES.md`
+릴리스 만들기(저장소 소유자): `gh release create v0.1.1 dist/ip_finder_wheels_win_amd64_py312.zip --title "IP Finder v0.1.1" --notes-file RELEASE_NOTES.md`

@@ -139,7 +139,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="ip-finder", description="보고자료에서 특허 검토 후보 문장을 추출해 등급을 붙인 Excel을 만든다 (온디바이스)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("extract", help="PDF/PPTX(/.ppt) 또는 폴더를 처리해 <이름>_검토후보.xlsx 생성")
+    p = sub.add_parser("extract", help="PDF/PPTX(/.ppt) 또는 폴더를 처리해 <이름>_검토후보.xlsx 생성",
+                       epilog="윈도우에서는 파일이나 폴더를 extract.bat 위로 끌어다 놓아도 됩니다. 결과는 원본 옆에 <이름>_검토후보.xlsx 로 생깁니다.")
     p.add_argument("paths", nargs="+")
     p.add_argument("--out-dir", help="결과를 모을 폴더 (기본: 원본 옆)")
     p.add_argument("--no-cache", action="store_true")
