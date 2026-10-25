@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ip-finder"
+version = "0.1.0"
+description = "보고자료(PDF/PPTX)에서 특허 검토 후보 문장을 온디바이스 LLM으로 추출해 등급을 붙인 Excel 목록을 만든다"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pymupdf>=1.24",
+  "python-pptx>=0.6.23",
+  "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+windows = ["pywin32>=306"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+ip-finder = "ip_finder.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["ip_finder*"]
+
+[tool.setuptools.package-data]
+"ip_finder.label" = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

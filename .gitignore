@@ -1,0 +1,21 @@
+# 가상환경 / 빌드
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.DS_Store
+
+# 실제 사내 자료와 골드 세트는 절대 저장소에 넣지 않는다
+data/
+real/
+gold/
+*.sqlite
+.ip_finder/
+
+# 실행 결과물 (demo/ 의 예시 결과만 예외)
+*_검토후보.xlsx
+!demo/*_검토후보.xlsx
+*_gold.xlsx
