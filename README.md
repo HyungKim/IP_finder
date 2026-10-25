@@ -23,7 +23,7 @@
 
 - 저장소: https://github.com/HyungKim/IP_finder
 - 소스 ZIP: https://github.com/HyungKim/IP_finder/archive/refs/heads/main.zip (저장소 페이지의 **Code → Download ZIP** 과 같음)
-- 릴리스: https://github.com/HyungKim/IP_finder/releases — 소스 ZIP과 함께 **윈도우 오프라인 설치용 wheel 번들**(`ip_finder_wheels_win_amd64_py312.zip`, Python 3.12 64비트용)이 있습니다.
+- 릴리스: https://github.com/HyungKim/IP_finder/releases — 릴리스가 게시되면 소스 ZIP과 함께 **윈도우 오프라인 설치용 wheel 번들**(`ip_finder_wheels_win_amd64_py312.zip`, Python 3.12 64비트용)이 올라갑니다. 릴리스 전에는 `tools\download_wheels.bat`로 같은 번들을 만들 수 있습니다 (릴리스 절차는 RELEASE_NOTES.md 끝 참조).
 
 저장소가 비공개인 동안은 GitHub에 로그인한 브라우저에서만 받을 수 있습니다. 로그인 없이 받으려면 저장소를 공개로 바꾸면 됩니다 (Settings → General → Danger Zone → Change visibility).
 
