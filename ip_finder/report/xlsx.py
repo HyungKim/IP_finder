@@ -48,8 +48,9 @@ def _finish(ws, n_cols: int) -> None:
 def write_report(out: Path, doc: Document, labeled: list[LabeledLine], info: RunInfo,
                  removed: Counter | None = None) -> Path:
     wb = Workbook()
-    headers = ["번호", "섹션", "페이지", "등급", "발췌", "논의 포인트", "비고"]
-    widths = [6, 16, 8, 6, 70, 40, 22]
+    headers = ["번호", "섹션", "페이지", "등급", "발췌", "논의 포인트", "판정", "비고"]
+    widths = [6, 16, 8, 6, 70, 40, 8, 26]
+    src_name = {"clf": "분류기", "llm": "LLM"}
 
     ws = _sheet(wb, "검토 목록", headers, widths, first=True)
     n = 0
@@ -57,7 +58,7 @@ def write_report(out: Path, doc: Document, labeled: list[LabeledLine], info: Run
         if ll.label not in ("A", "B", "C", "D"):
             continue
         n += 1
-        ws.append([n, ll.section, ll.page_no, ll.label, ll.text, discussion_point(ll.label), ", ".join(ll.notes)])
+        ws.append([n, ll.section, ll.page_no, ll.label, ll.text, discussion_point(ll.label), src_name.get(ll.source, ll.source), ", ".join(ll.notes)])
         ws.cell(row=ws.max_row, column=4).fill = FILLS[ll.label]
     _finish(ws, len(headers))
 
@@ -67,7 +68,7 @@ def write_report(out: Path, doc: Document, labeled: list[LabeledLine], info: Run
         if ll.label not in ("X?", "?"):
             continue
         n += 1
-        ws.append([n, ll.section, ll.page_no, ll.label, ll.text, discussion_point(ll.label), ", ".join(ll.notes)])
+        ws.append([n, ll.section, ll.page_no, ll.label, ll.text, discussion_point(ll.label), src_name.get(ll.source, ll.source), ", ".join(ll.notes)])
         ws.cell(row=ws.max_row, column=4).fill = FILLS[ll.label]
     _finish(ws, len(headers))
 
@@ -86,7 +87,11 @@ def write_report(out: Path, doc: Document, labeled: list[LabeledLine], info: Run
     ws = _sheet(wb, "실행 정보", ["항목", "값"], [24, 70])
     grade_counts = Counter(ll.label for ll in labeled)
     rows = [
-        ("입력 파일", info.source), ("모델", info.model), ("프롬프트 버전", info.prompt_version),
+        ("입력 파일", info.source), ("판정 모드", info.mode), ("LLM 모델", info.model), ("프롬프트 버전", info.prompt_version),
+        ("임베딩 모델", info.embed_model or "-"), ("분류기", info.classifier or "-"),
+        ("확신 임계값", info.threshold if info.threshold is not None else "-"),
+        ("분류기 채택 문장", info.clf_lines), ("LLM 판정 문장", info.llm_lines),
+        ("임베딩 시간(초)", round(info.embed_sec, 1)), ("LLM 시간(초)", round(info.llm_sec, 1)),
         ("시작", info.started_at), ("소요 시간(초)", round(info.elapsed_sec, 1)),
         ("페이지 수", info.pages_total), ("라벨링 페이지", info.pages_labeled),
         ("제외 페이지", info.pages_excluded), ("이미지 페이지", info.pages_image),

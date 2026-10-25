@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from array import array
 from datetime import datetime
 from pathlib import Path
 
@@ -17,7 +18,9 @@ class LabelCache:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(str(path))
             self._conn.execute("CREATE TABLE IF NOT EXISTS labels (key TEXT PRIMARY KEY, labels TEXT NOT NULL, created TEXT NOT NULL)")
+            self._conn.execute("CREATE TABLE IF NOT EXISTS vectors (key TEXT PRIMARY KEY, dim INTEGER NOT NULL, vec BLOB NOT NULL)")
             self._conn.commit()
+        self._mem_vec: dict[str, list[float]] = {}
 
     @staticmethod
     def key(model: str, prompt_version: str, user_text: str) -> str:
@@ -35,6 +38,25 @@ class LabelCache:
             return
         self._conn.execute("INSERT OR REPLACE INTO labels (key, labels, created) VALUES (?, ?, ?)",
                            (key, json.dumps(labels), datetime.now().isoformat(timespec="seconds")))
+        self._conn.commit()
+
+    # ---- 임베딩 벡터 (원문 미저장, 키는 해시) ----
+    def get_vec(self, key: str) -> list[float] | None:
+        if self._conn is None:
+            return self._mem_vec.get(key)
+        row = self._conn.execute("SELECT dim, vec FROM vectors WHERE key = ?", (key,)).fetchone()
+        if not row:
+            return None
+        arr = array("f")
+        arr.frombytes(row[1])
+        return list(arr)
+
+    def set_vec(self, key: str, vec: list[float]) -> None:
+        if self._conn is None:
+            self._mem_vec[key] = list(vec)
+            return
+        self._conn.execute("INSERT OR REPLACE INTO vectors (key, dim, vec) VALUES (?, ?, ?)",
+                           (key, len(vec), array("f", vec).tobytes()))
         self._conn.commit()
 
     def __len__(self) -> int:

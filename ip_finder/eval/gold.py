@@ -11,12 +11,12 @@ from .. import PROMPT_VERSION
 from ..config import Config
 from ..pipeline import run_file
 
-GOLD_HEADERS = ["번호", "파일", "페이지", "제목", "줄", "문장", "모델 라벨", "후처리 라벨", "정답", "메모"]
+GOLD_HEADERS = ["번호", "파일", "페이지", "제목", "줄", "문장", "모델 라벨", "후처리 라벨", "판정", "확신", "정답", "메모"]
 RUBRIC_PATH = Path(__file__).parent.parent / "label" / "prompts" / "rubric.md"
 
 
-def make_gold_sheet(path: Path, cfg: Config, out: Path | None = None, client=None) -> Path:
-    res = run_file(path, cfg, client)
+def make_gold_sheet(path: Path, cfg: Config, out: Path | None = None, client=None, embedder=None) -> Path:
+    res = run_file(path, cfg, client, embedder=embedder)
     out = out or path.with_name(f"{path.stem}_gold.xlsx")
     wb = Workbook()
     ws = wb.active
@@ -27,8 +27,10 @@ def make_gold_sheet(path: Path, cfg: Config, out: Path | None = None, client=Non
         ws.cell(row=1, column=c).fill = PatternFill("solid", fgColor="CFD8DC")
     for n, ll in enumerate(res.labeled, 1):
         answer = "X" if ll.raw_label in ("X", "X?") else ("" if ll.raw_label == "?" else ll.raw_label)
-        ws.append([n, path.name, ll.page_no, ll.page_title, ll.line_idx, ll.text, ll.raw_label, ll.label, answer, ""])
-    for col, w in zip("ABCDEFGHIJ", (6, 18, 8, 24, 5, 70, 10, 10, 8, 30)):
+        ws.append([n, path.name, ll.page_no, ll.page_title, ll.line_idx, ll.text, ll.raw_label, ll.label,
+                   {"clf": "분류기", "llm": "LLM"}.get(ll.source, ll.source),
+                   round(ll.clf_conf, 3) if ll.clf_conf is not None else "", answer, ""])
+    for col, w in zip("ABCDEFGHIJKL", (6, 18, 8, 24, 5, 70, 10, 10, 8, 8, 8, 30)):
         ws.column_dimensions[col].width = w
     for row in ws.iter_rows(min_row=2):
         for cell in row:
@@ -39,14 +41,16 @@ def make_gold_sheet(path: Path, cfg: Config, out: Path | None = None, client=Non
     for line in [
         "정답 열에 A / B / C / D / X 중 하나를 적습니다. 모델 라벨이 미리 채워져 있으니 틀린 것만 고치세요.",
         "X는 기술 내용이 없는 문장입니다. 판정이 어려우면 X가 아닌 쪽으로 적습니다 (재현율 우선).",
-        "채점: ip-finder eval <이 파일>   (현재 모델로 다시 라벨링해 채점)   /   --stored (저장된 라벨을 채점)",
+        "채점: ip-finder eval <이 파일>   (현재 설정으로 다시 판정해 채점)   /   --stored (저장된 라벨을 채점)",
+        "학습: ip-finder train <이 파일> [다른 골드 파일 ...]   → 분류기 저장 후 hybrid/fast 모드가 자동으로 사용",
         "", *RUBRIC_PATH.read_text(encoding="utf-8").splitlines(),
     ]:
         ws2.append([line])
     ws2.column_dimensions["A"].width = 120
 
     ws3 = wb.create_sheet("메타")
-    for k, v in (("파일", str(path)), ("모델", cfg.model), ("프롬프트 버전", PROMPT_VERSION), ("생성", res.info.started_at)):
+    for k, v in (("파일", str(path)), ("판정 모드", res.info.mode), ("LLM 모델", cfg.model), ("임베딩 모델", res.info.embed_model or "-"),
+                 ("분류기", res.info.classifier or "-"), ("프롬프트 버전", PROMPT_VERSION), ("생성", res.info.started_at)):
         ws3.append([k, v])
     wb.save(str(out))
     return out

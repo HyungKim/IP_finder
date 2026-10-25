@@ -17,6 +17,8 @@ Python 표준 라이브러리만 사용하고 `127.0.0.1:11434`만 호출합니�
 | `speed_test.py` | v3 방향 실험 1: 라벨만 출력(id 칸 있음) + bge-m3 임베딩 사전 필터 측정 |
 | `speed_test2.py` | **v3 방식 기준 스크립트**: 길이 고정 라벨 배열 스키마, 프롬프트 v1/v2, 4B vs 8B 비교 |
 | `speed_results.json` | speed_test2 결과 요약 |
+| `prep_experiment.py` | 전처리 변형 비교: 페이지 유형 힌트, 묶음 호출, 압축 프롬프트 (EXAMPLE.md 6절) |
+| `hybrid_experiment.py` | 분류기 선별 후 LLM 구조 비교: X 제거 / 애매한 문장만 유형별 묶음 호출 (EXAMPLE.md 6절) |
 
 채점과 시사점은 상위 폴더 `EXAMPLE.md` 4~5절에 있습니다. 구현 브리프는 `PROPOSAL.md`.
 
@@ -27,7 +29,7 @@ ip-finder extract demo/sample_report.pptx     # 본 도구로 샘플 처리
 python3 speed_test2.py                        # 모델별 라벨 속도·정확도 비교
 ```
 
-`speed_test2.py`는 `speed_test.py`의 앞부분(프롬프트, 정답 세트, 호출 함수)을 읽어 쓰므로 두 파일이 같은 폴더에 있어야 합니다.
+`speed_test2.py`는 `speed_test.py`의 앞부분(프롬프트, 정답 세트, 호출 함수)을 읽어 쓰므로 두 파일이 같은 폴더에 있어야 합니다. `prep_experiment.py`와 `hybrid_experiment.py`는 저장소 루트의 패키지를 쓰므로 저장소 안에서 실행합니다(`bge-m3` 필요).
 모델 이름은 스크립트 안의 `run(...)` 호출에서 바꿉니다. qwen3 thinking 계열은 `think=false`로 호출합니다.
 
 ## 회사 PC에서 쓸 때

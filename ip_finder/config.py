@@ -25,6 +25,13 @@ class Config:
     keep_alive: str = "30m"
     timeout_sec: int = 600
     max_chars_per_call: int = 1400      # 넘으면 페이지를 나눠 호출
+    prompt_variant: str = "compact"     # compact | full  (label/prompts/system.md, system_full.md)
+    # 판정 모드
+    mode: str = "hybrid"                # hybrid: 분류기 확신분 채택 + 애매한 문장만 LLM / fast: 분류기만 / llm: 전부 LLM
+    embed_model: str = "bge-m3"         # Ollama 임베딩 모델
+    classifier_path: str = "~/.ip_finder/classifier.npz"   # 학습된 분류기. 없으면 원형 문장 제로샷
+    confidence_threshold: float | None = None   # 이 값 미만의 확신은 LLM으로. None이면 제로샷 0.05 / 학습 분류기 0.25
+    group_max_chars: int = 1200         # 유형별 묶음 호출 한 번에 넣는 최대 글자 수
     # 전처리
     split_len: int = 80                 # 이 길이를 넘는 줄은 문장 단위로 분할
     repeated_line_min_pages: int = 3    # 이 수 이상 페이지에 같은 줄이 있으면 반복 문구로 제거
@@ -52,3 +59,11 @@ class Config:
 
     def cache_file(self) -> Path:
         return Path(self.cache_path).expanduser()
+
+    def classifier_file(self) -> Path:
+        return Path(self.classifier_path).expanduser()
+
+    def threshold(self, trained: bool) -> float:
+        if self.confidence_threshold is not None:
+            return self.confidence_threshold
+        return 0.25 if trained else 0.05

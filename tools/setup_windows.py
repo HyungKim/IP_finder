@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODEL = os.environ.get("IP_FINDER_MODEL", "qwen3:4b-instruct")
+EMBED_MODEL = os.environ.get("IP_FINDER_EMBED_MODEL", "bge-m3")   # hybrid/fast 모드용. 없어도 llm 모드로 동작
 HOST = "http://127.0.0.1:11434"
 REQ = ROOT / ("requirements-windows.txt" if sys.platform == "win32" else "requirements.txt")
 WHEELS = ROOT / "wheels"
@@ -90,16 +91,20 @@ def step_ollama() -> bool:
             say("[오류] Ollama 서버에 연결할 수 없습니다. Ollama 를 실행한 뒤 다시 시도하세요.")
             return False
     say("[3/4] 모델 확인")
-    if MODEL in tags or f"{MODEL}:latest" in tags:
-        say(f"  모델 {MODEL} 있음")
-        return True
-    say(f"  모델 {MODEL} 내려받는 중 (약 2.5GB)...")
-    if run([exe, "pull", MODEL]) != 0:
+    for name, size, required in ((MODEL, "약 2.5GB", True), (EMBED_MODEL, "약 1.2GB", False)):
+        if name in tags or f"{name}:latest" in tags:
+            say(f"  모델 {name} 있음")
+            continue
+        say(f"  모델 {name} 내려받는 중 ({size})...")
+        if run([exe, "pull", name]) == 0:
+            continue
         say("")
-        say("[오류] 모델을 받지 못했습니다.")
-        say(f"  인터넷이 막힌 PC라면 다른 PC에서 'ollama pull {MODEL}' 을 실행한 뒤")
+        say(f"[{'오류' if required else '주의'}] 모델 {name} 을 받지 못했습니다.")
+        say(f"  인터넷이 막힌 PC라면 다른 PC에서 'ollama pull {name}' 을 실행한 뒤")
         say("  %USERPROFILE%\\.ollama\\models 폴더를 이 PC의 같은 위치로 복사하세요.")
-        return False
+        if required:
+            return False
+        say("  임베딩 모델이 없으면 hybrid/fast 모드 대신 llm 모드로 동작합니다 (느리지만 정상).")
     return True
 
 

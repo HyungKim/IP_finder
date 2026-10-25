@@ -12,12 +12,19 @@ from .config import Config
 
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--config", help="ip_finder.toml 경로 (기본: 현재 폴더의 ip_finder.toml)")
-    p.add_argument("--model", help="Ollama 모델 (기본 qwen3:4b-instruct)")
+    p.add_argument("--model", help="Ollama LLM 모델 (기본 qwen3:4b-instruct)")
     p.add_argument("--host", help="Ollama 주소. 로컬(127.0.0.1)만 허용")
+    p.add_argument("--mode", choices=["hybrid", "fast", "llm"], help="hybrid: 분류기 확신분 채택 + 애매한 문장만 LLM (기본) / fast: 분류기만 / llm: 전부 LLM")
+    p.add_argument("--embed-model", help="Ollama 임베딩 모델 (기본 bge-m3)")
+    p.add_argument("--threshold", type=float, help="이 확신 미만의 문장만 LLM으로 (기본: 제로샷 0.05, 학습 분류기 0.25)")
+    p.add_argument("--prompt", choices=["compact", "full"], help="시스템 프롬프트 판 (기본 compact)")
+    p.add_argument("--classifier", help="학습된 분류기 파일(.npz) 경로 (기본: ~/.ip_finder/classifier.npz)")
 
 
 def _cfg(args) -> Config:
-    return Config.load(args.config, model=args.model, host=args.host,
+    return Config.load(args.config, model=args.model, host=args.host, mode=getattr(args, "mode", None),
+                       embed_model=getattr(args, "embed_model", None), confidence_threshold=getattr(args, "threshold", None),
+                       prompt_variant=getattr(args, "prompt", None), classifier_path=getattr(args, "classifier", None),
                        use_cache=False if getattr(args, "no_cache", False) else None,
                        title_fix=False if getattr(args, "no_title_fix", False) else None,
                        safety_net=False if getattr(args, "no_safety_net", False) else None)
@@ -53,7 +60,16 @@ def cmd_check(args) -> int:
     else:
         print(f"  [X ] Ollama에 연결할 수 없음 ({cfg.host}). Ollama를 실행하세요.")
         ok = False
-    print(f"  캐시: {cfg.cache_file()} (원문 미저장, 해시+라벨만)")
+        from .classify import OllamaEmbedder
+        emb = OllamaEmbedder(cfg.host, cfg.embed_model, timeout_sec=10)
+        if emb.available():
+            print(f"  [OK] 임베딩 모델 {cfg.embed_model} 준비됨 (hybrid/fast 모드)")
+        else:
+            print(f"  [- ] 임베딩 모델 {cfg.embed_model} 없음 → ollama pull {cfg.embed_model}  (없으면 llm 모드로 동작)")
+    clf = cfg.classifier_file()
+    print(f"  분류기: {'학습된 분류기 ' + str(clf) if clf.exists() else '제로샷(원형 문장). 골드 세트로 ip-finder train 하면 학습 분류기 사용'}")
+    print(f"  판정 모드 기본값: {cfg.mode}, 프롬프트: {cfg.prompt_variant}")
+    print(f"  캐시: {cfg.cache_file()} (원문 미저장, 해시+라벨+벡터)")
     if sys.platform == "win32":
         try:
             import win32com.client  # noqa: F401
@@ -88,12 +104,16 @@ def cmd_extract(args) -> int:
             if not args.quiet:
                 print(f"  [{k:>2}/{n}] p{page.no:<3} {page.title[:40]:<40} {time.time() - _t0:6.0f}s", flush=True)
 
-        out, res = extract(f, cfg, out_dir, client, progress, with_ext=taken[output_path(f, out_dir)] > 1)
+        def status(msg, _t0=t0):
+            if not args.quiet:
+                print(f"  {msg}  {time.time() - _t0:6.0f}s", flush=True)
+
+        out, res = extract(f, cfg, out_dir, client, progress, with_ext=taken[output_path(f, out_dir)] > 1, status=status)
         info = res.info
         grades = {g: sum(1 for ll in res.labeled if ll.label == g) for g in ("A", "B", "C", "D", "X?", "?")}
         print(f"  → {out}")
-        print(f"  페이지 {info.pages_total} (라벨링 {info.pages_labeled}, 제외 {info.pages_excluded}, 이미지 {info.pages_image}) "
-              f"| LLM 호출 {info.llm_calls}, 캐시 {info.cache_hits} | {info.elapsed_sec:.0f}초")
+        print(f"  모드 {info.mode} | 페이지 {info.pages_total} (판정 {info.pages_labeled}, 제외 {info.pages_excluded}, 이미지 {info.pages_image}) "
+              f"| 분류기 {info.clf_lines}문장, LLM {info.llm_lines}문장, LLM 호출 {info.llm_calls}, 캐시 {info.cache_hits} | {info.elapsed_sec:.0f}초")
         print("  등급: " + ", ".join(f"{g} {c}" for g, c in grades.items()))
         for w in info.warnings:
             print(f"  경고: {w}")
@@ -111,7 +131,7 @@ def cmd_gold_sheet(args) -> int:
         print(f"Ollama에 연결할 수 없습니다 ({cfg.host}).")
         return 1
     out = make_gold_sheet(Path(args.file), cfg, Path(args.out) if args.out else None, client)
-    print(f"골드 시트 생성: {out}\n'정답' 열에서 틀린 등급만 고친 뒤 'ip-finder eval {out}' 로 채점하세요.")
+    print(f"골드 시트 생성: {out}\n'정답' 열에서 틀린 등급만 고친 뒤 'ip-finder eval {out}' 로 채점하고, 'ip-finder train {out}' 으로 분류기를 학습하세요.")
     return 0
 
 
@@ -127,6 +147,29 @@ def cmd_eval(args) -> int:
             return 1
     report = evaluate(Path(args.gold), cfg, rerun=not args.stored, client=client)
     print_report(report)
+    return 0
+
+
+def cmd_train(args) -> int:
+    from .cache import LabelCache
+    from .eval import train_classifier
+    from .pipeline import make_embedder
+    cfg = _cfg(args)
+    cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)
+    try:
+        emb = make_embedder(cfg, cache)
+        if not emb.available():
+            print(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 → ollama pull {cfg.embed_model}")
+            return 1
+        out = Path(args.out) if args.out else cfg.classifier_file()
+        stats = train_classifier([Path(g) for g in args.gold], cfg, out, emb)
+    finally:
+        cache.close()
+    print(f"학습 문장 {stats['n']}개 (등급별 {stats['counts']}), 임베딩 {stats['embed_model']}")
+    print(f"5겹 교차검증 정확도 {stats['cv_accuracy']:.1%}, 학습 데이터 정확도 {stats['train_accuracy']:.1%}")
+    print(f"저장: {stats['out']}  → 이제 hybrid/fast 모드가 이 분류기를 씁니다. 'ip-finder eval <골드> --mode hybrid' 로 확인하세요.")
+    if stats["n"] < 100:
+        print("참고: 문장 100개 미만이면 교차검증 값이 크게 흔들립니다. 보고서를 더 라벨링해 다시 학습하세요.")
     return 0
 
 
@@ -150,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
     _common(p)
     p.set_defaults(func=cmd_extract)
 
-    p = sub.add_parser("check", help="의존성, Ollama 연결, 모델 설치 여부 확인")
+    p = sub.add_parser("check", help="의존성, Ollama 연결, LLM·임베딩 모델 설치 여부 확인")
     _common(p)
     p.set_defaults(func=cmd_check)
 
@@ -160,6 +203,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-cache", action="store_true")
     _common(p)
     p.set_defaults(func=cmd_gold_sheet)
+
+    p = sub.add_parser("train", help="골드 시트로 분류기 학습 (임베딩 + 단서어 특성 → 소프트맥스 회귀)")
+    p.add_argument("gold", nargs="+", help="정답이 채워진 골드 시트 (여러 개 가능)")
+    p.add_argument("--out", help="분류기 저장 경로 (기본: 설정의 classifier_path)")
+    p.add_argument("--no-cache", action="store_true")
+    _common(p)
+    p.set_defaults(func=cmd_train)
 
     p = sub.add_parser("eval", help="골드 시트로 정확도 채점")
     p.add_argument("gold")

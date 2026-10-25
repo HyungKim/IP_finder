@@ -1,7 +1,8 @@
 # IP Finder
 
 보고자료(PDF / PPTX)를 읽어 **특허팀과 논의할 만한 기술 문장을 빠짐없이 뽑고, 단서 등급(A/B/C/D)을 붙인 Excel 목록**을 만드는 도구입니다.
-판정은 PC 안의 로컬 LLM(Ollama)이 하고, 외부로는 아무것도 보내지 않습니다. GPU 없는 윈도우 PC(RAM 16GB)에서 돌아가도록 설계했습니다.
+판정은 PC 안의 로컬 임베딩 분류기와 로컬 LLM(Ollama)이 하고, 외부로는 아무것도 보내지 않습니다. GPU 없는 윈도우 PC(RAM 16GB)에서 돌아가도록 설계했습니다.
+기본 판정 모드는 **hybrid**입니다. 임베딩 분류기가 확신하는 문장은 그대로 쓰고, 애매한 문장만 모아 LLM에 묻습니다. 샘플에서 LLM만 쓸 때보다 빠르면서 정확도는 같거나 높았습니다.
 
 - 원본 파일은 읽기만 하고 수정하지 않습니다. 결과는 원본 옆에 `<이름>_검토후보.xlsx` 로 생깁니다.
 - 이 단계에서 신규성·진보성은 판단하지 않습니다. 구체적 수단이 없어도 효과, 과제, 변경 의도만 있으면 후보로 올립니다. 최종 판단은 사람이 합니다.
@@ -45,10 +46,23 @@
 - 콘솔에서 한글이 네모로 보이면 창 속성에서 글꼴을 '맑은 고딕'이나 'Consolas'로 바꾸세요.
 - `py` 런처도 `python`도 없다고 나오면 Python 설치 시 "Add python.exe to PATH"를 체크하지 않은 것입니다. 재설치하거나 PATH에 추가하세요.
 
+## 판정 모드
+
+| 모드 | 동작 | 언제 |
+|---|---|---|
+| **hybrid** (기본) | 모든 문장을 임베딩 분류기로 판정하고, 확신이 낮은 문장만 페이지 유형별로 묶어 LLM에 보냅니다. 두 판정이 다르면 비고에 '불일치' | 평소 |
+| fast | 분류기만. 수십 초 안에 끝남 | 훑어보기, 수백 건 일괄 처리 |
+| llm | 모든 페이지를 LLM이 판정 | 분류기를 못 믿을 때, 임베딩 모델이 없을 때 |
+
+- 분류기는 두 가지입니다. 골드 세트로 학습한 파일(`~/.ip_finder/classifier.npz`)이 있으면 그것을, 없으면 등급별 원형 문장([prototypes.json](ip_finder/classify/prototypes.json))과의 유사도로 판정하는 제로샷 분류기를 씁니다.
+- 확신은 1위와 2위의 점수 차이입니다. 기본 임계값은 제로샷 0.05, 학습 분류기 0.25이며 `--threshold`로 바꿉니다. 처음에는 높게 두어 LLM에 많이 보내다가 골드 세트로 확인하며 낮추는 운용을 권합니다.
+- 결과 Excel의 '판정' 열에 각 행을 분류기가 정했는지 LLM이 정했는지 적힙니다. LLM이 재판정한 행은 비고에 분류기의 라벨과 확신이 남습니다.
+- LLM에는 페이지 제목에서 계산한 "페이지 유형" 힌트 한 줄이 함께 들어갑니다. 원인 분석 페이지의 설명 문장을 수단으로 올리는 오류가 이 힌트로 크게 줄었습니다.
+
 ## 요구 사항
 
 - Windows 10/11 또는 macOS. Python 3.11 이상 (3.12 권장).
-- [Ollama](https://ollama.com) 와 모델 `qwen3:4b-instruct` (약 2.5GB). 메모리 약 3GB 사용.
+- [Ollama](https://ollama.com) 와 모델 두 개: LLM `qwen3:4b-instruct` (약 2.5GB), 임베딩 `bge-m3` (약 1.2GB). 임베딩 모델이 없으면 llm 모드로 동작합니다.
 - 선택: 구형 `.ppt` 입력은 PowerPoint가 설치된 윈도우에서 `pywin32`로 자동 변환합니다.
 
 ## 설치 (명령줄, macOS/Linux/윈도우 공통)
@@ -60,6 +74,7 @@ python -m venv .venv
 .venv\Scripts\activate          # macOS/Linux: source .venv/bin/activate
 pip install -e .                # 윈도우에서 .ppt 변환까지: pip install -e ".[windows]"
 ollama pull qwen3:4b-instruct
+ollama pull bge-m3
 ip-finder check
 ```
 
@@ -73,7 +88,8 @@ ip-finder check
 ip-finder extract 보고서.pptx                 # 결과: 보고서_검토후보.xlsx (원본 옆)
 ip-finder extract 보고서.pdf 다른보고서.pptx    # 여러 파일
 ip-finder extract 보고서폴더/ --out-dir 결과/   # 폴더 전체(하위 폴더 포함), 결과를 한곳에
-ip-finder extract 보고서.pptx --model qwen3:8b  # 모델 교체 (think 계열도 자동으로 think=false)
+ip-finder extract 보고서.pptx --model qwen3:8b  # LLM 교체 (think 계열도 자동으로 think=false)
+ip-finder extract 보고서.pptx --mode fast       # 분류기만 / --mode llm 전부 LLM / --threshold 0.1 LLM에 더 많이
 ```
 
 진행률이 페이지마다 찍히고, 중간에 끊어도 이미 처리한 페이지는 캐시에 남아 다음 실행에서 바로 재사용됩니다. 캐시에는 페이지 텍스트의 해시와 라벨만 저장되며 원문은 저장되지 않습니다 (`~/.ip_finder/cache.sqlite`, `--no-cache`로 끔).
@@ -82,11 +98,11 @@ ip-finder extract 보고서.pptx --model qwen3:8b  # 모델 교체 (think 계열
 
 | 시트 | 내용 |
 |---|---|
-| 검토 목록 | A/B/C/D 문장을 페이지 순서로. 번호, 섹션, 페이지, 등급, 발췌(원문 그대로), 논의 포인트, 비고 |
+| 검토 목록 | A/B/C/D 문장을 페이지 순서로. 번호, 섹션, 페이지, 등급, 발췌(원문 그대로), 논의 포인트, 판정(분류기/LLM), 비고 |
 | 보류 | 모델은 제외(X)로 보았지만 기술 단서어가 있어 남긴 문장 (`X?`). 판정 실패(`?`)도 여기에 |
 | 제외 페이지 | 표지, 목차, 일정, 비용, 조직, 감사 등 제목 규칙으로 건너뛴 페이지와 사유 |
 | 이미지 페이지 | 텍스트가 없는 페이지. 도면이면 직접 확인 |
-| 실행 정보 | 모델, 프롬프트 버전, 소요 시간, 등급 분포, 전처리로 제거된 줄 수, 경고 |
+| 실행 정보 | 판정 모드, 모델, 분류기, 임계값, 분류기·LLM 문장 수, 소요 시간, 등급 분포, 전처리로 제거된 줄 수, 경고 |
 
 비고 열의 `보정(A→C)`는 제목이 원인·문제·배경인 페이지에서 변경 동사가 없는 A를 C로 내린 행입니다. `분할`은 긴 줄을 문장으로 나눈 행, `표`는 표에서 나온 행입니다.
 
@@ -94,7 +110,7 @@ ip-finder extract 보고서.pptx --model qwen3:8b  # 모델 교체 (think 계열
 
 1. **읽기**: PDF는 PyMuPDF, PPTX는 python-pptx. 제목, 본문 줄(불릿 계층), 표를 읽습니다. 발표자 노트는 읽지 않습니다.
 2. **전처리(규칙, LLM 없음)**: 제목 규칙으로 페이지 제외 → 세 페이지 이상 반복되는 줄(머리말·바닥글) 제거 → 날짜·금액·담당자·짧은 조각 제거(보수적, 기술 단서어가 있으면 유지) → 줄 번호 부여, 80자 초과는 문장 분할.
-3. **라벨링**: 페이지마다 LLM을 한 번 불러 줄 수와 같은 길이의 라벨 배열만 받습니다. 주제명이나 질문은 생성하지 않습니다. 출력이 20토큰 안팎이라 CPU에서도 빠릅니다.
+3. **판정(hybrid)**: 모든 문장을 bge-m3로 임베딩해 분류기가 등급과 확신을 냅니다. 확신이 낮은 문장만 페이지 유형별로 묶어 LLM에 보냅니다. LLM은 줄 수와 같은 길이의 라벨 배열만 내고 주제명이나 질문은 생성하지 않습니다. 출력이 20토큰 안팎이고 호출 수가 페이지 수보다 훨씬 적어 CPU에서도 빠릅니다.
 4. **후처리(규칙)**: 제목 기반 보정, 재현율 안전장치(`X?`), 섹션 묶기, 논의 포인트 템플릿.
 5. **출력**: Excel.
 
@@ -105,6 +121,12 @@ ip-finder extract 보고서.pptx --model qwen3:8b  # 모델 교체 (think 계열
 ```toml
 model = "qwen3:4b-instruct"
 host = "http://127.0.0.1:11434"      # 로컬 주소만 허용. 외부 주소는 실행이 거부됩니다
+mode = "hybrid"                      # hybrid | fast | llm
+embed_model = "bge-m3"
+classifier_path = "~/.ip_finder/classifier.npz"   # ip-finder train 결과. 없으면 제로샷
+# confidence_threshold = 0.05       # 비우면 제로샷 0.05 / 학습 분류기 0.25
+group_max_chars = 1200               # 묶음 호출 한 번의 최대 글자 수
+prompt_variant = "compact"           # compact | full
 num_ctx = 2048
 split_len = 80
 repeated_line_min_pages = 3
@@ -127,13 +149,19 @@ ip-finder eval 실제보고서_gold.xlsx            # 현재 모델·프롬프�
 ip-finder eval 실제보고서_gold.xlsx --stored   # 시트에 저장된 라벨을 채점 (LLM 불필요)
 ```
 
-정확도, 등급별 정밀도·재현율·F1, 혼동 행렬이 출력됩니다. 실제 보고서 2~3건에서 100~200문장이면 충분합니다.
+```bash
+ip-finder train 보고서1_gold.xlsx 보고서2_gold.xlsx   # 분류기 학습 → ~/.ip_finder/classifier.npz
+ip-finder eval 보고서1_gold.xlsx --mode hybrid      # 학습 분류기 + LLM 조합 채점
+ip-finder eval 보고서1_gold.xlsx --mode fast        # 분류기만 채점
+```
+
+정확도, 등급별 정밀도·재현율·F1, 혼동 행렬이 출력됩니다. 학습은 임베딩에 단서어 특성 13개를 붙여 소프트맥스 회귀를 돌리며, 5겹 교차검증 정확도를 함께 보여 줍니다. 실제 보고서 2~3건에서 100~200문장이면 시작할 수 있고, 300문장을 넘기면 안정적입니다. 학습된 분류기 파일에는 문장이 들어 있지 않지만 회사 데이터로 만든 것이므로 저장소 밖에 둡니다(`.gitignore`가 `*.npz`를 제외).
 **골드 파일에는 실제 문장이 들어 있으므로 저장소 바깥에 두세요.** (`.gitignore`가 `gold/`와 `*_gold.xlsx`를 제외합니다.)
 
 ## 보안
 
 - 모든 LLM 호출은 `127.0.0.1`의 Ollama로만 갑니다. 설정에 외부 주소를 넣으면 실행 자체가 거부됩니다 (`tests/test_llm.py`).
-- 외부 서비스 SDK, 텔레메트리, 자동 업데이트가 없습니다. 의존성은 PyMuPDF, python-pptx, openpyxl 뿐입니다.
+- 외부 서비스 SDK, 텔레메트리, 자동 업데이트가 없습니다. 의존성은 PyMuPDF, python-pptx, openpyxl, numpy 뿐입니다.
 - 캐시와 로그에 원문을 남기지 않습니다.
 - 실제 보고서와 골드 세트는 저장소 바깥 폴더에 두고, 코드 작성에 AI 도구를 쓸 때 그 폴더를 열지 마세요.
 - 오프라인 확인: 윈도우 방화벽에서 `python.exe`와 `ollama.exe`의 아웃바운드를 차단해도 정상 동작해야 합니다. 윈도우 방화벽은 루프백(127.0.0.1)을 막지 않으므로 Ollama 연결은 유지됩니다.
@@ -154,7 +182,15 @@ pytest
 
 ## 성능 참고
 
-같은 12장 샘플 기준, GPU 가속이 되는 Apple M4에서 4B 모델로 8~9초였습니다. CPU 전용 PC에서는 5~8배 느릴 것으로 추정하며, `demo/speed_test2.py`를 돌리면 그 PC의 페이지당 시간을 2분 안에 잴 수 있습니다. 50장 보고서면 4B 기준 3~8분이 목표입니다.
+같은 12장 샘플(판정 대상 7페이지, 27문장)을 GPU 가속이 되는 Apple M4에서 돌린 결과입니다. 정답은 설명용 샘플에 직접 매긴 것입니다.
+
+| 모드 | LLM 호출 | 시간 | 정확도 |
+|---|---|---|---|
+| fast | 0 | 1.5초 | 25/27 |
+| hybrid | 3 | 4.3초 | 26/27 |
+| llm | 7 | 7.3초 | 25/27 |
+
+CPU 전용 PC에서는 5~8배 느릴 것으로 추정합니다. 50장 보고서면 llm 모드 3~8분, hybrid는 그 절반 안팎에 임베딩 1~3분이 더해지는 그림입니다. `demo/speed_test2.py`와 `demo/hybrid_experiment.py`를 돌리면 그 PC의 실측값이 나옵니다.
 
 ## 폴더 구조
 
@@ -162,12 +198,13 @@ pytest
 ip_finder/
   readers/   pdf_reader.py, pptx_reader.py, ppt_convert.py   입력 → Document
   prep/      page_rules.py, line_rules.py, splitter.py        전처리 규칙
-  label/     labeler.py, prompts/system.md, prompts/rubric.md 라벨링
+  classify/  embed.py, classifier.py, prototypes.json       임베딩, 제로샷·학습 분류기
+  label/     labeler.py, prompts/system.md(압축), system_full.md, rubric.md   LLM 라벨링
   post/      title_fix.py, safety_net.py, sections.py, templates.py
   report/    xlsx.py
   llm/       ollama_client.py   localhost 전용
   cache/     store.py           SQLite, 해시 + 라벨만
-  eval/      gold.py, score.py  골드 세트
+  eval/      gold.py, score.py, train.py  골드 세트 생성·채점·분류기 학습
   cues.py, config.py, models.py, pipeline.py, cli.py, samples.py
 install.bat, extract.bat, tools/download_wheels.bat   윈도우 설치·실행·오프라인 번들 스크립트
 requirements.txt, requirements-windows.txt
@@ -178,5 +215,5 @@ archive/     이전 제안서(v1 마킹, v2 추출 초안)
 
 ## 로드맵
 
-- 2단계: A·B 문장만 8B로 재확인하는 혼합 모드(일치 여부 = 신뢰도), Word 회의 자료 + 페이지 썸네일, 저자 강조(기존 하이라이트·볼드) 신호, 임베딩 기반 '관련 항목' 열
+- 2단계: Word 회의 자료 + 페이지 썸네일, 저자 강조(기존 하이라이트·볼드) 신호, 임베딩 기반 '관련 항목' 열, E5 같은 더 작은 임베딩 모델 지원
 - 3단계: 보고서 여러 건 통합 워크북, 이전에 논의한 주제와의 유사 표시, 발표자 노트 포함 옵션, GPU 확보 시 그림 페이지 처리

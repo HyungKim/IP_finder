@@ -54,8 +54,11 @@ class LabeledLine:
     line_idx: int
     text: str
     label: str                      # A B C D X, 보류는 "X?", 판정 실패는"?"
-    raw_label: str                  # 모델이 낸 원래 라벨
+    raw_label: str                  # 후처리 전 라벨 (분류기 또는 LLM)
     notes: list[str] = field(default_factory=list)   # 보정(A→C), 분할, 단서어: ...
+    source: str = ""                # clf | llm
+    clf_label: str = ""             # 분류기 라벨 (hybrid/fast)
+    clf_conf: float | None = None   # 분류기 확신 (1위-2위 차이)
 
 
 @dataclass
@@ -72,3 +75,11 @@ class RunInfo:
     llm_calls: int = 0
     cache_hits: int = 0
     warnings: list[str] = field(default_factory=list)
+    mode: str = ""
+    embed_model: str = ""
+    classifier: str = ""            # 제로샷 | 학습(경로)
+    threshold: float | None = None
+    clf_lines: int = 0              # 분류기 판정을 채택한 문장 수
+    llm_lines: int = 0              # LLM이 판정한 문장 수
+    embed_sec: float = 0.0
+    llm_sec: float = 0.0
