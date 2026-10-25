@@ -193,6 +193,9 @@ def main(argv: list[str] | None = None) -> int:
     _common(p)
     p.set_defaults(func=cmd_extract)
 
+    p = sub.add_parser("ui", help="데스크톱 UI 실행 (Tkinter)")
+    p.set_defaults(func=lambda a: __import__("ip_finder.ui", fromlist=["main"]).main([]))
+
     p = sub.add_parser("check", help="의존성, Ollama 연결, LLM·임베딩 모델 설치 여부 확인")
     _common(p)
     p.set_defaults(func=cmd_check)

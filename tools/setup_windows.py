@@ -125,6 +125,7 @@ def main() -> int:
     say("")
     if rc == 0:
         say("설치가 끝났습니다. 사용법:")
+        say("  ui.bat                        (더블클릭하면 창이 뜹니다)")
         say("  extract.bat 보고서.pptx        (파일이나 폴더를 extract.bat 위로 끌어다 놓아도 됩니다)")
         say("  결과는 원본 옆에 '이름_검토후보.xlsx' 로 생깁니다.")
     return rc

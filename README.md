@@ -33,7 +33,7 @@
 1. Python 3.12 64비트를 설치합니다 (https://www.python.org/downloads/windows/ , "Add python.exe to PATH" 체크).
 2. Ollama를 설치합니다 (https://ollama.com/download/windows).
 3. 소스 ZIP을 풀고 `install.bat`를 더블클릭합니다. 가상환경 생성, 패키지 설치, 모델 내려받기(`qwen3:4b-instruct`, 약 2.5GB), 환경 확인까지 자동으로 진행됩니다.
-4. `extract.bat` 위로 보고서 파일이나 폴더를 끌어다 놓으면 원본 옆에 `이름_검토후보.xlsx`가 생깁니다. 명령줄에서는 `extract.bat 보고서.pptx`.
+4. `ui.bat`를 더블클릭해 창에서 쓰거나, `extract.bat` 위로 보고서 파일이나 폴더를 끌어다 놓으면 원본 옆에 `이름_검토후보.xlsx`가 생깁니다. 명령줄에서는 `extract.bat 보고서.pptx`.
 
 인터넷이 막힌 PC라면:
 - 패키지: 릴리스의 wheel 번들을 받아 압축을 풀고, 생긴 `wheels` 폴더를 `install.bat` 옆에 둔 뒤 실행합니다. `wheels` 폴더가 있으면 PyPI에 접속하지 않습니다. 다른 Python 버전이면 인터넷이 되는 윈도우 PC에서 `tools\download_wheels.bat 3.13` 처럼 실행해 번들을 직접 만듭니다.
@@ -45,6 +45,15 @@
 - `'...'은(는) 내부 또는 외부 명령, 실행할 수 있는 프로그램, 또는 배치 파일이 아닙니다.` — v0.1.0의 배치 파일에 한글이 들어 있어 생기던 문제입니다. 한글 Windows의 cmd.exe는 UTF-8 모드에서 다중 바이트 문자가 있는 줄의 위치를 잘못 계산해 줄의 나머지를 명령으로 실행합니다. v0.1.1부터 배치 파일은 ASCII만 쓰므로 최신 ZIP을 다시 받으세요.
 - 콘솔에서 한글이 네모로 보이면 창 속성에서 글꼴을 '맑은 고딕'이나 'Consolas'로 바꾸세요.
 - `py` 런처도 `python`도 없다고 나오면 Python 설치 시 "Add python.exe to PATH"를 체크하지 않은 것입니다. 재설치하거나 PATH에 추가하세요.
+
+## 데스크톱 UI
+
+명령줄이 익숙하지 않으면 창을 띄워 쓰면 됩니다. 추가 설치는 없습니다 (Python에 포함된 Tkinter).
+
+- 윈도우: `ui.bat` 더블클릭. 다른 환경: `ip-finder ui` 또는 `python -m ip_finder.ui`
+- **추출 탭**: 파일·폴더 추가 → 판정 모드와 모델, 임계값, 결과 위치 선택 → 실행. 진행 로그가 흐르고 끝나면 결과 미리보기 표(등급별 색, 판정 주체)가 채워집니다. "결과 Excel 열기"로 바로 엽니다. 중지 버튼은 현재 페이지가 끝나면 멈추고, 처리한 페이지는 캐시에 남습니다.
+- **정확도 관리 탭**: 보고서를 골라 골드 시트 만들기 → 정답을 고친 골드 시트들로 분류기 학습 → 골드 시트로 채점. 모두 버튼 하나씩이며 출력은 아래 창에 나옵니다.
+- 아래 상태 줄에 Ollama 연결, LLM·임베딩 모델 설치 여부, 현재 분류기(제로샷/학습됨)가 표시됩니다.
 
 ## 판정 모드
 
@@ -263,8 +272,8 @@ ip_finder/
   llm/       ollama_client.py   localhost 전용
   cache/     store.py           SQLite, 해시 + 라벨만
   eval/      gold.py, score.py, train.py  골드 세트 생성·채점·분류기 학습
-  cues.py, config.py, models.py, pipeline.py, cli.py, samples.py
-install.bat, extract.bat, tools/download_wheels.bat   윈도우 설치·실행·오프라인 번들 스크립트
+  cues.py, config.py, models.py, pipeline.py, cli.py, ui.py(데스크톱 UI), samples.py
+install.bat, ui.bat, extract.bat, tools/download_wheels.bat   윈도우 설치·UI·실행·오프라인 번들 스크립트
 requirements.txt, requirements-windows.txt
 tests/       오프라인 테스트
 demo/        가짜 샘플, 시연·속도 실험 스크립트와 결과

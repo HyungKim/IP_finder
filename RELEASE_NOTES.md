@@ -1,6 +1,8 @@
-# IP Finder v0.2.0
+# IP Finder v0.3.0
 
-판정 방식을 **hybrid**로 바꿨습니다. 임베딩 분류기(bge-m3)가 모든 문장을 먼저 판정하고, 확신이 낮은 문장만 페이지 유형별로 묶어 LLM에 보냅니다. 샘플에서 LLM 호출이 7회에서 3회로 줄고 정확도는 25/27에서 26/27로 올랐습니다. 시스템 프롬프트를 절반으로 압축했고, 페이지 제목에서 계산한 유형 힌트를 LLM 입력에 넣습니다. 골드 세트로 분류기를 학습하는 `ip-finder train` 명령과 `--mode`, `--threshold` 옵션이 추가됐습니다. 설치 스크립트가 `bge-m3`도 함께 내려받습니다. numpy 의존성이 추가되어 wheel 번들을 갱신했습니다.
+**데스크톱 UI**를 추가했습니다. 윈도우에서 `ui.bat`를 더블클릭하면 창이 뜨고(추가 설치 없음, Python 내장 Tkinter), 파일·폴더 선택, 판정 모드·모델·임계값 선택, 실행, 진행 로그, 결과 미리보기, Excel 열기를 한 화면에서 합니다. 두 번째 탭에서 골드 시트 만들기, 분류기 학습, 채점을 버튼으로 할 수 있습니다. 명령줄은 `ip-finder ui`.
+
+v0.2.0: 판정 방식을 **hybrid**로 바꿨습니다. 임베딩 분류기(bge-m3)가 모든 문장을 먼저 판정하고, 확신이 낮은 문장만 페이지 유형별로 묶어 LLM에 보냅니다. 샘플에서 LLM 호출이 7회에서 3회로 줄고 정확도는 25/27에서 26/27로 올랐습니다. 시스템 프롬프트를 절반으로 압축했고, 페이지 제목에서 계산한 유형 힌트를 LLM 입력에 넣습니다. 골드 세트로 분류기를 학습하는 `ip-finder train` 명령과 `--mode`, `--threshold` 옵션이 추가됐습니다. 설치 스크립트가 `bge-m3`도 함께 내려받습니다. numpy 의존성이 추가되어 wheel 번들을 갱신했습니다.
 
 v0.1.1에서는 한글 Windows의 cmd.exe가 UTF-8 배치 파일을 잘못 해석하던 문제를 고쳤습니다(배치 파일 ASCII 전용, 한글 안내는 tools/setup_windows.py).
 
@@ -9,7 +11,7 @@ v0.1.1에서는 한글 Windows의 cmd.exe가 UTF-8 배치 파일을 잘못 해�
 ## 윈도우 설치
 1. Python 3.12 64비트와 Ollama를 설치합니다.
 2. **Source code (zip)** 을 받아 풀고 `install.bat`를 실행합니다.
-3. `extract.bat` 위로 보고서 파일이나 폴더를 끌어다 놓습니다.
+3. `ui.bat`를 더블클릭해 창에서 쓰거나, `extract.bat` 위로 보고서 파일이나 폴더를 끌어다 놓습니다.
 
 ## 인터넷이 막힌 PC
 `ip_finder_wheels_win_amd64_py312.zip`(Python 3.12 64비트용 패키지 묶음)을 받아 풀고, 생긴 `wheels` 폴더를 `install.bat` 옆에 둔 뒤 실행하면 PyPI에 접속하지 않습니다.
@@ -21,4 +23,4 @@ v0.1.1에서는 한글 Windows의 cmd.exe가 UTF-8 배치 파일을 잘못 해�
 - 캐시(해시+라벨+벡터, 원문 미저장), 골드 세트 생성·채점·분류기 학습(`gold-sheet`, `eval`, `train`), 환경 점검(`check`)
 - 오프라인 테스트 23건, 가짜 샘플과 결과 예시, 제안서(PROPOSAL.md)와 출력 예시(EXAMPLE.md)
 
-릴리스 만들기(저장소 소유자): `gh release create v0.2.0 dist/ip_finder_wheels_win_amd64_py312.zip --title "IP Finder v0.2.0" --notes-file RELEASE_NOTES.md`
+릴리스 만들기(저장소 소유자): `gh release create v0.3.0 dist/ip_finder_wheels_win_amd64_py312.zip --title "IP Finder v0.3.0" --notes-file RELEASE_NOTES.md`
