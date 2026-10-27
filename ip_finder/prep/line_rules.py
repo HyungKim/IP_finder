@@ -1,4 +1,4 @@
-"""줄 단위 제거. 반복 문구, 수동 목록, 숫자만, 담당자, 짧은 일정·금액 줄, 그리고 글자수가 short_line_chars 이하인 짧은 조각."""
+"""줄 단위 제거. 반복 문구, 수동 목록, 숫자만, 한글 없음(영어·숫자·기호만), 담당자, 짧은 일정·금액 줄, 그리고 글자수가 short_line_chars 이하인 짧은 조각."""
 from __future__ import annotations
 
 import re
@@ -15,11 +15,16 @@ DATE_RE = re.compile(
 MONEY_RE = re.compile(r"(\d[\d,.]*\s*(억|만|천)?\s*원\b|\d[\d,.]*\s*(억|만원|천원|KRW|USD|달러|\$)|단가|비용|예산|투자비)")
 OWNER_RE = re.compile(r"^\s*(담당|담당자|작성자|작성|보고자|발표자|부서|책임자|PM|PL|TF)\s*[:：]")
 NUMERIC_ONLY = re.compile(r"^[\s\d.,%/()\-–~:]+$")
+HANGUL_RE = re.compile(r"[가-힣ㄱ-ㅎㅏ-ㅣ]")
 SHORT_RULE_LEN = 30
 
 
 def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def has_korean(text: str) -> bool:
+    return HANGUL_RE.search(text) is not None
 
 
 def char_count(text: str) -> int:
@@ -48,6 +53,8 @@ def apply_line_rules(doc: Document, cfg: Config) -> Counter:
                 reason = "반복 문구"
             elif NUMERIC_ONLY.match(text):
                 reason = "숫자만"
+            elif cfg.require_korean and not has_korean(text):
+                reason = "한글 없음"       # 영어·숫자·기호만 있는 줄 (모델명, 영문 항목명, 수식)은 한국어 보고서에서 본문이 아니다
             elif OWNER_RE.search(text):
                 reason = "담당자"
             elif len(text) <= SHORT_RULE_LEN and (DATE_RE.search(text) or MONEY_RE.search(text)) and not has_tech_word(text):

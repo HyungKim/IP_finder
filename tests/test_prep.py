@@ -58,6 +58,25 @@ def test_short_lines_are_excluded(cfg):
     assert split_sentences(long)[-1].endswith("적용 완료.") and len(split_sentences(long)) == 2   # 짧은 꼬리는 앞 문장에 붙음
 
 
+def test_non_korean_lines_are_excluded(cfg):
+    doc = Document(path=None, kind="pptx", title="", pages=[Page(no=5, title="개선안", lines=[
+        Line(0, "Adaptive gain scheduling for PID controller"),   # 영어만 → 한글 없음
+        Line(0, "PS-200 / Rev 3.1 (2026)"),                        # 영어+숫자+기호 → 한글 없음
+        Line(0, "12.5 / 30 / 45"),                                  # 숫자만 (더 구체적인 사유가 우선)
+        Line(0, "PID 게인을 부하 구간별로 3단계 스케줄링"),               # 한글 포함 → 유지
+    ])])
+    removed = prepare(doc, cfg)
+    assert [ln.text for ln in doc.pages[0].active_lines()] == ["PID 게인을 부하 구간별로 3단계 스케줄링"]
+    assert removed["한글 없음"] == 2 and removed["숫자만"] == 1
+    doc2 = Document(path=None, kind="pptx", title="", pages=[Page(no=5, title="개선안", lines=[Line(0, "Adaptive gain scheduling for PID controller")])])
+    prepare(doc2, Config(use_cache=False, cover_max_lines=0, require_korean=False))
+    assert len(doc2.pages[0].active_lines()) == 1                      # 끄면 유지
+    long = "첫 번째 문장은 충분히 길게 써서 분할 기준을 넘긴다. Transfer rate improved to 3 Gbps at the same power. 두 번째 한글 문장도 충분히 길게 이어진다."
+    parts = split_sentences(long, 11, True)
+    assert len(parts) == 2 and "Gbps" in parts[0]                      # 한글 없는 조각은 앞 문장에 붙음
+    assert len(split_sentences(long, 11, False)) == 3
+
+
 def test_split_long_lines():
     text = "첫 번째 문장은 충분히 길게 써서 분할 기준을 넘긴다. 두 번째 문장도 마찬가지로 길게 이어진다. 끝."
     parts = split_sentences(text)

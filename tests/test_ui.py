@@ -57,6 +57,9 @@ def test_ui_builds_and_fills(tmp_path):
         with pytest.raises(ValueError):
             app.build_cfg()
         app.short_var.set("10")
+        assert app.build_cfg().require_korean is True
+        app.korean_var.set(False)
+        assert app.build_cfg().require_korean is False
         assert c.low_relevance_patterns == ["현황", "(고객|클레임)"] and c.high_relevance_patterns == ["KPI\\s*개선"]
         app.low_text.insert("end", "\n(잘못된")
         with pytest.raises(ValueError):

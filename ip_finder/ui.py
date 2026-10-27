@@ -184,7 +184,9 @@ class App(tk.Tk):
         self.embed_box = ttk.Combobox(f_opt, textvariable=self.embed_var, values=[self.cfg.embed_model], width=18)
         self.embed_box.grid(row=1, column=3, sticky="w", padx=4)
         self.cache_var = tk.BooleanVar(value=self.cfg.use_cache)
-        ttk.Checkbutton(f_opt, text="캐시 사용", variable=self.cache_var).grid(row=2, column=4, columnspan=3, sticky="w", padx=8)
+        ttk.Checkbutton(f_opt, text="캐시 사용", variable=self.cache_var).grid(row=2, column=4, sticky="w", padx=8)
+        self.korean_var = tk.BooleanVar(value=self.cfg.require_korean)
+        ttk.Checkbutton(f_opt, text="한글 없는 줄 제외 (영어·숫자·기호만)", variable=self.korean_var).grid(row=2, column=5, columnspan=2, sticky="w", padx=8)
 
         ttk.Label(f_opt, text="목록 점수 기준").grid(row=2, column=0, sticky="w", padx=8, pady=4)
         self.accept_var = tk.StringVar(value=str(self.cfg.accept_score))
@@ -502,7 +504,7 @@ class App(tk.Tk):
         return Config.load(self.cfg.config_path or None, mode=mode, model=self.model_var.get().strip() or None,
                            embed_model=self.embed_var.get().strip() or None, use_cache=self.cache_var.get(),
                            page_weight_enabled=self.pw_var.get(), low_relevance_patterns=low, high_relevance_patterns=high,
-                           low_relevance_weight=low_w, accept_score=accept, target_grades=grades, short_line_chars=self.short_chars(),
+                           low_relevance_weight=low_w, accept_score=accept, target_grades=grades, short_line_chars=self.short_chars(), require_korean=self.korean_var.get(),
                            gold_paths=self.cfg.gold_paths, use_gold=self.cfg.use_gold, history_path=self.cfg.history_path,
                            cache_path=self.cfg.cache_path, classifier_path=self.cfg.classifier_path)
 
@@ -543,6 +545,7 @@ class App(tk.Tk):
         self.low_var.set(str(base.low_relevance_weight))
         self.accept_var.set(str(base.accept_score))
         self.short_var.set(str(base.short_line_chars))
+        self.korean_var.set(base.require_korean)
         self.pw_var.set(True)
 
     # ------------------------------------------------------------------ 환경 점검

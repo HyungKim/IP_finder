@@ -62,6 +62,7 @@ class Config:
     accept_score: float = 0.5           # 신뢰도 × 가중치 가 이 값 이상이어야 검토 목록. 미만은 보류 시트
     # 전처리
     short_line_chars: int = 10          # 글자수(공백 제외)가 이 값 이하인 줄은 '짧은 조각'으로 후보에서 제외
+    require_korean: bool = True         # 한글이 한 글자도 없는 줄(영어·숫자·기호만)은 '한글 없음'으로 후보에서 제외
     split_len: int = 80                 # 이 길이를 넘는 줄은 문장 단위로 분할. 나뉜 조각이 short_line_chars 이하이면 옆 조각에 붙임
     repeated_line_min_pages: int = 3    # 이 수 이상 페이지에 같은 줄이 있으면 반복 문구로 제거
     stoplist: list[str] = field(default_factory=list)   # 템플릿별 수동 제거 문구
@@ -155,7 +156,7 @@ class Config:
             "embed_model": self.embed_model, "group_max_chars": self.group_max_chars, "group_by": self.group_by, "target_grades": ",".join(self.targets()),
             "page_weight_enabled": self.page_weight_enabled, "low_relevance_patterns": self.low_relevance_patterns,
             "high_relevance_patterns": self.high_relevance_patterns, "low_relevance_weight": self.low_relevance_weight,
-            "accept_score": self.accept_score, "short_line_chars": self.short_line_chars, "split_len": self.split_len,
+            "accept_score": self.accept_score, "short_line_chars": self.short_line_chars, "require_korean": self.require_korean, "split_len": self.split_len,
             "repeated_line_min_pages": self.repeated_line_min_pages, "stoplist": self.stoplist,
             "page_exclude_patterns": self.page_exclude_patterns, "cover_max_lines": self.cover_max_lines,
             "title_fix": self.title_fix, "safety_net": self.safety_net, "use_gold": self.use_gold,
