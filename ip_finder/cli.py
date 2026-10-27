@@ -16,6 +16,7 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--host", help="Ollama 주소. 로컬(127.0.0.1)만 허용")
     p.add_argument("--mode", choices=["cascade", "fast", "llm"], help="cascade: 분류기 1차 추출(X 제외) → 후보 전부 LLM 2차 판정 (기본) / fast: 분류기만 / llm: 전부 LLM")
     p.add_argument("--embed-model", help="Ollama 임베딩 모델 (기본 bge-m3. KURE-v1 은 tools/import_kure.bat 후 kure-v1)")
+    p.add_argument("--grades", help="추출 대상 등급 (기본 A,B). 1차는 이 등급 문장만 후보로, 2차는 이 등급인지 판정. 예: A,B,C,D")
     p.add_argument("--accept-score", type=float, help="신뢰도×가중치 가 이 값 이상이어야 검토 목록 (기본 0.5). 미만은 보류 시트")
     p.add_argument("--no-page-weight", action="store_true", help="페이지 가중치 끔 (모든 페이지 1.0)")
     p.add_argument("--low-weight", type=float, help="관련성 낮음 페이지의 가중치 (기본 0.4, 0 이면 판정 안 함)")
@@ -28,7 +29,7 @@ def _common(p: argparse.ArgumentParser) -> None:
 def _cfg(args) -> Config:
     return Config.load(args.config, model=args.model, host=args.host, mode=getattr(args, "mode", None),
                        embed_model=getattr(args, "embed_model", None),
-                       accept_score=getattr(args, "accept_score", None),
+                       accept_score=getattr(args, "accept_score", None), target_grades=getattr(args, "grades", None),
                        page_weight_enabled=False if getattr(args, "no_page_weight", False) else None,
                        low_relevance_weight=getattr(args, "low_weight", None),
                        prompt_variant=getattr(args, "prompt", None), classifier_path=getattr(args, "classifier", None),
@@ -79,7 +80,7 @@ def cmd_check(args) -> int:
         ok = False
     clf = cfg.classifier_file()
     print(f"  분류기: {'학습된 분류기 ' + str(clf) if clf.exists() else '제로샷(원형 문장). 골드 세트로 ip-finder train 하면 학습 분류기 사용'}")
-    print(f"  판정 모드 기본값: {cfg.mode} (cascade = 분류기 1차 추출 → LLM 2차 판정), 프롬프트: {cfg.prompt_variant}, 목록 점수 기준: {cfg.accept_score}")
+    print(f"  판정 모드 기본값: {cfg.mode} (cascade = 분류기 1차 추출 → LLM 2차 판정), 추출 등급: {','.join(cfg.targets())}, 프롬프트: {cfg.prompt_variant}, 목록 점수 기준: {cfg.accept_score}")
     print(f"  페이지 가중치: {'켬' if cfg.page_weight_enabled else '끔'}, 관련성 낮음 가중치 {cfg.low_relevance_weight}, 낮음 키워드 {len(cfg.low_relevance_patterns)}개, 높음 키워드 {len(cfg.high_relevance_patterns)}개 (ip-finder pages <파일> 로 확인)")
     print(f"  캐시: {cfg.cache_file()} (원문 미저장, 해시+라벨+벡터)")
     print(f"  이력: {cfg.history_dir() or '저장 안 함'}  — 캐시·분류기·이력은 모두 설치 폴더의 data/ 아래. 설치본마다 따로 관리됩니다")
@@ -96,12 +97,13 @@ def cmd_check(args) -> int:
 
 
 def _summary(res) -> str:
-    from .post import in_review_list
+    from .post import in_hold_list, in_review_list
     from .report.xlsx import is_clf_rejected, is_llm_rejected
     info = res.info
-    listed = {g: sum(1 for ll in res.labeled if ll.label == g and in_review_list(ll)) for g in ("A", "B", "C", "D")}
-    held = sum(1 for ll in res.labeled if ll.label in ("A", "B", "C", "D") and ll.hold_reason)
-    xq = sum(1 for ll in res.labeled if ll.label == "X?" and not is_llm_rejected(ll))
+    grades = info.target_grades.split(",") if info.target_grades else ["A", "B"]
+    listed = {g: sum(1 for ll in res.labeled if ll.label == g and in_review_list(ll)) for g in grades}
+    held = sum(1 for ll in res.labeled if ll.hold_reason)
+    xq = sum(1 for ll in res.labeled if in_hold_list(ll) and ll.label in ("X?", "?"))
     parts = [f"검토 목록 " + ", ".join(f"{g} {c}" for g, c in listed.items()) + f" (합 {sum(listed.values())})",
              f"보류 {held + xq} (점수 미달 {held}, 단서어 {xq})"]
     if info.mode == "cascade":

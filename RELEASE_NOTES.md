@@ -1,6 +1,10 @@
-# IP Finder v0.5.0
+# IP Finder v0.5.1
 
-판정 흐름과 페이지 가중치를 단순하게 바꿨습니다.
+**추출 등급을 A·B 로 좁혔습니다.** 1차(분류기)는 A 또는 B 로 판정된 문장만 후보로 뽑고, 2차(LLM)는 그 후보가 A 인지 B 인지 판정해 최종 등급을 매깁니다. LLM 이 C·D·X 로 보면 '2차 제외' 시트로 갑니다. 검토 목록에는 A·B 만 남고, 후보가 줄어 LLM 시간이 그만큼 줄어듭니다. 과제(C)·계획(D)까지 보려면 추출 탭의 '추출 등급'을 "A·B·C·D"로 바꾸거나 설정 `target_grades = "A,B,C,D"`, 명령줄 `--grades A,B,C,D`. 채점(`eval`)의 목록 정밀도·재현율도 대상 등급 기준으로 바뀌었습니다.
+
+**이전 버전(v0.4.x / v0.5.0)이 설치된 PC 에서 올리기**: Source code (zip) 안의 내용물을 설치 폴더 위에 덮어쓰기만 하면 됩니다. `.venv`, `data\`, `ip_finder.toml` 은 그대로 남고 새 패키지·모델은 없습니다.
+
+v0.5.0: 판정 흐름과 페이지 가중치를 단순하게 바꿨습니다.
 
 - **cascade 판정(기본)**: 분류기가 모든 문장을 1차로 판정해 X 를 제외하고, 남은 후보 **전부**를 LLM 이 2차로 판정합니다. 검토 목록에는 두 단계를 모두 통과한 문장만 오릅니다. 이전의 hybrid(애매한 문장만 LLM)와 LLM 재확인 옵션, 확신 임계값은 없어졌습니다. 옛 설정의 `mode = "hybrid"` 는 cascade 로 읽힙니다.
 - **1차·2차가 보이는 출력**: 문장 시트마다 '1차 분류기'와 '2차 LLM' 열이 있고, **'2차 제외' 시트**에 1차에서 뽑혔다가 2차에서 빠진 문장이 모입니다. 잘못 빠진 것은 그 시트의 피드백 열에 A~D 를 적어 살립니다. 분류기가 1차에서 제외한 문장은 맨 뒤 '1차 제외 (참고)' 시트. UI 미리보기의 '보기'에도 같은 항목이 있습니다.
@@ -49,4 +53,4 @@ v0.1.1에서는 한글 Windows의 cmd.exe가 UTF-8 배치 파일을 잘못 해�
 - 캐시(해시+라벨+벡터, 원문 미저장), 실행·피드백·학습 이력(원문 미저장), 골드 세트 생성·피드백 가져오기·채점·분류기 학습(`gold-sheet`, `feedback`, `eval`, `train`), 환경 점검(`check`), 페이지 확인(`pages`), 이력(`history`)
 - 오프라인 테스트 44건, 가짜 샘플과 결과 예시, 제안서(PROPOSAL.md)와 출력 예시(EXAMPLE.md)
 
-릴리스 만들기(저장소 소유자): `gh release create v0.5.0 dist/ip_finder_wheels_win_amd64_py312.zip --title "IP Finder v0.5.0" --notes-file RELEASE_NOTES.md`
+릴리스 만들기(저장소 소유자): `gh release create v0.5.1 dist/ip_finder_wheels_win_amd64_py312.zip --title "IP Finder v0.5.1" --notes-file RELEASE_NOTES.md`

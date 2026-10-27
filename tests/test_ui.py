@@ -33,7 +33,7 @@ def test_ui_builds_and_fills(tmp_path):
         assert len(app.tree.get_children()) == 1
         assert app.build_cfg().mode == "llm"
         app.filter_var.set("2차 제외 (1차 통과분)")
-        app.last_labeled[2].source, app.last_labeled[2].clf_label, app.last_labeled[2].llm_label = "llm", "A", "X"
+        app.last_labeled[2].source, app.last_labeled[2].clf_label, app.last_labeled[2].llm_label, app.last_labeled[2].stage_out = "llm", "A", "X", 2
         app.fill_results()
         assert len(app.tree.get_children()) == 1 and list(app.tree.item(app.tree.get_children()[0])["values"][7:9]) == ["A", "X"]
         app.filter_var.set("검토 목록")
@@ -44,7 +44,11 @@ def test_ui_builds_and_fills(tmp_path):
         app.low_text.delete("1.0", "end")
         app.low_text.insert("1.0", "# 주석\n현황\n(고객|클레임)")
         app.high_text.insert("1.0", "KPI\\s*개선")
+        app.grades_var.set(app.grades_var.get())
         c = app.build_cfg()
+        assert c.targets() == ["A", "B"]
+        app.grades_var.set("A·B·C·D  —  과제·계획까지")
+        assert app.build_cfg().targets() == ["A", "B", "C", "D"]
         assert c.accept_score == 0.7 and c.page_weight_enabled is False and c.low_relevance_weight == 0.2
         assert c.low_relevance_patterns == ["현황", "(고객|클레임)"] and c.high_relevance_patterns == ["KPI\\s*개선"]
         app.low_text.insert("end", "\n(잘못된")

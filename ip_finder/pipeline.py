@@ -1,5 +1,6 @@
-"""읽기 → 전처리(관련성·가중치 포함) → 판정(cascade / fast / llm) → 후처리 → 골드 반영 → 점수 → 이력 → 리포트.
-cascade = 분류기가 1차로 추출(X 제외)하고, 추출된 후보 전부를 LLM 이 2차로 판정한다. CLI, UI, 평가·학습 도구가 공유한다."""
+"""읽기 → 전처리(관련성·가중치 포함) → 판정(cascade / fast / llm) → 후처리 → 골드 반영 → 단계 확정 → 점수 → 이력 → 리포트.
+cascade = 분류기가 1차로 대상 등급(기본 A·B) 문장만 추출하고, 그 후보 전부를 LLM 이 2차로 판정해 최종 등급(A/B)을 매긴다.
+LLM 이 C·D·X 로 보면 '2차 제외'. CLI, UI, 평가·학습 도구가 공유한다."""
 from __future__ import annotations
 
 import time
@@ -134,9 +135,12 @@ def classifier_desc(cfg: Config, clf) -> str:
 def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
                 progress: Progress | None = None, status: Status | None = None) -> list[LabeledLine]:
     """판정 본체.
-    cascade: 분류기가 모든 문장을 1차 판정해 X 를 제외하고, 남은 후보 전부를 LLM 이 2차 판정(최종 등급, X 면 제외).
-    fast: 분류기만. llm: 모든 페이지를 LLM 이 판정."""
+    cascade: 분류기가 모든 문장을 1차 판정해 대상 등급(cfg.targets, 기본 A·B)만 후보로 남기고(stage_out=1 로 제외),
+             후보 전부를 LLM 이 2차 판정. LLM 결과가 대상 등급이 아니면 stage_out=2 로 제외.
+    fast: 분류기만. llm: 모든 페이지를 LLM 이 판정 (대상 등급 밖은 stage_out=2)."""
     targets = [p for p in pages if p.excluded_reason is None and p.active_lines()]
+    want = set(cfg.targets())
+    info.target_grades = ",".join(cfg.targets())
     mode = "cascade" if cfg.mode == "hybrid" else cfg.mode
     if mode not in MODES:
         raise ValueError(f"알 수 없는 모드: {mode} (cascade | fast | llm)")
@@ -163,7 +167,8 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
                 lab = labels.get(ln.idx, "?")
                 labeled.append(LabeledLine(page_no=page.no, page_title=page.title, section=page.section, line_idx=ln.idx,
                                            text=ln.text, label=lab, raw_label=lab, notes=_line_notes(ln), source="llm",
-                                           llm_label=lab, page_weight=page.weight))
+                                           llm_label=lab, page_weight=page.weight,
+                                           stage_out=0 if (lab in want or lab == "?") else 2))
         info.llm_lines = len(labeled)
         info.llm_sec = getattr(client, "llm_seconds", 0.0) - t0
         return labeled
@@ -187,14 +192,16 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
     for (p, ln), pr in zip(entries, preds):
         labeled.append(LabeledLine(page_no=p.no, page_title=p.title, section=p.section, line_idx=ln.idx, text=ln.text,
                                    label=pr.label, raw_label=pr.label, notes=_line_notes(ln), source="clf",
-                                   clf_label=pr.label, clf_conf=pr.confidence, clf_top=pr.top, page_weight=p.weight))
+                                   clf_label=pr.label, clf_conf=pr.confidence, clf_top=pr.top, page_weight=p.weight,
+                                   stage_out=0 if pr.label in want else 1))
     if mode == "cascade":
-        # 1차: 분류기가 X 로 본 문장은 제외. 2차: 나머지 후보 전부를 LLM 이 판정 (골드 문장은 정답을 쓰므로 제외)
-        candidates = [(p, ln) for (p, ln), pr in zip(entries, preds) if pr.label != "X" and not svc.in_gold(ln.text)]
-        n_gold = sum(1 for _, ln in entries if svc.in_gold(ln.text))
+        # 1차: 분류기가 대상 등급(A·B)으로 본 문장만 후보. 2차: 후보 전부를 LLM 이 판정 (골드 문장은 정답을 쓰므로 제외)
+        candidates = [(p, ln) for (p, ln), pr in zip(entries, preds) if pr.label in want and not svc.in_gold(ln.text)]
+        n_gold = sum(1 for (_, ln_), pr_ in zip(entries, preds) if pr_.label in want and svc.in_gold(ln_.text))
         n_x = len(entries) - len(candidates) - n_gold
         if status:
-            status(f"분류기 1차: 후보 {len(candidates)}문장 (제외 {n_x}" + (f", 골드 {n_gold}" if n_gold else "") + f") → LLM 2차 판정 ({cfg.model})")
+            status(f"분류기 1차: {'/'.join(sorted(want))} 후보 {len(candidates)}문장 (제외 {n_x}" + (f", 골드 {n_gold}" if n_gold else "")
+                   + f") → LLM 2차 판정 ({cfg.model})")
         if candidates:
             client = svc.llm()
             t0 = getattr(client, "llm_seconds", 0.0)
@@ -214,9 +221,10 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
                     ll.notes.append("LLM 실패, 분류기 라벨 유지")
                     continue
                 ll.llm_label = lab
-                if lab == "X":
+                if lab not in want:
                     info.llm_rejected += 1
-                    ll.notes.append("LLM 2차 제외")
+                    ll.stage_out = 2
+                    ll.notes.append(f"LLM 2차 제외({lab})")
                 elif lab != ll.clf_label:
                     ll.notes.append("불일치")
                 ll.label = ll.raw_label = lab
@@ -224,6 +232,16 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
     info.llm_lines = sum(1 for ll in labeled if ll.source == "llm")
     info.clf_lines = sum(1 for ll in labeled if ll.source == "clf")
     return labeled
+
+
+def finalize_stages(labeled: list[LabeledLine], cfg: Config) -> None:
+    """후처리(보정·안전장치·골드) 뒤 최종 라벨이 대상 등급이 아니면 2차 제외로 둔다. 1차 제외(stage_out=1)는 그대로."""
+    want = set(cfg.targets())
+    for ll in labeled:
+        if ll.stage_out == 0 and ll.label not in want and ll.label not in ("X?", "?"):
+            ll.stage_out = 2
+        elif ll.stage_out == 2 and ll.label in want:          # 골드가 대상 등급으로 확정한 경우 등
+            ll.stage_out = 0
 
 
 def apply_gold(labeled: list[LabeledLine], gold: GoldMap, info: RunInfo) -> int:
@@ -243,6 +261,8 @@ def apply_gold(labeled: list[LabeledLine], gold: GoldMap, info: RunInfo) -> int:
         ll.label = ll.raw_label = g
         ll.source = "gold"
         ll.hold_reason = ""
+        if ll.stage_out == 1:
+            ll.stage_out = 2                       # 1차 제외였지만 골드가 다른 등급을 줌 → finalize 에서 대상 등급이면 통과
     info.gold_lines = applied
     return applied
 
@@ -324,6 +344,7 @@ def run_file(path: Path, cfg: Config, client=None, progress: Progress | None = N
         apply_safety_net(labeled)
     if gold is not None:
         apply_gold(labeled, gold, info)
+    finalize_stages(labeled, cfg)
     trained = getattr(svc.classifier, "kind", "") == "trained"
     info.held_lines = apply_scores(labeled, cfg, trained)
     info.elapsed_sec = time.time() - t0

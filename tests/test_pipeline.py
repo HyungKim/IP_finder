@@ -2,6 +2,7 @@ from openpyxl import load_workbook
 
 from ip_finder.config import Config
 from ip_finder.pipeline import extract, find_inputs, output_path
+from ip_finder.post import in_review_list
 from tests.conftest import FakeEmbedder
 
 
@@ -16,19 +17,21 @@ def test_extract_pptx_and_pdf_llm_mode(sample_dir, cfg, fake_client, tmp_path):
         wb = load_workbook(str(out))
         assert wb.sheetnames == ["검토 목록", "보류", "2차 제외", "페이지", "변경 사항", "제외 페이지", "이미지 페이지", "1차 제외 (참고)", "실행 정보"]
         review = _rows(wb["검토 목록"])
-        assert review and all(r[4] in ("A", "B", "C", "D") for r in review)
+        assert review and all(r[4] in ("A", "B") for r in review)                                  # 기본 추출 등급 A·B
         assert [r[0] for r in review] == list(range(1, len(review) + 1))
         pages = [r[2] for r in review]
         assert pages == sorted(pages)                        # 페이지 순서
         assert any(r[1] == "개선안" and r[4] == "A" for r in review)
         assert all(r[6] for r in review) and all(r[11] == "LLM" for r in review)
-        assert all(r[9] == "-" and r[10] in ("A", "B", "C", "D") for r in review)                 # llm 모드: 1차 없음, 2차 = LLM
+        assert all(r[9] == "-" and r[10] in ("A", "B") for r in review)                           # llm 모드: 1차 없음, 2차 = LLM
         assert all(isinstance(r[7], float) and r[7] >= 0.5 and 0 < r[8] <= 1 for r in review)   # 점수·가중치
         assert all(r[13] is None for r in review)                                                 # 피드백 열 비어 있음
         page_rows = _rows(wb["페이지"])
         assert len(page_rows) == 12 and {r[0] for r in page_rows} == set(range(1, 13))
         assert next(r for r in page_rows if r[0] == 5)[2] == "높음" and next(r for r in page_rows if r[0] == 5)[3] == 1.0
-        assert _rows(wb["2차 제외"]) and all(r[10] == "X" for r in _rows(wb["2차 제외"]))            # llm 모드의 X 는 2차 제외 시트
+        assert _rows(wb["2차 제외"]) and all(r[4] in ("C", "D", "X", "X?") for r in _rows(wb["2차 제외"]))   # llm 모드의 C·D·X 는 2차 제외 시트
+        assert any(r[4] == "C" and r[10] == "A" for r in _rows(wb["2차 제외"]))                   # LLM 은 A 였지만 제목 보정으로 C → 제외
+        assert any(ll.label == "C" and ll.stage_out == 2 for ll in res.labeled)
         excluded = {r[0]: r[2] for r in _rows(wb["제외 페이지"])}
         assert 2 in excluded and "목차" in excluded[2]
         assert [r[0] for r in _rows(wb["이미지 페이지"])] == [7]
@@ -59,31 +62,36 @@ def test_fast_mode_uses_only_classifier(sample_dir, cfg_cascade, fake_client, fa
 
 def test_cascade_classifier_first_then_llm_on_candidates(sample_dir, cfg_cascade, fake_client, fake_embedder, tmp_path):
     out, res = extract(sample_dir / "sample_report.pptx", cfg_cascade, tmp_path, fake_client, embedder=fake_embedder)
-    assert res.info.mode == "cascade"
-    clf_x = [ll for ll in res.labeled if ll.clf_label == "X"]
-    cands = [ll for ll in res.labeled if ll.clf_label != "X"]
-    assert clf_x and cands
-    assert all(ll.source == "clf" and ll.llm_label == "" and ll.label in ("X", "X?") for ll in clf_x)   # 1차 제외는 LLM 에 안 감
-    assert all(ll.llm_label != "" and ll.source == "llm" for ll in cands)                               # 후보 전부 LLM 2차
-    assert res.info.llm_lines == len(cands) and res.info.clf_lines == len(clf_x)
+    assert res.info.mode == "cascade" and res.info.target_grades == "A,B"
+    out1 = [ll for ll in res.labeled if ll.clf_label not in ("A", "B")]
+    cands = [ll for ll in res.labeled if ll.clf_label in ("A", "B")]
+    assert out1 and cands
+    assert all(ll.source == "clf" and ll.llm_label == "" and ll.stage_out == 1 for ll in out1)        # 1차 제외(C·D·X)는 LLM 에 안 감
+    assert all(ll.llm_label != "" and ll.source == "llm" for ll in cands)                               # A·B 후보 전부 LLM 2차
+    assert res.info.llm_lines == len(cands) and res.info.clf_lines == len(out1)
     assert 1 <= res.info.llm_calls <= 5                                                                  # 페이지 유형별 묶음
     sent = " ".join(fake_client.inputs)
-    assert all(ll.text not in sent for ll in clf_x)
-    rejected = [ll for ll in res.labeled if ll.llm_label == "X"]
-    assert res.info.llm_rejected == len(rejected) and all("LLM 2차 제외" in ll.notes for ll in rejected)
-    assert all(ll.label in ("X", "X?") for ll in rejected)                                           # 안전장치가 X? 로 살려도 2차 제외 시트
-    agree = [ll for ll in cands if ll.llm_label == ll.clf_label and ll.llm_label != "X"]
+    assert all(ll.text not in sent for ll in out1)
+    rejected = [ll for ll in cands if ll.llm_label not in ("A", "B")]
+    assert res.info.llm_rejected == len(rejected) and all(ll.stage_out == 2 and "LLM 2차 제외(" in " ".join(ll.notes) for ll in rejected)
+    passed = [ll for ll in cands if ll.stage_out == 0]
+    assert passed and all(ll.label in ("A", "B") for ll in passed)
+    agree = [ll for ll in passed if ll.llm_label == ll.clf_label]
     assert agree and all(ll.confidence == 1.0 for ll in agree)
     wb = load_workbook(str(out))
     second = _rows(wb["2차 제외"])
-    assert len(second) == len(rejected) and all(r[9] in ("A", "B", "C", "D") and r[10] == "X" for r in second)   # 1차 통과, 2차 X
-    assert not any(r[10] == "X" for r in _rows(wb["보류"]))                                           # 보류에는 2차 제외가 없음
+    assert len(second) == len(rejected) and all(r[9] in ("A", "B") and r[10] in ("C", "D", "X") for r in second)   # 1차 통과, 2차에서 제외
+    assert not any(r[10] in ("C", "D", "X") for r in _rows(wb["보류"]))                               # 보류에는 2차 제외가 없음
     first_out = _rows(wb["1차 제외 (참고)"])
-    assert len(first_out) == sum(1 for ll in clf_x if ll.label == "X") and all(r[9] == "X" and r[10] == "-" for r in first_out)
+    assert len(first_out) == sum(1 for ll in out1 if ll.label != "X?") and all(r[9] in ("C", "D", "X") and r[10] == "-" for r in first_out)
     review = _rows(wb["검토 목록"])
-    assert all(r[9] in ("A", "B", "C", "D") and r[10] in ("A", "B", "C", "D") for r in review)
+    assert review and all(r[4] in ("A", "B") and r[9] in ("A", "B") and r[10] in ("A", "B") for r in review)
     info = dict(_rows(wb["실행 정보"]))
-    assert info["단계별 문장 수"].startswith(f"전체 {len(res.labeled)} → 1차 제외")
+    assert info["단계별 문장 수"].startswith(f"전체 {len(res.labeled)} → 1차 제외") and info["추출 등급"] == "A,B"
+    # 등급을 넓히면 C·D 도 후보가 된다
+    cfg_cascade.target_grades = "A,B,C,D"
+    _, res4 = extract(sample_dir / "sample_report.pptx", cfg_cascade, tmp_path, type(fake_client)(), embedder=fake_embedder)
+    assert res4.info.llm_lines > res.info.llm_lines and any(ll.label == "C" and in_review_list(ll) for ll in res4.labeled)
 
 
 def test_cascade_falls_back_to_llm_without_embedder(sample_dir, cfg_cascade, fake_client, tmp_path):
@@ -109,6 +117,7 @@ def test_find_inputs(sample_dir):
 
 
 def test_page_weight_moves_low_pages_to_hold(sample_dir, cfg, fake_client, tmp_path):
+    cfg.target_grades = "A,B,C,D"                                            # 원인 분석 페이지는 C 문장이라 등급을 넓혀 시험
     cfg.low_relevance_patterns, cfg.low_relevance_weight = ["원인"], 0.3     # 원인 분석 페이지 → 관련성 낮음 0.3 → 점수 미달
     out, res = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, fake_client)
     held = [ll for ll in res.labeled if ll.page_title == "원인 분석" and ll.label in ("A", "B", "C", "D")]
@@ -139,7 +148,7 @@ def test_history_diff_between_runs(sample_dir, fake_client, tmp_path):
     out2, second = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, type(fake_client)())
     assert second.info.prev_run_id == first.info.run_id
     assert any("목록 점수 기준" in s for s in second.info.settings_diff)
-    assert second.info.changes["left"] == sum(1 for ll in first.labeled if ll.label in ("A", "B", "C", "D"))
+    assert second.info.changes["left"] == sum(1 for ll in first.labeled if in_review_list(ll))
     assert second.changes and all(r["kind"] == "목록 이탈" and r["text"] for r in second.changes)
     wb = load_workbook(str(out2))
     rows = [r for r in wb["변경 사항"].iter_rows(min_row=2, values_only=True)]

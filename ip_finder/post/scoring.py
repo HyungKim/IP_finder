@@ -8,7 +8,7 @@
   - 분류기만(제로샷): min(0.9, 0.65 + 유사도 차이)
   - LLM 판정이 분류기와 불일치: 0.65
   - 판정 실패(?): 0
-점수 = 신뢰도 × 페이지 가중치. 등급이 A~D 이고 점수 ≥ accept_score 이면 검토 목록, 아니면 보류(사유 기록).
+점수 = 신뢰도 × 페이지 가중치. 두 단계를 통과(stage_out == 0)하고 점수 ≥ accept_score 이면 검토 목록, 아니면 보류(사유 기록).
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def apply_scores(labeled: list[LabeledLine], cfg: Config, trained: bool) -> int:
         ll.confidence = round(float(confidence(ll, trained)), 3)
         ll.score = 1.0 if ll.source == "gold" else round(ll.confidence * ll.page_weight, 3)
         ll.hold_reason = ""
-        if ll.label in REVIEW_GRADES and ll.score < cfg.accept_score:
+        if ll.stage_out == 0 and ll.label in REVIEW_GRADES and ll.score < cfg.accept_score:
             why = []
             if ll.page_weight < 1.0:
                 why.append(f"가중치 {ll.page_weight:.2f}")
@@ -58,8 +58,22 @@ def apply_scores(labeled: list[LabeledLine], cfg: Config, trained: bool) -> int:
 
 
 def in_review_list(ll: LabeledLine) -> bool:
-    return ll.label in REVIEW_GRADES and not ll.hold_reason
+    """검토 목록: 두 단계 통과 + 대상 등급 + 점수 기준 이상."""
+    return ll.stage_out == 0 and ll.label in REVIEW_GRADES and not ll.hold_reason
 
 
 def in_hold_list(ll: LabeledLine) -> bool:
-    return ll.label in ("X?", "?") or (ll.label in REVIEW_GRADES and bool(ll.hold_reason))
+    """보류: 점수 미달, 판정 실패, 1차에서 X 였지만 기술 단서어가 있는 X?."""
+    if ll.stage_out == 0:
+        return ll.label in ("X?", "?") or (ll.label in REVIEW_GRADES and bool(ll.hold_reason))
+    return ll.stage_out == 1 and ll.label == "X?"
+
+
+def is_stage1_out(ll: LabeledLine) -> bool:
+    """1차(분류기)에서 제외된 문장 (X? 는 보류로 가므로 제외)."""
+    return ll.stage_out == 1 and ll.label != "X?"
+
+
+def is_stage2_out(ll: LabeledLine) -> bool:
+    """1차를 통과했지만 2차 LLM(또는 후처리 보정·골드)이 대상 등급이 아니라고 본 문장."""
+    return ll.stage_out == 2

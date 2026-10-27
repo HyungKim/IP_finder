@@ -13,7 +13,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from ..models import Document, LabeledLine, RunInfo
-from ..post import in_hold_list, in_review_list
+from ..post import in_hold_list, in_review_list, is_stage1_out, is_stage2_out
 from ..post.templates import discussion_point
 from ..prep.page_rules import IMAGE_PAGE
 
@@ -44,19 +44,18 @@ def stage_labels(ll: LabeledLine) -> tuple[str, str]:
 
 
 def is_llm_rejected(ll: LabeledLine) -> bool:
-    """LLM 2차가 X 로 돌려보낸 문장. cascade 에서는 분류기 1차를 통과한 것들이다 (llm 모드의 X 도 여기).
-    안전장치가 X? 로 살린 문장도 여기에 두어, 잘못 제외됐는지 한 시트에서 보게 한다."""
-    return ll.llm_label == "X" and ll.source == "llm"
+    """1차를 통과했지만 2차(LLM, 또는 보정·골드)가 대상 등급이 아니라고 본 문장. '2차 제외' 시트."""
+    return is_stage2_out(ll)
 
 
 def is_clf_rejected(ll: LabeledLine) -> bool:
-    """분류기 1차에서 X 로 제외된 문장 (골드가 X 로 확정한 문장도 여기). X? 는 보류 시트."""
-    return ll.label == "X" and ll.source != "llm"
+    """분류기 1차에서 대상 등급이 아니라고 본 문장 (X? 는 보류 시트). '1차 제외 (참고)' 시트."""
+    return is_stage1_out(ll)
 
 
 def is_held(ll: LabeledLine) -> bool:
-    """보류 시트: 점수 미달 A~D, 1차 단계의 X?, 판정 실패. LLM 2차가 제외한 문장은 '2차 제외' 시트로."""
-    return in_hold_list(ll) and not is_llm_rejected(ll)
+    """보류 시트: 점수 미달, 1차 단계의 X?, 판정 실패."""
+    return in_hold_list(ll)
 
 
 def _sheet(wb: Workbook, title: str, headers: list[str], widths: list[int], first: bool = False):
@@ -122,7 +121,7 @@ def write_report(out: Path, doc: Document, labeled: list[LabeledLine], info: Run
                 note="보류된 문장이 없습니다.")
 
     _line_sheet(wb, SHEET_LLM_OUT, [ll for ll in labeled if is_llm_rejected(ll)],
-                note=("분류기 1차에서 뽑힌 문장 중 LLM 2차가 제외한 문장이 없습니다." if cascade else
+                note=(f"분류기 1차에서 뽑힌 문장 중 LLM 2차가 {info.target_grades} 가 아니라고 본 문장이 없습니다." if cascade else
                       "이 모드에서는 LLM 2차 판정이 없습니다 (cascade 모드에서 채워짐)." if info.mode == "fast" else "LLM 이 제외한 문장이 없습니다."))
 
     ws = _sheet(wb, "페이지", ["페이지", "제목", "관련성", "가중치", "근거", "상태", "문장", "목록", "보류", "1차 제외", "2차 제외", "제목 출처"],
@@ -174,7 +173,9 @@ def write_report(out: Path, doc: Document, labeled: list[LabeledLine], info: Run
     rows = [
         ("입력 파일", info.source), ("실행 ID", info.run_id or "-"), ("직전 실행 ID", info.prev_run_id or "-"),
         ("판정 모드", info.mode),
-        ("판정 흐름", {"cascade": "분류기 1차 추출(X 제외) → 후보 전부 LLM 2차 판정 → 두 단계 통과만 검토 목록", "fast": "분류기만", "llm": "전부 LLM"}.get(info.mode, info.mode)),
+        ("추출 등급", info.target_grades),
+        ("판정 흐름", {"cascade": f"분류기 1차: {info.target_grades} 로 판정된 문장만 후보 → LLM 2차: 후보가 {info.target_grades} 인지 판정해 최종 등급 → 두 단계 통과만 검토 목록",
+                   "fast": f"분류기만 ({info.target_grades} 만 목록)", "llm": f"전부 LLM ({info.target_grades} 만 목록)"}.get(info.mode, info.mode)),
         ("단계별 문장 수", f"전체 {len(labeled)} → 1차 제외 {n_clf_out} → 2차 후보 {n_cand} → 2차 제외 {n_llm_out} → 보류 {sum(1 for ll in labeled if is_held(ll))} → 검토 목록 {sum(list_counts.values())}"),
         ("LLM 모델", info.model), ("프롬프트 버전", info.prompt_version),
         ("임베딩 모델", info.embed_model or "-"), ("분류기", info.classifier or "-"),
@@ -186,7 +187,7 @@ def write_report(out: Path, doc: Document, labeled: list[LabeledLine], info: Run
         ("페이지 수", info.pages_total), ("라벨링 페이지", info.pages_labeled),
         ("제외 페이지", info.pages_excluded), ("이미지 페이지", info.pages_image),
         ("LLM 호출", info.llm_calls), ("캐시 적중", info.cache_hits),
-        ("검토 목록", ", ".join(f"{g}: {list_counts.get(g, 0)}" for g in ("A", "B", "C", "D")) + f" (합 {sum(list_counts.values())})"),
+        ("검토 목록", ", ".join(f"{g}: {list_counts.get(g, 0)}" for g in info.target_grades.split(",")) + f" (합 {sum(list_counts.values())})"),
         ("등급 분포(전체)", ", ".join(f"{g}: {grade_counts.get(g, 0)}" for g in ("A", "B", "C", "D", "X", "X?", "?"))),
         ("직전 실행 대비", ", ".join(f"{k}: {v}" for k, v in (info.changes or {}).items() if k != "total" and v) or ("변경 없음" if info.prev_run_id else "-")),
         ("달라진 설정", "; ".join(info.settings_diff) or "-"),

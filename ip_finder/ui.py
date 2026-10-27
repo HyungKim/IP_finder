@@ -38,6 +38,7 @@ MODES = [("cascade", "cascade  —  분류기 1차 추출 → 후보 전부 LLM 
          ("llm", "llm  —  전부 LLM, 가장 느림")]
 SOURCE_NAME = {"clf": "분류기", "llm": "LLM", "verified": "분류기+LLM", "gold": "골드"}
 VIEWS = ["검토 목록", "A", "B", "C", "D", "보류", "2차 제외 (1차 통과분)", "1차 제외 (참고)"]
+GRADE_CHOICES = [("A,B", "A·B  —  수단·효과만 (기본, 빠름)"), ("A,B,C,D", "A·B·C·D  —  과제·계획까지")]
 USER_CONFIG = app_root() / CONFIG_NAME     # 설치 폴더의 ip_finder.toml (설치본마다 따로)
 
 
@@ -167,8 +168,12 @@ class App(tk.Tk):
         ttk.Label(f_opt, text="판정 모드").grid(row=0, column=0, sticky="w", padx=8, pady=4)
         self.mode_var = tk.StringVar(value=next((d for k, d in MODES if k == self.cfg.mode), MODES[0][1]))
         ttk.Combobox(f_opt, textvariable=self.mode_var, values=[d for _, d in MODES], state="readonly", width=52).grid(row=0, column=1, columnspan=3, sticky="w", padx=4)
+        ttk.Label(f_opt, text="추출 등급").grid(row=0, column=4, sticky="e", padx=8)
+        cur = ",".join(self.cfg.targets())
+        self.grades_var = tk.StringVar(value=next((d for k, d in GRADE_CHOICES if k == cur), GRADE_CHOICES[0][1]))
+        ttk.Combobox(f_opt, textvariable=self.grades_var, values=[d for _, d in GRADE_CHOICES], state="readonly", width=30).grid(row=0, column=5, columnspan=2, sticky="w", padx=4)
         self.pw_var = tk.BooleanVar(value=self.cfg.page_weight_enabled)
-        ttk.Checkbutton(f_opt, text="페이지 가중치 적용 (관련성 낮음 페이지는 점수를 낮춤)", variable=self.pw_var).grid(row=0, column=4, columnspan=3, sticky="w", padx=8)
+        ttk.Checkbutton(f_opt, text="페이지 가중치 적용 (관련성 낮음 페이지는 점수를 낮춤)", variable=self.pw_var).grid(row=1, column=4, columnspan=3, sticky="w", padx=8)
 
         ttk.Label(f_opt, text="LLM 모델").grid(row=1, column=0, sticky="w", padx=8, pady=4)
         self.model_var = tk.StringVar(value=self.cfg.model)
@@ -179,12 +184,12 @@ class App(tk.Tk):
         self.embed_box = ttk.Combobox(f_opt, textvariable=self.embed_var, values=[self.cfg.embed_model], width=18)
         self.embed_box.grid(row=1, column=3, sticky="w", padx=4)
         self.cache_var = tk.BooleanVar(value=self.cfg.use_cache)
-        ttk.Checkbutton(f_opt, text="캐시 사용 (같은 페이지는 다시 판정하지 않음)", variable=self.cache_var).grid(row=1, column=4, columnspan=3, sticky="w", padx=8)
+        ttk.Checkbutton(f_opt, text="캐시 사용", variable=self.cache_var).grid(row=2, column=4, columnspan=3, sticky="w", padx=8)
 
         ttk.Label(f_opt, text="목록 점수 기준").grid(row=2, column=0, sticky="w", padx=8, pady=4)
         self.accept_var = tk.StringVar(value=str(self.cfg.accept_score))
         ttk.Entry(f_opt, textvariable=self.accept_var, width=8).grid(row=2, column=1, sticky="w", padx=4)
-        ttk.Label(f_opt, text="(신뢰도×페이지 가중치. 미만은 보류 시트. 1차·2차 결과는 미리보기의 '보기'와 Excel 시트로 확인)").grid(row=2, column=1, columnspan=6, sticky="w", padx=(70, 0))
+        ttk.Label(f_opt, text="(신뢰도×페이지 가중치. 미만은 보류 시트)").grid(row=2, column=1, columnspan=3, sticky="w", padx=(70, 0))
 
         ttk.Label(f_opt, text="결과 위치").grid(row=3, column=0, sticky="w", padx=8, pady=4)
         self.out_mode = tk.StringVar(value="beside")
@@ -481,10 +486,11 @@ class App(tk.Tk):
     def build_cfg(self, mode: str | None = None) -> Config:
         mode = mode or next(k for k, d in MODES if d == self.mode_var.get())
         low, high, low_w, accept = self.current_rules()
+        grades = next((k for k, d in GRADE_CHOICES if d == self.grades_var.get()), "A,B")
         return Config.load(self.cfg.config_path or None, mode=mode, model=self.model_var.get().strip() or None,
                            embed_model=self.embed_var.get().strip() or None, use_cache=self.cache_var.get(),
                            page_weight_enabled=self.pw_var.get(), low_relevance_patterns=low, high_relevance_patterns=high,
-                           low_relevance_weight=low_w, accept_score=accept,
+                           low_relevance_weight=low_w, accept_score=accept, target_grades=grades,
                            gold_paths=self.cfg.gold_paths, use_gold=self.cfg.use_gold, history_path=self.cfg.history_path,
                            cache_path=self.cfg.cache_path, classifier_path=self.cfg.classifier_path)
 
@@ -621,8 +627,8 @@ class App(tk.Tk):
         result = None
         last_name, summary = "", ""
         t_all = time.time()
-        self._log(f"== {len(files)}개 파일, 모드 {cfg.mode}, LLM {cfg.model}, 임베딩 {cfg.embed_model}, 점수 기준 {cfg.accept_score}, "
-                  f"페이지 가중치 {'켬' if cfg.page_weight_enabled else '끔'}")
+        self._log(f"== {len(files)}개 파일, 모드 {cfg.mode}, 추출 등급 {','.join(cfg.targets())}, LLM {cfg.model}, 임베딩 {cfg.embed_model}, "
+                  f"점수 기준 {cfg.accept_score}, 페이지 가중치 {'켬' if cfg.page_weight_enabled else '끔'}")
         for f in files:
             self._check_cancel()
             t0 = time.time()
@@ -887,7 +893,7 @@ class App(tk.Tk):
             return
         s, st = r.get("settings", {}), r.get("stats", {})
         parts = [f"{r.get('run_id')}  {r.get('source_name')}  —  {s.get('mode')} / LLM {s.get('model')} / 임베딩 {s.get('embed_model')} / 분류기 {s.get('classifier')} / "
-                 f"프롬프트 {s.get('prompt_version')} / 점수 기준 {s.get('accept_score')} / 페이지 가중치 {'켬' if s.get('page_weight_enabled', True) else '끔'} (낮음 {s.get('low_relevance_weight', '-')}, 키워드 {len(s.get('low_relevance_patterns') or [])}개)",
+                 f"추출 등급 {s.get('target_grades', 'A,B')} / 프롬프트 {s.get('prompt_version')} / 점수 기준 {s.get('accept_score')} / 페이지 가중치 {'켬' if s.get('page_weight_enabled', True) else '끔'} (낮음 {s.get('low_relevance_weight', '-')}, 키워드 {len(s.get('low_relevance_patterns') or [])}개)",
                  f"목록 {st.get('list', 0)} (A{st.get('A', 0)} B{st.get('B', 0)} C{st.get('C', 0)} D{st.get('D', 0)}), 보류 {st.get('held', 0)}, 문장 {st.get('lines', 0)}, LLM 호출 {st.get('llm_calls', 0)}, {r.get('elapsed_sec', 0)}초"]
         if r.get("prev_run_id"):
             ch = r.get("changes") or {}

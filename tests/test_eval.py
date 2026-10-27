@@ -66,7 +66,8 @@ def test_feedback_import_builds_and_merges_gold(sample_dir, cfg, fake_client, tm
     gold = Path(rec["gold"])
     assert gold.name == "sample_report_gold.xlsx" and rec["skipped"] == 1 and rec["added"] == rec["feedback_rows"] >= 3
     rows = load_gold(gold)
-    first = [r for r in res.labeled if r.label in ("A", "B", "C", "D") and not r.hold_reason]
+    from ip_finder.post import in_review_list
+    first = [r for r in res.labeled if in_review_list(r)]
     by_text = {r["문장"]: r for r in rows}
     assert by_text[first[0].text]["정답"] == first[0].label and by_text[first[1].text]["정답"] == "X" and by_text[first[2].text]["정답"] == "C"
     assert by_text[first[2].text]["메모"] == "원인 설명임" and by_text[first[0].text]["제목"] == first[0].page_title
@@ -108,13 +109,13 @@ def test_gold_override_in_new_runs(sample_dir, cfg, fake_client, tmp_path):
     out2, res2 = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, client2)
     by_key = {ll.key: ll for ll in res2.labeled}
     a, b = by_key[listed[0].key], by_key[listed[1].key]
-    assert a.label == "X" and a.source == "gold" and "골드 반영(" in a.notes[-1] and a.hold_reason == ""
-    assert b.label == "D" and b.source == "gold" and b.score == 1.0 and b.confidence == 1.0
+    assert a.label == "X" and a.source == "gold" and "골드 반영(" in a.notes[-1] and a.hold_reason == "" and a.stage_out == 2
+    assert b.label == "D" and b.source == "gold" and b.score == 1.0 and b.confidence == 1.0 and b.stage_out == 2   # D 는 대상 등급 밖
     assert res2.info.gold_lines == 2 and res2.info.gold_changed == 2 and "2문장" in res2.info.gold_desc
     assert any("골드" in s for s in res2.info.settings_diff)                    # 이력에 골드 변화가 설정 차이로 찍힘
     wb2 = load_workbook(str(out2))
     assert not any(r[5] == listed[0].text for r in wb2["검토 목록"].iter_rows(min_row=2, values_only=True))   # X 로 확정 → 목록에서 빠짐
-    assert any(r[5] == listed[0].text and r[11] == "골드" for r in wb2["1차 제외 (참고)"].iter_rows(min_row=2, values_only=True))
+    assert any(r[5] == listed[0].text and r[11] == "골드" for r in wb2["2차 제외"].iter_rows(min_row=2, values_only=True))
     info = dict(r[:2] for r in wb2["실행 정보"].iter_rows(min_row=2, values_only=True) if r[0])
     assert info["골드 정답 반영"].startswith("2문장")
     # 골드 반영을 끄면 모델 판정으로 돌아간다. 채점(eval)과 골드 시트 초안에는 반영되지 않는다
@@ -143,7 +144,7 @@ def test_gold_lines_skip_llm_calls(sample_dir, cfg, cfg_cascade, fake_client, fa
     c2 = type(fake_client)()
     res_h = run_file(sample_dir / "sample_report.pptx", cfg_cascade, c2, embedder=fake_embedder)   # cascade: 골드 문장은 2차 후보에서 빠짐
     assert all(ll.source == "gold" for ll in res_h.labeled if ll.page_no == 4)
-    assert res_h.info.llm_lines == sum(1 for ll in res_h.labeled if ll.page_no != 4 and ll.clf_label != "X")
+    assert res_h.info.llm_lines == sum(1 for ll in res_h.labeled if ll.page_no != 4 and ll.clf_label in ("A", "B"))
     assert not any("(원인 분석)" in u for u in c2.inputs)                        # 4페이지 문장은 LLM 입력에 없음
 
 

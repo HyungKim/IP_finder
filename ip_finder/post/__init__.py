@@ -3,7 +3,7 @@ from .title_fix import apply_title_fix
 from .safety_net import apply_safety_net
 from .sections import assign_sections, section_name
 from .templates import discussion_point
-from .scoring import apply_scores, in_hold_list, in_review_list, REVIEW_GRADES
+from .scoring import apply_scores, in_hold_list, in_review_list, is_stage1_out, is_stage2_out, REVIEW_GRADES
 
 __all__ = ["apply_title_fix", "apply_safety_net", "assign_sections", "section_name", "discussion_point",
-           "apply_scores", "in_hold_list", "in_review_list", "REVIEW_GRADES"]
+           "apply_scores", "in_hold_list", "in_review_list", "is_stage1_out", "is_stage2_out", "REVIEW_GRADES"]

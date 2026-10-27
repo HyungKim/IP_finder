@@ -35,16 +35,16 @@ def score(pairs: list[tuple[str, str]]) -> dict:
             "per_grade": per, "confusion": {g: dict(conf[g]) for g in LABELS}}
 
 
-def list_metrics(rows: list[tuple[str, str, float]], accept: float) -> dict:
-    """rows = [(정답, 예측 등급, 점수)]. 예측이 A~D 이고 점수 ≥ accept 이면 목록에 든 것으로 본다.
-    정밀도(비X) = 목록 중 정답이 X가 아닌 비율, 정밀도(등급) = 목록 중 등급까지 맞은 비율, 재현율 = 정답 비X 중 목록에 든 비율."""
-    in_list = [(g, p) for g, p, s in rows if p in ("A", "B", "C", "D") and s >= accept]
-    pos = sum(1 for g, _, _ in rows if g != "X")
+def list_metrics(rows: list[tuple[str, str, float]], accept: float, targets: tuple[str, ...] = ("A", "B")) -> dict:
+    """rows = [(정답, 예측 등급, 점수)]. 예측이 대상 등급이고 점수 ≥ accept 이면 목록에 든 것으로 본다.
+    정밀도(대상) = 목록 중 정답이 대상 등급인 비율, 정밀도(등급) = 등급까지 맞은 비율, 재현율 = 정답이 대상 등급인 문장 중 목록에 든 비율."""
+    in_list = [(g, p) for g, p, s in rows if p in targets and s >= accept]
+    pos = sum(1 for g, _, _ in rows if g in targets)
     n = len(in_list)
-    nonx = sum(1 for g, _ in in_list if g != "X")
+    hit = sum(1 for g, _ in in_list if g in targets)
     exact = sum(1 for g, p in in_list if g == p)
-    return {"accept": accept, "list": n, "precision_nonx": nonx / n if n else 0.0, "precision_grade": exact / n if n else 0.0,
-            "recall": nonx / pos if pos else 0.0, "positives": pos}
+    return {"accept": accept, "list": n, "precision_nonx": hit / n if n else 0.0, "precision_grade": exact / n if n else 0.0,
+            "recall": hit / pos if pos else 0.0, "positives": pos, "targets": "".join(targets)}
 
 
 def evaluate(gold_path: Path, cfg: Config, rerun: bool = True, client=None, embedder=None, classifier=None) -> dict:
@@ -54,7 +54,7 @@ def evaluate(gold_path: Path, cfg: Config, rerun: bool = True, client=None, embe
     info = RunInfo(source=str(gold_path), model=cfg.model, prompt_version="", started_at="")
     sweep = None
     if rerun:
-        from ..pipeline import Services, label_pages
+        from ..pipeline import Services, finalize_stages, label_pages
         groups: dict[tuple, list[dict]] = defaultdict(list)
         for r in rows:
             groups[(r.get("파일"), r.get("페이지"))].append(r)
@@ -76,11 +76,12 @@ def evaluate(gold_path: Path, cfg: Config, rerun: bool = True, client=None, embe
             apply_title_fix(labeled)
         if cfg.safety_net:
             apply_safety_net(labeled)
+        finalize_stages(labeled, cfg)
         trained = getattr(svc.classifier, "kind", "") == "trained"
         apply_scores(labeled, cfg, trained)
         raw_pairs = [(r["정답"], _norm(ll.raw_label)) for r, ll in zip(order, labeled)]
         final_pairs = [(r["정답"], _norm(ll.label)) for r, ll in zip(order, labeled)]
-        triples = [(r["정답"], ll.label, ll.score) for r, ll in zip(order, labeled)]
+        triples = [(r["정답"], ll.label if in_review_list(ll) or ll.stage_out == 0 else "X", ll.score) for r, ll in zip(order, labeled)]
         source = f"재실행: 모드 {info.mode}, LLM {cfg.model}" + (f", 임베딩 {info.embed_model}, {info.classifier}" if info.embed_model else "")
         source += f", 페이지 가중치 {'켬' if cfg.page_weight_enabled else '끔'}"
     else:
@@ -94,8 +95,9 @@ def evaluate(gold_path: Path, cfg: Config, rerun: bool = True, client=None, embe
                 s = 1.0
             triples.append((r["정답"], str(r.get("후처리 라벨") or "").strip().upper(), s))
         source = "시트에 저장된 라벨"
-    lm = list_metrics(triples, cfg.accept_score)
-    sweep = [list_metrics(triples, a) for a in SWEEP]
+    tg = tuple(cfg.targets())
+    lm = list_metrics(triples, cfg.accept_score, tg)
+    sweep = [list_metrics(triples, a, tg) for a in SWEEP]
     return {"source": source, "rows": len(rows), "raw": score(raw_pairs), "final": score(final_pairs),
             "llm_lines": info.llm_lines, "clf_lines": info.clf_lines, "llm_calls": info.llm_calls,
             "list": lm, "sweep": sweep, "accept_score": cfg.accept_score}
@@ -116,10 +118,10 @@ def print_report(rep: dict) -> None:
             print(f"    {g:<3} " + " ".join(f"{s['confusion'][g].get(p, 0):>3}" for p in LABELS))
     lm = rep.get("list")
     if lm:
-        print(f"\n[검토 목록] 점수 기준 {lm['accept']:.2f}: 목록 {lm['list']}문장 (정답 비X {lm['positives']}문장)")
-        print(f"  정밀도(비X) {lm['precision_nonx']:.1%}   정밀도(등급 일치) {lm['precision_grade']:.1%}   재현율 {lm['recall']:.1%}")
-        print("  점수 기준별:  기준   목록  정밀도(비X)  정밀도(등급)  재현율")
+        print(f"\n[검토 목록] 추출 등급 {lm.get('targets', 'AB')}, 점수 기준 {lm['accept']:.2f}: 목록 {lm['list']}문장 (정답이 대상 등급인 문장 {lm['positives']})")
+        print(f"  정밀도(대상 등급) {lm['precision_nonx']:.1%}   정밀도(등급 일치) {lm['precision_grade']:.1%}   재현율 {lm['recall']:.1%}")
+        print("  점수 기준별:  기준   목록  정밀도(대상)  정밀도(등급)  재현율")
         for m in rep.get("sweep", []):
             mark = " ◀ 현재" if abs(m["accept"] - lm["accept"]) < 1e-9 else ""
             print(f"               {m['accept']:.2f}  {m['list']:>5}   {m['precision_nonx']:7.1%}      {m['precision_grade']:7.1%}    {m['recall']:6.1%}{mark}")
-        print("  정밀도 우선이면 정밀도(비X)가 95% 이상이 되는 가장 낮은 기준을 고르면 됩니다.")
+        print("  정밀도 우선이면 정밀도(대상 등급)가 95% 이상이 되는 가장 낮은 기준을 고르면 됩니다.")

@@ -69,6 +69,7 @@ class LabeledLine:
     confidence: float = 1.0         # 판정 신뢰도 0~1 (post.scoring)
     score: float = 1.0              # 신뢰도 × 가중치
     hold_reason: str = ""           # 비어 있지 않으면 검토 목록 대신 보류
+    stage_out: int = 0              # 0 통과 / 1 분류기 1차에서 제외 / 2 LLM 2차(또는 후처리·골드)에서 제외
 
     @property
     def key(self) -> tuple[int, int]:
@@ -94,7 +95,8 @@ class RunInfo:
     classifier: str = ""            # 제로샷 | 학습(경로)
     clf_lines: int = 0              # 분류기만으로 끝난 문장 수 (cascade: 1차에서 X 로 제외된 문장)
     llm_lines: int = 0              # LLM이 판정한 문장 수 (cascade: 1차 후보)
-    llm_rejected: int = 0           # cascade: LLM 2차에서 X 로 돌려보낸 후보 수
+    llm_rejected: int = 0           # cascade: LLM 2차에서 대상 등급이 아니라고 본 후보 수
+    target_grades: str = "A,B"      # 추출 대상 등급
     embed_sec: float = 0.0
     llm_sec: float = 0.0
     accept_score: float = 0.5       # 검토 목록 진입 점수
