@@ -14,7 +14,7 @@ def test_prompts():
 
 
 def test_label_grouped_groups_by_page_type(fake_client):
-    cfg = Config(use_cache=False, mode="cascade")
+    cfg = Config(use_cache=False, mode="cascade", group_by="type")
     pages = [Page(no=4, title="원인 분석", lines=[Line(1, "열팽창계수 차이로 응력 발생"), Line(2, "두께 편차 확인")]),
              Page(no=5, title="개선안 1: 구조 변경", lines=[Line(1, "접착제를 실리콘계로 변경")]),
              Page(no=11, title="향후 계획", lines=[Line(1, "신규 방식 적용 예정")])]

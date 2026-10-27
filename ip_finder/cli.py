@@ -17,7 +17,7 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--mode", choices=["cascade", "fast", "llm"], help="cascade: 분류기 1차 추출(X 제외) → 후보 전부 LLM 2차 판정 (기본) / fast: 분류기만 / llm: 전부 LLM")
     p.add_argument("--embed-model", help="Ollama 임베딩 모델 (기본 bge-m3. KURE-v1 은 tools/import_kure.bat 후 kure-v1)")
     p.add_argument("--grades", help="추출 대상 등급 (기본 A,B). 1차는 이 등급 문장만 후보로, 2차는 이 등급인지 판정. 예: A,B,C,D")
-    p.add_argument("--group-by", choices=["type", "page"], help="2차 LLM 묶음 기준 (기본 type: 페이지 유형별 / page: 페이지별)")
+    p.add_argument("--group-by", choices=["page", "type"], help="2차 LLM 묶음 기준 (기본 page: 페이지별 / type: 페이지 유형별, 호출 적음)")
     p.add_argument("--accept-score", type=float, help="신뢰도×가중치 가 이 값 이상이어야 검토 목록 (기본 0.5). 미만은 보류 시트")
     p.add_argument("--no-page-weight", action="store_true", help="페이지 가중치 끔 (모든 페이지 1.0)")
     p.add_argument("--low-weight", type=float, help="관련성 낮음 페이지의 가중치 (기본 0.4, 0 이면 판정 안 함)")

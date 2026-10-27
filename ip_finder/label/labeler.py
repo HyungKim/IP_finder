@@ -105,11 +105,11 @@ def label_grouped(client: LabelClient, entries: list[tuple[Page, Line]], cfg: Co
                   info: RunInfo | None = None, system: str | None = None, cancel=None,
                   progress=None) -> dict[tuple[int, int], str]:
     """후보 문장들을 묶어 호출. {(페이지, 줄): 라벨}
-    cfg.group_by == "type": 페이지 유형별로 묶고 문장마다 슬라이드 제목을 붙인다 (호출 수 적음).
-    cfg.group_by == "page": 페이지별로 묶어 제목·힌트를 머리에 한 번 쓴다 (페이지 문맥 유지, 호출 수 = 후보가 있는 페이지 수)."""
+    cfg.group_by == "page" (기본): 페이지별로 묶어 제목·힌트를 머리에 한 번 쓴다 (페이지 문맥 유지, 호출 수 = 후보가 있는 페이지 수).
+    cfg.group_by == "type": 페이지 유형별로 묶고 문장마다 슬라이드 제목을 붙인다 (호출 수 적음)."""
     system = system or load_system_prompt(cfg.prompt_variant)
     result: dict[tuple[int, int], str] = {}
-    if getattr(cfg, "group_by", "type") == "page":
+    if getattr(cfg, "group_by", "page") != "type":
         by_page: dict[int, list[tuple[Page, Line]]] = {}
         for page, ln in entries:
             by_page.setdefault(page.no, []).append((page, ln))

@@ -69,7 +69,8 @@ def test_cascade_classifier_first_then_llm_on_candidates(sample_dir, cfg_cascade
     assert all(ll.source == "clf" and ll.llm_label == "" and ll.stage_out == 1 for ll in out1)        # 1차 제외(C·D·X)는 LLM 에 안 감
     assert all(ll.llm_label != "" and ll.source == "llm" for ll in cands)                               # A·B 후보 전부 LLM 2차
     assert res.info.llm_lines == len(cands) and res.info.clf_lines == len(out1)
-    assert 1 <= res.info.llm_calls <= 5                                                                  # 페이지 유형별 묶음
+    assert 1 <= res.info.llm_calls <= 7                                                                  # 페이지별 묶음 (후보가 있는 페이지 수)
+    assert any(u.startswith("[슬라이드 ") for u in fake_client.inputs)                                   # 페이지 프롬프트 형식
     sent = " ".join(fake_client.inputs)
     assert all(ll.text not in sent for ll in out1)
     rejected = [ll for ll in cands if ll.llm_label not in ("A", "B")]
