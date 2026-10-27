@@ -23,7 +23,7 @@ except ImportError as e:  # pragma: no cover
     raise SystemExit("tkinter 를 찾을 수 없습니다. 윈도우 python.org 설치본에는 기본 포함되며, macOS Homebrew 는 'brew install python-tk' 가 필요합니다.") from e
 
 from . import __version__
-from .config import Config
+from .config import CONFIG_NAME, Config, app_root
 from .models import LabeledLine
 from .post import in_hold_list, in_review_list
 from .post.templates import discussion_point
@@ -38,7 +38,7 @@ MODES = [("hybrid", "hybrid  —  분류기 확신분 채택, 애매한 문장�
 SOURCE_NAME = {"clf": "분류기", "llm": "LLM", "verified": "분류기+LLM"}
 TYPE_LABEL = {"means": "수단(개선안·설계)", "result": "결과(검증·효과)", "problem": "과제(원인·문제)", "plan": "계획(향후)",
               "status": "현황(실적·요약)", "general": "기타(유형 모름)"}
-USER_CONFIG = Path.home() / ".ip_finder" / "ip_finder.toml"
+USER_CONFIG = app_root() / CONFIG_NAME     # 설치 폴더의 ip_finder.toml (설치본마다 따로)
 
 
 class Cancelled(Exception):
@@ -530,7 +530,7 @@ class App(tk.Tk):
         cfg.config_path = ""
         out = cfg.save(p)
         self.cfg = Config.load(out)
-        self.rules_status.set(f"저장: {out}. 이후 UI와 명령줄(ip-finder --config 또는 ~/.ip_finder/ip_finder.toml)이 이 설정을 읽습니다.")
+        self.rules_status.set(f"저장: {out}. 설치 폴더의 ip_finder.toml 은 UI와 명령줄이 자동으로 읽고, 다른 위치는 ip-finder --config 로 지정합니다.")
 
     def reset_rules(self) -> None:
         base = Config()

@@ -1,9 +1,23 @@
-"""실행 설정. 기본값은 PROPOSAL.md의 결정 사항을 따르고, TOML 파일과 CLI 인자로 덮어쓴다."""
+"""실행 설정. 기본값은 PROPOSAL.md의 결정 사항을 따르고, TOML 파일과 CLI 인자로 덮어쓴다.
+
+상태 파일(캐시, 학습 분류기, 실행 이력)은 기본적으로 **설치 폴더의 data/** 아래에 둔다. 설치본마다 완전히 따로 관리되고,
+사용자 홈 폴더에는 아무것도 만들지 않는다. 상대 경로는 설정 파일이 있으면 그 파일의 폴더, 없으면 설치 폴더(app_root) 기준이다."""
 from __future__ import annotations
 
+import os
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
+
+CONFIG_NAME = "ip_finder.toml"
+
+
+def app_root() -> Path:
+    """설치 폴더. 소스 폴더에서 실행하면(ip_finder/ 옆에 pyproject.toml 또는 install.bat) 그 폴더, 아니면 현재 폴더."""
+    root = Path(__file__).resolve().parent.parent
+    if (root / "pyproject.toml").exists() or (root / "install.bat").exists():
+        return root
+    return Path(os.getcwd())
 
 DEFAULT_PAGE_EXCLUDE = [
     r"목\s*차", r"차례", r"contents", r"agenda",
@@ -35,7 +49,7 @@ class Config:
     # 판정 모드
     mode: str = "hybrid"                # hybrid: 분류기 확신분 채택 + 애매한 문장만 LLM / fast: 분류기만 / llm: 전부 LLM
     embed_model: str = "bge-m3"         # Ollama 임베딩 모델. KURE-v1 은 tools/import_kure.bat 로 들여온 뒤 "kure-v1"
-    classifier_path: str = "~/.ip_finder/classifier.npz"   # 학습된 분류기. 없으면 원형 문장 제로샷
+    classifier_path: str = "data/classifier.npz"   # 학습된 분류기(설치 폴더 기준). 없으면 원형 문장 제로샷
     confidence_threshold: float | None = None   # 이 값 미만의 확신은 LLM으로. None이면 제로샷 0.05 / 학습 분류기 0.25
     group_max_chars: int = 1200         # 유형별 묶음 호출 한 번에 넣는 최대 글자 수
     verify_grades: str = ""             # 분류기가 채택한 이 등급 문장을 LLM으로 재확인 (예: "A" 또는 "A,B"). 비우면 안 함
@@ -55,34 +69,43 @@ class Config:
     safety_net: bool = True
     # 캐시와 이력
     use_cache: bool = True
-    cache_path: str = "~/.ip_finder/cache.sqlite"
-    history_path: str = "~/.ip_finder/history"   # 실행 스냅샷(원문 미저장)과 피드백 이력. 비우면 저장하지 않음
-    config_path: str = ""               # 실제로 읽은 설정 파일 (정보용)
+    cache_path: str = "data/cache.sqlite"          # 설치 폴더 기준
+    history_path: str = "data/history"             # 실행 스냅샷(원문 미저장)과 피드백 이력. 비우면 저장하지 않음
+    config_path: str = ""               # 실제로 읽은 설정 파일 (정보용). 상대 경로의 기준 폴더가 된다
 
     @classmethod
     def load(cls, path: str | Path | None = None, **overrides) -> "Config":
         data: dict = {}
         if path is None:
-            for cand in (Path("ip_finder.toml"), Path.home() / ".ip_finder" / "ip_finder.toml"):
+            for cand in (Path(CONFIG_NAME), app_root() / CONFIG_NAME):
                 if cand.exists():
                     path = cand
                     break
         if path:
             data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
-            data["config_path"] = str(path)
+            data["config_path"] = str(Path(path).resolve())
         known = {f.name for f in fields(cls)}
         merged = {k: v for k, v in data.items() if k in known}
         merged.update({k: v for k, v in overrides.items() if v is not None and k in known})
         return cls(**merged)
 
+    @property
+    def base_dir(self) -> Path:
+        """상대 경로의 기준: 설정 파일이 있으면 그 폴더, 없으면 설치 폴더."""
+        return Path(self.config_path).resolve().parent if self.config_path else app_root()
+
+    def resolve(self, p: str | Path) -> Path:
+        p = Path(p).expanduser()
+        return p if p.is_absolute() else self.base_dir / p
+
     def cache_file(self) -> Path:
-        return Path(self.cache_path).expanduser()
+        return self.resolve(self.cache_path)
 
     def classifier_file(self) -> Path:
-        return Path(self.classifier_path).expanduser()
+        return self.resolve(self.classifier_path)
 
     def history_dir(self) -> Path | None:
-        return Path(self.history_path).expanduser() if self.history_path else None
+        return self.resolve(self.history_path) if self.history_path else None
 
     def threshold(self, trained: bool) -> float:
         if self.confidence_threshold is not None:
@@ -127,7 +150,8 @@ def _toml_value(v) -> str:
 
 
 def to_toml(cfg: Config) -> str:
-    lines = ["# IP Finder 설정. UI '페이지 가중치 → 설정 저장'이 만든 파일. 직접 고쳐도 된다.", ""]
+    lines = ["# IP Finder 설정. UI '페이지 가중치 → 설정 저장'이 만든 파일. 직접 고쳐도 된다.",
+             "# 상대 경로(data/...)는 이 파일이 있는 폴더 기준이다.", ""]
     tables = []
     for f in fields(cfg):
         if f.name == "config_path":

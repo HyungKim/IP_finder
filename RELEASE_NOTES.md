@@ -1,6 +1,8 @@
-# IP Finder v0.4.0
+# IP Finder v0.4.1
 
-**정밀도 우선**으로 바뀌었습니다. 몇 개를 놓치더라도 확실한 것만 검토 목록에 올립니다.
+설치본을 **완전히 따로 관리**할 수 있게 했습니다. 캐시, 학습한 분류기, 실행 이력, 설정 파일이 모두 설치 폴더의 `data\` 와 `ip_finder.toml` 에만 생기고, 사용자 홈 폴더(`%USERPROFILE%\.ip_finder`)에는 아무것도 만들지 않습니다. 새 폴더에 ZIP을 풀어 `install.bat`를 실행하면 기존 설치본과 아무것도 공유하지 않습니다 (Ollama 모델만 PC 전체 공유). 이전 버전에서 학습한 분류기를 이어 쓰려면 `%USERPROFILE%\.ip_finder\classifier.npz` 를 새 폴더의 `data\classifier.npz` 로 복사하세요. `ip-finder check` 가 설치 폴더와 상태 파일 위치를 보여 줍니다.
+
+v0.4.0: **정밀도 우선**으로 바뀌었습니다. 몇 개를 놓치더라도 확실한 것만 검토 목록에 올립니다.
 
 - **페이지 가중치**: 페이지 제목(위쪽의 큰 글씨)으로 가중치를 정하고, 문장 점수 = 판정 신뢰도 × 페이지 가중치. 점수가 기준(기본 0.5) 미만이면 검토 목록 대신 보류 시트로 갑니다. 현황·고객 대응·실적 페이지의 잡음이 여기서 걸러집니다. 규칙은 설정 파일이나 UI '페이지 가중치' 탭에서 고치고, `ip-finder pages` 로 LLM 없이 확인합니다.
 - **피드백 열**: 결과 Excel의 검토 목록·보류·제외 문장 시트에 '피드백' 열(O / X / A~D 드롭다운)이 생겼습니다. `ip-finder feedback 결과.xlsx` 또는 UI 버튼 하나로 골드 시트에 합쳐지고, 그대로 `train` 에 씁니다.
@@ -8,7 +10,7 @@
 - **LLM 재확인**(옵션): 분류기가 채택한 A등급을 LLM으로 한 번 더 확인합니다 (`--verify A`, UI 체크박스).
 - `eval` 에 검토 목록 정밀도·재현율과 점수 기준별 표 추가. 프롬프트 v5 ("확신이 없으면 X"). PPTX 제목을 플레이스홀더가 없을 때 글꼴 크기로 찾습니다. 페이지 유형에 '현황' 추가.
 - **KURE-v1** 한국어 임베딩을 Ollama 로 들여오는 `tools/import_kure.bat` 와 Modelfile. 추가 Python 패키지 없음.
-- 설정 예시 `ip_finder.example.toml`. 설정 파일은 현재 폴더 또는 `~/.ip_finder/ip_finder.toml`.
+- 설정 예시 `ip_finder.example.toml`. 설정 파일은 설치 폴더 또는 현재 폴더의 `ip_finder.toml`.
 
 업데이트: 파일만 바꾸면 됩니다 (새 패키지·모델 없음). 결과 Excel 의 열 구성이 바뀌었으니 이전 결과 파일의 피드백은 새 결과 파일에 다시 적으세요.
 
@@ -35,4 +37,4 @@ v0.1.1에서는 한글 Windows의 cmd.exe가 UTF-8 배치 파일을 잘못 해�
 - 캐시(해시+라벨+벡터, 원문 미저장), 실행·피드백·학습 이력(원문 미저장), 골드 세트 생성·피드백 가져오기·채점·분류기 학습(`gold-sheet`, `feedback`, `eval`, `train`), 환경 점검(`check`), 페이지 확인(`pages`), 이력(`history`)
 - 오프라인 테스트 44건, 가짜 샘플과 결과 예시, 제안서(PROPOSAL.md)와 출력 예시(EXAMPLE.md)
 
-릴리스 만들기(저장소 소유자): `gh release create v0.4.0 dist/ip_finder_wheels_win_amd64_py312.zip --title "IP Finder v0.4.0" --notes-file RELEASE_NOTES.md`
+릴리스 만들기(저장소 소유자): `gh release create v0.4.1 dist/ip_finder_wheels_win_amd64_py312.zip --title "IP Finder v0.4.1" --notes-file RELEASE_NOTES.md`

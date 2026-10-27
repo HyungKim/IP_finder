@@ -1,5 +1,6 @@
-# IP Finder 설정 예시. 이 파일을 ip_finder.toml 로 복사해 현재 폴더(또는 ~/.ip_finder/)에 두면 자동으로 읽는다.
+# IP Finder 설정 예시. 이 파일을 ip_finder.toml 로 복사해 설치 폴더(또는 실행하는 현재 폴더)에 두면 자동으로 읽는다.
 # UI '페이지 가중치 → 설정 저장'으로 만들 수도 있다. 회사 템플릿의 제목어와 고정 문구를 여기에 적는다.
+# 캐시·분류기·이력은 기본적으로 설치 폴더의 data/ 아래에 생기며, 설치본마다 완전히 따로 관리된다. 상대 경로는 이 파일의 폴더 기준.
 
 model = "qwen3:4b-instruct"          # 정확도 우선이면 "qwen3:8b" (thinking 계열도 자동으로 think=false)
 host = "http://127.0.0.1:11434"      # 로컬 주소만 허용
@@ -26,7 +27,9 @@ page_exclude_patterns = ["목\\s*차", "차례", "contents", "agenda", "일정",
 title_fix = true                     # 원인·문제 페이지의 변경 동사 없는 A → C
 safety_net = true                    # X 인데 기술 단서어가 있으면 X? 로 보류 시트에
 use_cache = true
-history_path = "~/.ip_finder/history"   # 실행 이력(원문 미저장). "" 이면 저장 안 함
+cache_path = "data/cache.sqlite"        # 판정·임베딩 캐시 (원문 미저장)
+classifier_path = "data/classifier.npz" # ip-finder train 결과. 없으면 제로샷
+history_path = "data/history"           # 실행 이력(원문 미저장). "" 이면 저장 안 함
 
 # 유형별 기본 가중치 (키워드 규칙에 없는 제목). TOML 규칙상 테이블은 파일 끝에 둔다
 [page_type_weights]

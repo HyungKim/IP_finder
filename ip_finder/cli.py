@@ -11,7 +11,7 @@ from .config import Config
 
 
 def _common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--config", help="ip_finder.toml 경로 (기본: 현재 폴더 또는 ~/.ip_finder/ip_finder.toml)")
+    p.add_argument("--config", help="ip_finder.toml 경로 (기본: 현재 폴더 또는 설치 폴더의 ip_finder.toml)")
     p.add_argument("--model", help="Ollama LLM 모델 (기본 qwen3:4b-instruct. 정확도 우선이면 qwen3:8b)")
     p.add_argument("--host", help="Ollama 주소. 로컬(127.0.0.1)만 허용")
     p.add_argument("--mode", choices=["hybrid", "fast", "llm"], help="hybrid: 분류기 확신분 채택 + 애매한 문장만 LLM (기본) / fast: 분류기만 / llm: 전부 LLM")
@@ -20,7 +20,7 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--accept-score", type=float, help="신뢰도×가중치 가 이 값 이상이어야 검토 목록 (기본 0.5). 미만은 보류 시트")
     p.add_argument("--verify", help="분류기가 채택한 이 등급 문장을 LLM으로 재확인 (예: A 또는 A,B). 정밀도 우선 옵션")
     p.add_argument("--prompt", choices=["compact", "full"], help="시스템 프롬프트 판 (기본 compact)")
-    p.add_argument("--classifier", help="학습된 분류기 파일(.npz) 경로 (기본: ~/.ip_finder/classifier.npz)")
+    p.add_argument("--classifier", help="학습된 분류기 파일(.npz) 경로 (기본: 설치 폴더의 data/classifier.npz)")
 
 
 def _cfg(args) -> Config:
@@ -39,8 +39,7 @@ def cmd_check(args) -> int:
     cfg = _cfg(args)
     ok = True
     print(f"ip-finder {__version__} / 프롬프트 {PROMPT_VERSION} / Python {sys.version.split()[0]}")
-    if cfg.config_path:
-        print(f"  설정 파일: {cfg.config_path}")
+    print(f"  설치 폴더: {cfg.base_dir}  (설정 파일: {cfg.config_path or '없음, 기본값'})")
     for mod, name in (("pymupdf", "PyMuPDF"), ("pptx", "python-pptx"), ("openpyxl", "openpyxl"), ("numpy", "numpy")):
         try:
             m = __import__(mod)
@@ -76,7 +75,8 @@ def cmd_check(args) -> int:
     print(f"  분류기: {'학습된 분류기 ' + str(clf) if clf.exists() else '제로샷(원형 문장). 골드 세트로 ip-finder train 하면 학습 분류기 사용'}")
     print(f"  판정 모드 기본값: {cfg.mode}, 프롬프트: {cfg.prompt_variant}, 목록 점수 기준: {cfg.accept_score}, LLM 재확인: {cfg.verify_grades or '없음'}")
     print(f"  페이지 가중치 규칙 {len(cfg.page_weights)}개 (ip-finder pages <파일> 로 확인)")
-    print(f"  캐시: {cfg.cache_file()} (원문 미저장, 해시+라벨+벡터) / 이력: {cfg.history_dir() or '저장 안 함'}")
+    print(f"  캐시: {cfg.cache_file()} (원문 미저장, 해시+라벨+벡터)")
+    print(f"  이력: {cfg.history_dir() or '저장 안 함'}  — 캐시·분류기·이력은 모두 설치 폴더의 data/ 아래. 설치본마다 따로 관리됩니다")
     if sys.platform == "win32":
         try:
             import win32com.client  # noqa: F401

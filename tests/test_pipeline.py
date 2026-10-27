@@ -82,7 +82,7 @@ def test_hybrid_falls_back_to_llm_without_embedder(sample_dir, cfg_hybrid, fake_
 
 
 def test_cache_reuses_labels_and_vectors(sample_dir, fake_client, fake_embedder, tmp_path):
-    cfg = Config(use_cache=True, cache_path=str(tmp_path / "cache.sqlite"), mode="llm")
+    cfg = Config(use_cache=True, cache_path=str(tmp_path / "cache.sqlite"), mode="llm", history_path=str(tmp_path / "hist"))
     _, first = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, fake_client)
     _, second = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, fake_client)
     assert first.info.llm_calls == 7 and first.info.cache_hits == 0

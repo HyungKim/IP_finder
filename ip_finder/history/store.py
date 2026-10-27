@@ -1,4 +1,4 @@
-"""실행 스냅샷 저장소 (~/.ip_finder/history). 파일: runs/<run_id>.json, feedback.jsonl, train.jsonl.
+"""실행 스냅샷 저장소 (기본: 설치 폴더의 data/history). 파일: runs/<run_id>.json, feedback.jsonl, train.jsonl.
 스냅샷에는 문장 해시·라벨·점수·목록 여부만 들어가고 원문과 제목은 들어가지 않는다."""
 from __future__ import annotations
 

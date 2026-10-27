@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from ip_finder.config import Config
 from ip_finder.models import Document, Line, Page
 from ip_finder.pipeline import prepare
@@ -65,3 +67,18 @@ def test_page_weight_rules_and_types():
     import pytest
     with pytest.raises(Exception):
         page_weight("현황", cfg3)
+
+
+def test_state_paths_are_inside_install_folder(tmp_path):
+    from ip_finder.config import app_root
+    root = app_root()
+    c = Config()
+    assert c.cache_file() == root / "data" / "cache.sqlite" and c.history_dir() == root / "data" / "history"
+    assert c.classifier_file() == root / "data" / "classifier.npz"
+    assert Config(cache_path=str(tmp_path / "x.sqlite")).cache_file() == tmp_path / "x.sqlite"      # 절대 경로는 그대로
+    cfg_file = tmp_path / "ip_finder.toml"
+    cfg_file.write_text('cache_path = "data/c.sqlite"\nhistory_path = ""\n', encoding="utf-8")
+    loaded = Config.load(cfg_file)
+    assert loaded.cache_file() == tmp_path / "data" / "c.sqlite" and loaded.history_dir() is None   # 설정 파일 폴더 기준
+    assert loaded.base_dir == tmp_path
+    assert not (Path.home() / ".ip_finder" / "history").exists()
