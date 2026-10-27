@@ -4,20 +4,20 @@
 
 model = "qwen3:4b-instruct"          # 정확도 우선이면 "qwen3:8b" (thinking 계열도 자동으로 think=false)
 host = "http://127.0.0.1:11434"      # 로컬 주소만 허용
-mode = "hybrid"                      # hybrid | fast | llm
+mode = "cascade"                     # cascade: 분류기 1차 추출 → LLM 2차 판정 | fast: 분류기만 | llm: 전부 LLM
 embed_model = "bge-m3"               # KURE-v1 을 들여왔으면 "kure-v1"
-# confidence_threshold = 0.25        # 비우면 제로샷 0.05 / 학습 분류기 0.25
-verify_grades = ""                   # "A" 또는 "A,B": 분류기가 채택한 해당 등급을 LLM으로 재확인 (정밀도 ↑, 시간 ↑)
 
-# ---- 정밀도 우선: 페이지 가중치와 점수 ----
+# ---- 정밀도 우선: 페이지 가중치(관련성 높음/낮음)와 점수 ----
 accept_score = 0.5                   # 신뢰도 × 가중치 가 이 값 이상이어야 검토 목록. 미만은 보류 시트
-# 제목 키워드 규칙 (정규식, 먼저 맞는 것). 가중치 0 이면 페이지를 판정하지 않는다
-page_weights = [
-  ["(고객|클레임|영업|매출|수주|회의|교육|인사|채용|복지)", 0.3],
-  ["(현황|실적|진행\\s*상황|동향|추진\\s*경과|경과)", 0.4],
-  # ["Action\\s*Plan", 0.6],
-  # ["(품질\\s*지표|KPI)", 0.0],
+page_weight_enabled = true           # false 면 모든 페이지 가중치 1.0 (UI 체크박스와 같음)
+low_relevance_weight = 0.4           # 관련성 낮음 페이지의 가중치. 0 이면 그 페이지는 판정하지 않음
+# 제목에 이 정규식이 걸리면 관련성 낮음. 나머지는 높음(1.0)
+low_relevance_patterns = [
+  "(고객|클레임|영업|매출|수주|회의|교육|인사|채용|복지)",
+  "(현황|실적|진행\\s*상황|동향|추진\\s*경과|경과)",
+  # "Action\\s*Plan",
 ]
+high_relevance_patterns = []         # 낮음보다 우선해 높음으로 두는 제목 정규식. 예: ["KPI\\s*개선"]
 
 # ---- 전처리와 후처리 ----
 split_len = 80                       # 이 길이를 넘는 줄은 문장 분할
@@ -33,11 +33,3 @@ history_path = "data/history"           # 실행 이력(원문 미저장). "" �
 gold_paths = ["data/gold"]              # 골드 파일·폴더(*_gold.xlsx). 첫 폴더가 feedback/gold-sheet 의 저장 위치
 use_gold = true                         # 골드에 있는 문장은 새 실행에서 모델 판정 대신 골드 정답을 그대로 씀
 
-# 유형별 기본 가중치 (키워드 규칙에 없는 제목). TOML 규칙상 테이블은 파일 끝에 둔다
-[page_type_weights]
-means = 1.0      # 개선안·설계·구조·알고리즘
-result = 0.9     # 결과·검증·효과
-problem = 0.8    # 원인·문제·배경
-plan = 0.75      # 계획·향후
-status = 0.4     # 현황·실적·요약
-general = 0.8    # 유형을 모르는 제목

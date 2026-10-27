@@ -14,11 +14,11 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--config", help="ip_finder.toml 경로 (기본: 현재 폴더 또는 설치 폴더의 ip_finder.toml)")
     p.add_argument("--model", help="Ollama LLM 모델 (기본 qwen3:4b-instruct. 정확도 우선이면 qwen3:8b)")
     p.add_argument("--host", help="Ollama 주소. 로컬(127.0.0.1)만 허용")
-    p.add_argument("--mode", choices=["hybrid", "fast", "llm"], help="hybrid: 분류기 확신분 채택 + 애매한 문장만 LLM (기본) / fast: 분류기만 / llm: 전부 LLM")
+    p.add_argument("--mode", choices=["cascade", "fast", "llm"], help="cascade: 분류기 1차 추출(X 제외) → 후보 전부 LLM 2차 판정 (기본) / fast: 분류기만 / llm: 전부 LLM")
     p.add_argument("--embed-model", help="Ollama 임베딩 모델 (기본 bge-m3. KURE-v1 은 tools/import_kure.bat 후 kure-v1)")
-    p.add_argument("--threshold", type=float, help="이 확신 미만의 문장만 LLM으로 (기본: 제로샷 0.05, 학습 분류기 0.25)")
     p.add_argument("--accept-score", type=float, help="신뢰도×가중치 가 이 값 이상이어야 검토 목록 (기본 0.5). 미만은 보류 시트")
-    p.add_argument("--verify", help="분류기가 채택한 이 등급 문장을 LLM으로 재확인 (예: A 또는 A,B). 정밀도 우선 옵션")
+    p.add_argument("--no-page-weight", action="store_true", help="페이지 가중치 끔 (모든 페이지 1.0)")
+    p.add_argument("--low-weight", type=float, help="관련성 낮음 페이지의 가중치 (기본 0.4, 0 이면 판정 안 함)")
     p.add_argument("--prompt", choices=["compact", "full"], help="시스템 프롬프트 판 (기본 compact)")
     p.add_argument("--classifier", help="학습된 분류기 파일(.npz) 경로 (기본: 설치 폴더의 data/classifier.npz)")
     p.add_argument("--gold", action="append", help="골드 파일이나 폴더 (반복 가능). 기본: 설치 폴더의 data/gold. 골드에 있는 문장은 정답을 그대로 씀")
@@ -27,8 +27,10 @@ def _common(p: argparse.ArgumentParser) -> None:
 
 def _cfg(args) -> Config:
     return Config.load(args.config, model=args.model, host=args.host, mode=getattr(args, "mode", None),
-                       embed_model=getattr(args, "embed_model", None), confidence_threshold=getattr(args, "threshold", None),
-                       accept_score=getattr(args, "accept_score", None), verify_grades=getattr(args, "verify", None),
+                       embed_model=getattr(args, "embed_model", None),
+                       accept_score=getattr(args, "accept_score", None),
+                       page_weight_enabled=False if getattr(args, "no_page_weight", False) else None,
+                       low_relevance_weight=getattr(args, "low_weight", None),
                        prompt_variant=getattr(args, "prompt", None), classifier_path=getattr(args, "classifier", None),
                        use_cache=False if getattr(args, "no_cache", False) else None,
                        title_fix=False if getattr(args, "no_title_fix", False) else None,
@@ -69,7 +71,7 @@ def cmd_check(args) -> int:
         from .classify import OllamaEmbedder
         emb = OllamaEmbedder(cfg.host, cfg.embed_model, timeout_sec=10)
         if emb.available():
-            print(f"  [OK] 임베딩 모델 {cfg.embed_model} 준비됨 (hybrid/fast 모드)")
+            print(f"  [OK] 임베딩 모델 {cfg.embed_model} 준비됨 (cascade/fast 모드)")
         else:
             print(f"  [- ] 임베딩 모델 {cfg.embed_model} 없음 → ollama pull {cfg.embed_model}  (없으면 llm 모드로 동작)")
     else:
@@ -77,8 +79,8 @@ def cmd_check(args) -> int:
         ok = False
     clf = cfg.classifier_file()
     print(f"  분류기: {'학습된 분류기 ' + str(clf) if clf.exists() else '제로샷(원형 문장). 골드 세트로 ip-finder train 하면 학습 분류기 사용'}")
-    print(f"  판정 모드 기본값: {cfg.mode}, 프롬프트: {cfg.prompt_variant}, 목록 점수 기준: {cfg.accept_score}, LLM 재확인: {cfg.verify_grades or '없음'}")
-    print(f"  페이지 가중치 규칙 {len(cfg.page_weights)}개 (ip-finder pages <파일> 로 확인)")
+    print(f"  판정 모드 기본값: {cfg.mode} (cascade = 분류기 1차 추출 → LLM 2차 판정), 프롬프트: {cfg.prompt_variant}, 목록 점수 기준: {cfg.accept_score}")
+    print(f"  페이지 가중치: {'켬' if cfg.page_weight_enabled else '끔'}, 관련성 낮음 가중치 {cfg.low_relevance_weight}, 낮음 키워드 {len(cfg.low_relevance_patterns)}개, 높음 키워드 {len(cfg.high_relevance_patterns)}개 (ip-finder pages <파일> 로 확인)")
     print(f"  캐시: {cfg.cache_file()} (원문 미저장, 해시+라벨+벡터)")
     print(f"  이력: {cfg.history_dir() or '저장 안 함'}  — 캐시·분류기·이력은 모두 설치 폴더의 data/ 아래. 설치본마다 따로 관리됩니다")
     golds = cfg.gold_files()
@@ -95,14 +97,16 @@ def cmd_check(args) -> int:
 
 def _summary(res) -> str:
     from .post import in_review_list
+    from .report.xlsx import is_clf_rejected, is_llm_rejected
     info = res.info
     listed = {g: sum(1 for ll in res.labeled if ll.label == g and in_review_list(ll)) for g in ("A", "B", "C", "D")}
     held = sum(1 for ll in res.labeled if ll.label in ("A", "B", "C", "D") and ll.hold_reason)
-    xq = sum(1 for ll in res.labeled if ll.label == "X?")
+    xq = sum(1 for ll in res.labeled if ll.label == "X?" and not is_llm_rejected(ll))
     parts = [f"검토 목록 " + ", ".join(f"{g} {c}" for g, c in listed.items()) + f" (합 {sum(listed.values())})",
              f"보류 {held + xq} (점수 미달 {held}, 단서어 {xq})"]
-    if info.verify_lines:
-        parts.append(f"재확인 {info.verify_lines}문장(바뀜 {info.verify_changed})")
+    if info.mode == "cascade":
+        parts.append(f"1차 제외 {sum(1 for ll in res.labeled if is_clf_rejected(ll))}, 2차 후보 {sum(1 for ll in res.labeled if ll.llm_label)}, "
+                     f"2차 제외 {sum(1 for ll in res.labeled if is_llm_rejected(ll))}")
     if info.gold_lines:
         parts.append(f"골드 반영 {info.gold_lines}문장(모델과 달랐던 것 {info.gold_changed})")
     if info.prev_run_id:
@@ -155,19 +159,18 @@ def cmd_extract(args) -> int:
 
 
 def cmd_pages(args) -> int:
-    """LLM 없이 페이지 제목·유형·가중치만 보여 준다. 가중치 규칙을 손볼 때 쓴다."""
+    """LLM 없이 페이지 제목·관련성·가중치만 보여 준다. 키워드를 손볼 때 쓴다."""
     from .pipeline import prepare
-    from .prep.page_type import page_type
     from .readers import load_document
     cfg = _cfg(args)
     for p in args.paths:
         doc = load_document(Path(p))
         prepare(doc, cfg)
-        print(f"\n== {p}  (가중치 규칙 {len(cfg.page_weights)}개, 목록 점수 기준 {cfg.accept_score})")
-        print(f"  {'p':>3} {'가중치':>5} {'유형':<8} {'근거':<18} {'상태':<22} 제목")
+        print(f"\n== {p}  (페이지 가중치 {'켬' if cfg.page_weight_enabled else '끔'}, 관련성 낮음 {cfg.low_relevance_weight}, 목록 점수 기준 {cfg.accept_score})")
+        print(f"  {'p':>3} {'관련성':<4} {'가중치':>5} {'근거':<18} {'상태':<22} 제목")
         for pg in doc.pages:
-            print(f"  {pg.no:>3} {pg.weight:>5.2f} {page_type(pg.title)[0]:<8} {pg.weight_reason[:18]:<18} {(pg.excluded_reason or '판정 ' + str(len(pg.active_lines())) + '문장')[:22]:<22} {pg.title[:50]}  [{pg.title_source}]")
-    print("\n가중치를 바꾸려면 ip_finder.toml 의 page_weights(키워드 규칙)나 page_type_weights(유형별)를 고치세요. UI '페이지 가중치' 탭에서도 됩니다.")
+            print(f"  {pg.no:>3} {pg.relevance:<4} {pg.weight:>5.2f} {pg.weight_reason[:18]:<18} {(pg.excluded_reason or '판정 ' + str(len(pg.active_lines())) + '문장')[:22]:<22} {pg.title[:50]}  [{pg.title_source}]")
+    print("\n관련성 낮음 키워드는 ip_finder.toml 의 low_relevance_patterns, 강제로 높음은 high_relevance_patterns. UI '페이지 가중치' 탭에서도 됩니다.")
     return 0
 
 
@@ -233,7 +236,7 @@ def cmd_train(args) -> int:
         cache.close()
     print(f"학습 문장 {stats['n']}개 (등급별 {stats['counts']}), 임베딩 {stats['embed_model']}")
     print(f"5겹 교차검증 정확도 {stats['cv_accuracy']:.1%}, 학습 데이터 정확도 {stats['train_accuracy']:.1%}")
-    print(f"저장: {stats['out']}  → 이제 hybrid/fast 모드가 이 분류기를 씁니다. 'ip-finder eval <골드> --mode hybrid' 로 확인하세요.")
+    print(f"저장: {stats['out']}  → 이제 cascade/fast 모드가 이 분류기를 1차에 씁니다. 'ip-finder eval <골드> --mode cascade' 로 확인하세요.")
     if stats["n"] < 100:
         print("참고: 문장 100개 미만이면 교차검증 값이 크게 흔들립니다. 보고서를 더 라벨링해 다시 학습하세요.")
     return 0
@@ -296,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     _common(p)
     p.set_defaults(func=cmd_extract)
 
-    p = sub.add_parser("pages", help="LLM 없이 페이지 제목·유형·가중치·제외 여부만 표시 (가중치 규칙 점검용)")
+    p = sub.add_parser("pages", help="LLM 없이 페이지 제목·관련성·가중치·제외 여부만 표시 (키워드 점검용)")
     p.add_argument("paths", nargs="+")
     _common(p)
     p.set_defaults(func=cmd_pages)

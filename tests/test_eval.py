@@ -27,17 +27,17 @@ def test_gold_sheet_and_scoring(sample_dir, cfg, fake_client, tmp_path):
     assert stored["list"]["list"] > 0
 
 
-def test_train_and_use_classifier(sample_dir, cfg, cfg_hybrid, fake_client, fake_embedder, tmp_path):
+def test_train_and_use_classifier(sample_dir, cfg, cfg_cascade, fake_client, fake_embedder, tmp_path):
     gold = make_gold_sheet(sample_dir / "sample_report.pptx", cfg, tmp_path / "g.xlsx", fake_client)
     out = tmp_path / "clf.npz"
-    cfg_hybrid.embed_model = "fake-embed"
-    stats = train_classifier([gold], cfg_hybrid, out, fake_embedder)
+    cfg_cascade.embed_model = "fake-embed"
+    stats = train_classifier([gold], cfg_cascade, out, fake_embedder)
     assert out.exists() and stats["n"] >= 20 and 0.0 <= stats["cv_accuracy"] <= 1.0 and stats["train_accuracy"] > 0.8
-    cfg_hybrid.classifier_path = str(out)
-    _, res = extract(sample_dir / "sample_report.pptx", cfg_hybrid, tmp_path, fake_client, embedder=fake_embedder)
-    assert res.info.classifier.startswith("학습") and res.info.threshold == 0.25
-    rep = evaluate(gold, cfg_hybrid, rerun=True, client=fake_client, embedder=fake_embedder)
-    assert rep["rows"] == stats["n"] and "hybrid" in rep["source"]
+    cfg_cascade.classifier_path = str(out)
+    _, res = extract(sample_dir / "sample_report.pptx", cfg_cascade, tmp_path, fake_client, embedder=fake_embedder)
+    assert res.info.classifier.startswith("학습")
+    rep = evaluate(gold, cfg_cascade, rerun=True, client=fake_client, embedder=fake_embedder)
+    assert rep["rows"] == stats["n"] and "cascade" in rep["source"]
 
 
 def test_interpret_feedback_values():
@@ -49,16 +49,17 @@ def test_interpret_feedback_values():
 def test_feedback_import_builds_and_merges_gold(sample_dir, cfg, fake_client, tmp_path):
     cfg.history_path = str(tmp_path / "hist")
     out, res = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, fake_client)
+    from ip_finder.report.xlsx import FEEDBACK_COL as FC
     wb = load_workbook(str(out))
     ws = wb["검토 목록"]
-    ws.cell(row=2, column=12).value = "O"            # 첫 행 맞음
-    ws.cell(row=3, column=12).value = "X"            # 둘째 행 틀림
-    ws.cell(row=4, column=12).value = "c"            # 셋째 행 등급 C
-    ws.cell(row=4, column=13).value = "원인 설명임"
-    ws.cell(row=5, column=12).value = "???"          # 해석 불가 → 건너뜀
+    ws.cell(row=2, column=FC).value = "O"            # 첫 행 맞음
+    ws.cell(row=3, column=FC).value = "X"            # 둘째 행 틀림
+    ws.cell(row=4, column=FC).value = "c"            # 셋째 행 등급 C
+    ws.cell(row=4, column=FC + 1).value = "원인 설명임"
+    ws.cell(row=5, column=FC).value = "???"          # 해석 불가 → 건너뜀
     hold = wb["보류"]
-    if hold.max_row > 1:
-        hold.cell(row=2, column=12).value = "A"      # 보류 문장을 A로 살림
+    if hold.max_row > 1 and hold.cell(row=2, column=6).value and hold.cell(row=2, column=1).value:
+        hold.cell(row=2, column=FC).value = "A"      # 보류 문장을 A로 살림
     wb.save(str(out))
     h = History(cfg.history_dir())
     rec = import_feedback(out, history=h)
@@ -72,8 +73,8 @@ def test_feedback_import_builds_and_merges_gold(sample_dir, cfg, fake_client, tm
     assert len(h.feedback_log()) == 1 and h.feedback_log()[0]["corrections"]
     # 두 번째 가져오기: 같은 행은 갱신, 새 행은 추가
     wb = load_workbook(str(out))
-    wb["검토 목록"].cell(row=2, column=12).value = "B"
-    wb["검토 목록"].cell(row=6, column=12).value = "O"
+    wb["검토 목록"].cell(row=2, column=FC).value = "B"
+    wb["검토 목록"].cell(row=6, column=FC).value = "O"
     wb.save(str(out))
     rec2 = import_feedback(out, history=h)
     rows2 = load_gold(gold)
@@ -81,8 +82,9 @@ def test_feedback_import_builds_and_merges_gold(sample_dir, cfg, fake_client, tm
     assert {r["문장"]: r for r in rows2}[first[0].text]["정답"] == "B"
     # 미표시 행을 맞음으로 간주
     rec3 = import_feedback(out, confirm_unmarked=True, history=h)
-    assert len(load_gold(gold)) == len(first) - 1 + (1 if hold.max_row > 1 else 0)   # '???' 행은 끝까지 건너뜀
-    assert rec3["gold_rows"] >= len(first)
+    hold_marked = 1 if (hold.max_row > 1 and hold.cell(row=2, column=1).value) else 0
+    assert len(load_gold(gold)) == len(first) - 1 + hold_marked   # '???' 행은 끝까지 건너뜀
+    assert rec3["gold_rows"] >= len(first) - 1
 
 
 def test_gold_override_in_new_runs(sample_dir, cfg, fake_client, tmp_path):
@@ -91,9 +93,10 @@ def test_gold_override_in_new_runs(sample_dir, cfg, fake_client, tmp_path):
     out, res = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, fake_client)
     first_calls = fake_client.calls
     # 피드백: 목록의 첫 행은 X, 둘째 행은 D 로 확정 → 골드 폴더에 저장
+    from ip_finder.report.xlsx import FEEDBACK_COL as FC
     wb = load_workbook(str(out))
-    wb["검토 목록"].cell(row=2, column=12).value = "X"
-    wb["검토 목록"].cell(row=3, column=12).value = "D"
+    wb["검토 목록"].cell(row=2, column=FC).value = "X"
+    wb["검토 목록"].cell(row=3, column=FC).value = "D"
     wb.save(str(out))
     rec = import_feedback(out, gold_dir=cfg.gold_dir(), history=History(cfg.history_dir()))
     assert Path(rec["gold"]).parent == tmp_path / "gold" and cfg.gold_files() == [Path(rec["gold"])]
@@ -111,7 +114,7 @@ def test_gold_override_in_new_runs(sample_dir, cfg, fake_client, tmp_path):
     assert any("골드" in s for s in res2.info.settings_diff)                    # 이력에 골드 변화가 설정 차이로 찍힘
     wb2 = load_workbook(str(out2))
     assert not any(r[5] == listed[0].text for r in wb2["검토 목록"].iter_rows(min_row=2, values_only=True))   # X 로 확정 → 목록에서 빠짐
-    assert any(r[5] == listed[0].text and r[9] == "골드" for r in wb2["제외 문장"].iter_rows(min_row=2, values_only=True))
+    assert any(r[5] == listed[0].text and r[11] == "골드" for r in wb2["1차 제외 (참고)"].iter_rows(min_row=2, values_only=True))
     info = dict(r[:2] for r in wb2["실행 정보"].iter_rows(min_row=2, values_only=True) if r[0])
     assert info["골드 정답 반영"].startswith("2문장")
     # 골드 반영을 끄면 모델 판정으로 돌아간다. 채점(eval)과 골드 시트 초안에는 반영되지 않는다
@@ -125,7 +128,7 @@ def test_gold_override_in_new_runs(sample_dir, cfg, fake_client, tmp_path):
     assert draft == cfg.gold_dir() / "sample_report_gold.xlsx"                  # 기본 저장 위치 = 골드 폴더
 
 
-def test_gold_lines_skip_llm_calls(sample_dir, cfg, cfg_hybrid, fake_client, fake_embedder, tmp_path):
+def test_gold_lines_skip_llm_calls(sample_dir, cfg, cfg_cascade, fake_client, fake_embedder, tmp_path):
     from ip_finder.eval import write_gold_workbook
     from ip_finder.pipeline import run_file
     res = run_file(sample_dir / "sample_report.pptx", cfg, fake_client)
@@ -137,11 +140,10 @@ def test_gold_lines_skip_llm_calls(sample_dir, cfg, cfg_hybrid, fake_client, fak
     c = type(fake_client)()
     res_llm = run_file(sample_dir / "sample_report.pptx", cfg, c)              # llm 모드: 4페이지는 전부 골드 → 호출 7 → 6
     assert c.calls == 6 and all(ll.source == "gold" and ll.label == "C" for ll in res_llm.labeled if ll.page_no == 4)
-    cfg_hybrid.confidence_threshold = 1.0                                       # 전부 애매 → 골드 문장만 LLM 에서 빠짐
-    cfg_hybrid.verify_grades = "A"
     c2 = type(fake_client)()
-    res_h = run_file(sample_dir / "sample_report.pptx", cfg_hybrid, c2, embedder=fake_embedder)
-    assert res_h.info.llm_lines == len(res_h.labeled) - len(page4)
+    res_h = run_file(sample_dir / "sample_report.pptx", cfg_cascade, c2, embedder=fake_embedder)   # cascade: 골드 문장은 2차 후보에서 빠짐
+    assert all(ll.source == "gold" for ll in res_h.labeled if ll.page_no == 4)
+    assert res_h.info.llm_lines == sum(1 for ll in res_h.labeled if ll.page_no != 4 and ll.clf_label != "X")
     assert not any("(원인 분석)" in u for u in c2.inputs)                        # 4페이지 문장은 LLM 입력에 없음
 
 

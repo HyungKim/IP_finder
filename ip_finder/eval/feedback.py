@@ -17,7 +17,7 @@ from .gold import write_gold_workbook
 
 _OK = {"O", "o", "0", "ㅇ", "맞음", "✓", "V", "v", "Y", "y"}
 _NO = {"X", "x", "ㅌ", "틀림", "제외", "N", "n"}
-FEEDBACK_SHEETS = ("검토 목록", "보류", "제외 문장")
+FEEDBACK_SHEETS = ("검토 목록", "보류", "2차 제외", "1차 제외 (참고)", "제외 문장")   # 마지막은 v0.4 결과 파일 호환
 
 
 def _read_sheet(ws) -> list[dict]:

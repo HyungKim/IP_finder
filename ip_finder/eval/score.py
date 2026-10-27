@@ -54,7 +54,7 @@ def evaluate(gold_path: Path, cfg: Config, rerun: bool = True, client=None, embe
     info = RunInfo(source=str(gold_path), model=cfg.model, prompt_version="", started_at="")
     sweep = None
     if rerun:
-        from ..pipeline import Services, label_pages, verify_lines
+        from ..pipeline import Services, label_pages
         groups: dict[tuple, list[dict]] = defaultdict(list)
         for r in rows:
             groups[(r.get("파일"), r.get("페이지"))].append(r)
@@ -64,14 +64,12 @@ def evaluate(gold_path: Path, cfg: Config, rerun: bool = True, client=None, embe
             lines = [Line(idx=i, text=str(r["문장"])) for i, r in enumerate(grp, 1)]
             title = str(grp[0].get("제목") or "")
             pw = page_weight(title, cfg)
-            pages.append(Page(no=n, title=title, lines=lines, weight=pw.weight, weight_reason=pw.reason))
+            pages.append(Page(no=n, title=title, lines=lines, weight=pw.weight, weight_reason=pw.reason, relevance=pw.relevance))
             order.extend(grp)
         cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)
         try:
             svc = Services(cfg, cache, client=client, embedder=embedder, classifier=classifier)   # 채점에는 골드 반영 없음
             labeled = label_pages(pages, cfg, svc, info)
-            if info.mode in ("fast", "hybrid"):
-                verify_lines(labeled, cfg, svc, info)
         finally:
             cache.close()
         if cfg.title_fix:
@@ -84,8 +82,7 @@ def evaluate(gold_path: Path, cfg: Config, rerun: bool = True, client=None, embe
         final_pairs = [(r["정답"], _norm(ll.label)) for r, ll in zip(order, labeled)]
         triples = [(r["정답"], ll.label, ll.score) for r, ll in zip(order, labeled)]
         source = f"재실행: 모드 {info.mode}, LLM {cfg.model}" + (f", 임베딩 {info.embed_model}, {info.classifier}" if info.embed_model else "")
-        if cfg.verify_grades:
-            source += f", 재확인 {cfg.verify_grades}"
+        source += f", 페이지 가중치 {'켬' if cfg.page_weight_enabled else '끔'}"
     else:
         raw_pairs = [(r["정답"], _norm(r.get("모델 라벨"))) for r in rows]
         final_pairs = [(r["정답"], _norm(r.get("후처리 라벨"))) for r in rows]

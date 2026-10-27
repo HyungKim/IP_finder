@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 
 from ..cache import LabelCache
-from ..llm.ollama_client import LLMError, assert_local
+from ..llm.ollama_client import AbortableHTTP, CancelledError, LLMError, assert_local
 
 BATCH = 32
 
@@ -24,6 +24,13 @@ class OllamaEmbedder:
         self.calls = 0
         self.cache_hits = 0
         self.seconds = 0.0
+        self.http = AbortableHTTP(self.host, timeout_sec)
+
+    def cancel(self) -> None:
+        self.http.cancel()
+
+    def reset(self) -> None:
+        self.http.reset()
 
     def available(self) -> bool:
         try:
@@ -35,14 +42,13 @@ class OllamaEmbedder:
 
     def _post(self, inputs: list[str]) -> list[list[float]]:
         body = {"model": self.model, "input": inputs, "keep_alive": self.keep_alive}
-        req = urllib.request.Request(self.host + "/api/embed", data=json.dumps(body).encode("utf-8"),
-                                     headers={"Content-Type": "application/json"})
         t0 = time.time()
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                res = json.loads(r.read())
-        except urllib.error.URLError as e:
-            raise LLMError(f"임베딩 호출 실패 ({self.host}): {e.reason}") from e
+            res = self.http.post("/api/embed", body)
+        except CancelledError:
+            raise
+        except LLMError as e:
+            raise LLMError(f"임베딩 호출 실패: {e}") from e
         self.calls += 1
         self.seconds += time.time() - t0
         vecs = res.get("embeddings") or []

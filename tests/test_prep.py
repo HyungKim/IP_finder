@@ -50,23 +50,30 @@ def test_split_long_lines():
     assert [ln.idx for ln in act] == [1, 2, 3] and act[0].split_from == 1 and act[2].split_from is None
 
 
-def test_page_weight_rules_and_types():
+def test_page_weight_two_classes():
     cfg = Config()
-    assert page_weight("개선안 1: 패키지 접착 구조 변경", cfg).weight == 1.0
-    assert page_weight("검증 결과", cfg).weight == 0.9
-    assert page_weight("원인 분석", cfg).weight == 0.8
-    assert page_weight("향후 계획", cfg).weight == 0.75
-    assert page_weight("품질 현황", cfg).weight == 0.4 and page_weight("품질 현황", cfg).reason == "키워드 '현황'"
-    assert page_weight("고객 대응 현황", cfg).weight == 0.3                       # 먼저 맞는 규칙
-    assert page_weight("PS-200 보고", cfg).weight == 0.8 and page_weight("PS-200 보고", cfg).reason == "기본값"
-    assert page_weight("문제점 및 개선 방안", cfg).weight == 1.0                   # 여러 유형이면 최대
-    cfg2 = Config(page_weights=[["Action\\s*Plan", 0.6], ["KPI", 0]], page_type_weights={"problem": 0.5}, default_page_weight=0.2)
-    assert page_weight("Action Plan", cfg2).weight == 0.6 and page_weight("KPI 현황", cfg2).weight == 0.0
-    assert page_weight("원인 분석", cfg2).weight == 0.5 and page_weight("기타", cfg2).weight == 0.2
-    cfg3 = Config(page_weights=[["(", 0.5], ["현황"]])                             # 잘못된 정규식·항목은 무시
-    import pytest
-    with pytest.raises(Exception):
-        page_weight("현황", cfg3)
+    for title in ("개선안 1: 패키지 접착 구조 변경", "검증 결과", "원인 분석", "향후 계획", "PS-200 보고"):
+        pw = page_weight(title, cfg)
+        assert pw.weight == 1.0 and pw.relevance == "높음" and pw.reason == "기본(높음)"
+    pw = page_weight("품질 현황", cfg)
+    assert pw.weight == 0.4 and pw.relevance == "낮음" and pw.reason == "낮음 키워드 '현황'"
+    assert page_weight("고객 대응 현황", cfg).relevance == "낮음"
+    cfg2 = Config(low_relevance_patterns=["Action\\s*Plan", "KPI"], high_relevance_patterns=["KPI\\s*개선"], low_relevance_weight=0.2)
+    assert page_weight("Action Plan", cfg2).weight == 0.2 and page_weight("KPI 현황", cfg2).weight == 0.2
+    assert page_weight("KPI 개선 구조", cfg2).weight == 1.0 and page_weight("KPI 개선 구조", cfg2).reason.startswith("높음 키워드")
+    assert page_weight("원인 분석", cfg2).weight == 1.0
+    off = Config(page_weight_enabled=False)
+    assert page_weight("품질 현황", off) .weight == 1.0 and page_weight("품질 현황", off).reason == "가중치 끔"
+    bad = Config(low_relevance_patterns=["(", "현황"])                          # 잘못된 정규식은 무시
+    assert page_weight("품질 현황", bad).relevance == "낮음"
+
+
+def test_old_config_keys_are_migrated(tmp_path):
+    f = tmp_path / "ip_finder.toml"
+    f.write_text('mode = "hybrid"\npage_weights = [["KPI", 0.3], ["개선", 0.9]]\n', encoding="utf-8")
+    c = Config.load(f)
+    assert c.mode == "cascade" and "KPI" in c.low_relevance_patterns and "개선" not in c.low_relevance_patterns
+    assert c.low_relevance_patterns[:2] == Config().low_relevance_patterns[:2]
 
 
 def test_state_paths_are_inside_install_folder(tmp_path):

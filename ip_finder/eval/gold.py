@@ -20,7 +20,7 @@ GUIDE = [
     "정답 열에 A / B / C / D / X 중 하나를 적습니다. 모델 라벨이 미리 채워져 있으니 틀린 것만 고치세요.",
     "X는 기술 내용이 없거나 특허팀과 논의할 가치가 없는 문장입니다. 정밀도 우선이므로 판정이 어려우면 X로 두고 메모에 이유를 적으세요.",
     "채점: ip-finder eval <이 파일>   (현재 설정으로 다시 판정해 채점)   /   --stored (저장된 라벨을 채점)",
-    "학습: ip-finder train <이 파일> [다른 골드 파일 ...]   → 분류기 저장 후 hybrid/fast 모드가 자동으로 사용",
+    "학습: ip-finder train <이 파일> [다른 골드 파일 ...]   → 분류기 저장 후 cascade/fast 모드의 1차 판정에 자동으로 사용",
     "결과 Excel의 '피드백' 열에 적은 내용은 ip-finder feedback <결과.xlsx> 로 이 형식의 골드 시트에 합쳐집니다.",
 ]
 
@@ -63,7 +63,8 @@ def make_gold_sheet(path: Path, cfg: Config, out: Path | None = None, client=Non
     for n, ll in enumerate(res.labeled, 1):
         answer = "X" if ll.raw_label in ("X", "X?") else ("" if ll.raw_label == "?" else ll.raw_label)
         rows.append([n, path.name, ll.page_no, ll.page_title, ll.line_idx, ll.text, ll.raw_label, ll.label,
-                     SOURCE_NAME.get(ll.source, ll.source), round(ll.clf_conf, 3) if ll.clf_conf is not None else "",
+                     SOURCE_NAME.get(ll.source, ll.source) + (f"({ll.clf_label}→{ll.llm_label})" if ll.clf_label and ll.llm_label else ""),
+                     round(ll.clf_conf, 3) if ll.clf_conf is not None else "",
                      float(ll.score), float(ll.page_weight), answer, ""])
     meta = [("파일", str(path)), ("판정 모드", res.info.mode), ("LLM 모델", cfg.model), ("임베딩 모델", res.info.embed_model or "-"),
             ("분류기", res.info.classifier or "-"), ("프롬프트 버전", PROMPT_VERSION), ("생성", res.info.started_at)]

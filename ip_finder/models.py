@@ -31,6 +31,7 @@ class Page:
     section: str = ""
     weight: float = 1.0             # 페이지 가중치 (제목 규칙). 0이면 판정하지 않음
     weight_reason: str = ""         # 가중치를 정한 규칙
+    relevance: str = "높음"          # 관련성: 높음 | 낮음 (제목 키워드)
     title_source: str = ""          # 제목을 찾은 방법: placeholder | font | first-line | 없음
 
     def active_lines(self) -> list[Line]:
@@ -60,7 +61,8 @@ class LabeledLine:
     raw_label: str                  # 후처리 전 라벨 (분류기 또는 LLM)
     notes: list[str] = field(default_factory=list)   # 보정(A→C), 분할, 단서어: ...
     source: str = ""                # clf | llm | verified | gold
-    clf_label: str = ""             # 분류기 라벨 (hybrid/fast)
+    clf_label: str = ""             # 1차 분류기 라벨 (cascade/fast)
+    llm_label: str = ""             # 2차 LLM 라벨 (cascade/llm). 비어 있으면 LLM 이 보지 않음
     clf_conf: float | None = None   # 분류기 확신 (1위-2위 차이)
     clf_top: float | None = None    # 분류기 1위 점수 (학습 분류기는 확률)
     page_weight: float = 1.0        # 페이지 가중치
@@ -90,15 +92,16 @@ class RunInfo:
     mode: str = ""
     embed_model: str = ""
     classifier: str = ""            # 제로샷 | 학습(경로)
-    threshold: float | None = None
-    clf_lines: int = 0              # 분류기 판정을 채택한 문장 수
-    llm_lines: int = 0              # LLM이 판정한 문장 수
+    clf_lines: int = 0              # 분류기만으로 끝난 문장 수 (cascade: 1차에서 X 로 제외된 문장)
+    llm_lines: int = 0              # LLM이 판정한 문장 수 (cascade: 1차 후보)
+    llm_rejected: int = 0           # cascade: LLM 2차에서 X 로 돌려보낸 후보 수
     embed_sec: float = 0.0
     llm_sec: float = 0.0
     accept_score: float = 0.5       # 검토 목록 진입 점수
+    page_weight_enabled: bool = True
+    low_relevance_weight: float = 0.4
+    pages_low: int = 0              # 관련성 낮음으로 분류된 페이지 수
     held_lines: int = 0             # 점수 미달로 보류된 A~D 문장 수
-    verify_lines: int = 0           # LLM 재확인한 문장 수
-    verify_changed: int = 0         # 재확인으로 등급이 바뀐 문장 수
     gold_lines: int = 0             # 골드 정답을 그대로 쓴 문장 수
     gold_changed: int = 0           # 그중 모델 판정과 달랐던 문장 수
     gold_desc: str = ""             # 읽은 골드 요약 (파일 수, 문장 수)

@@ -3,7 +3,7 @@ from .page_rules import apply_page_rules
 from .line_rules import apply_line_rules
 from .splitter import number_lines
 from .page_type import page_type, TYPE_KEYS, HINT_BY_KEY
-from .page_weight import apply_page_weights, page_weight, DEFAULT_TYPE_WEIGHTS
+from .page_weight import apply_page_weights, page_weight, HIGH, LOW
 
 __all__ = ["apply_page_rules", "apply_line_rules", "number_lines", "page_type", "TYPE_KEYS", "HINT_BY_KEY",
-           "apply_page_weights", "page_weight", "DEFAULT_TYPE_WEIGHTS"]
+           "apply_page_weights", "page_weight", "HIGH", "LOW"]

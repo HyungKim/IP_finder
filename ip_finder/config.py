@@ -29,11 +29,12 @@ DEFAULT_PAGE_EXCLUDE = [
     r"부록", r"appendix",
 ]
 
-# 제목 키워드 → 가중치. 먼저 맞는 규칙이 이긴다. 회사 템플릿의 제목어를 ip_finder.toml 의 page_weights 에 추가한다.
-DEFAULT_PAGE_WEIGHTS: list[list] = [
-    [r"(고객|클레임|영업|매출|수주|회의|교육|인사|채용|복지)", 0.3],
-    [r"(현황|실적|진행\s*상황|동향|추진\s*경과|경과)", 0.4],
+# 제목에 이 키워드가 있으면 '관련성 낮음' 페이지. 회사 템플릿의 제목어를 ip_finder.toml 의 low_relevance_patterns 에 추가한다.
+DEFAULT_LOW_RELEVANCE = [
+    r"(고객|클레임|영업|매출|수주|회의|교육|인사|채용|복지)",
+    r"(현황|실적|진행\s*상황|동향|추진\s*경과|경과)",
 ]
+MODES = ("cascade", "fast", "llm")
 
 
 @dataclass
@@ -47,16 +48,15 @@ class Config:
     max_chars_per_call: int = 1400      # 넘으면 페이지를 나눠 호출
     prompt_variant: str = "compact"     # compact | full  (label/prompts/system.md, system_full.md)
     # 판정 모드
-    mode: str = "hybrid"                # hybrid: 분류기 확신분 채택 + 애매한 문장만 LLM / fast: 분류기만 / llm: 전부 LLM
+    mode: str = "cascade"               # cascade: 분류기 1차 추출(X 제외) → 후보 전부 LLM 2차 판정 / fast: 분류기만 / llm: 전부 LLM
     embed_model: str = "bge-m3"         # Ollama 임베딩 모델. KURE-v1 은 tools/import_kure.bat 로 들여온 뒤 "kure-v1"
     classifier_path: str = "data/classifier.npz"   # 학습된 분류기(설치 폴더 기준). 없으면 원형 문장 제로샷
-    confidence_threshold: float | None = None   # 이 값 미만의 확신은 LLM으로. None이면 제로샷 0.05 / 학습 분류기 0.25
-    group_max_chars: int = 1200         # 유형별 묶음 호출 한 번에 넣는 최대 글자 수
-    verify_grades: str = ""             # 분류기가 채택한 이 등급 문장을 LLM으로 재확인 (예: "A" 또는 "A,B"). 비우면 안 함
-    # 페이지 가중치와 점수 (정밀도 우선)
-    page_weights: list[list] = field(default_factory=lambda: [list(x) for x in DEFAULT_PAGE_WEIGHTS])
-    page_type_weights: dict = field(default_factory=dict)   # {"means": 1.0, ...} 유형별 기본값 덮어쓰기
-    default_page_weight: float | None = None                 # 유형을 모르는 제목의 가중치 (None이면 0.8)
+    group_max_chars: int = 1200         # 2차 LLM 묶음 호출 한 번에 넣는 최대 글자 수
+    # 페이지 가중치 (관련성 높음/낮음 두 분류) 와 점수 (정밀도 우선)
+    page_weight_enabled: bool = True    # 끄면 모든 페이지 가중치 1.0
+    low_relevance_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_LOW_RELEVANCE))   # 제목 정규식 → 관련성 낮음
+    high_relevance_patterns: list[str] = field(default_factory=list)   # 낮음보다 우선해 높음으로 두는 제목 정규식
+    low_relevance_weight: float = 0.4   # 관련성 낮음 페이지의 가중치. 0 이면 그 페이지는 판정하지 않음
     accept_score: float = 0.5           # 신뢰도 × 가중치 가 이 값 이상이어야 검토 목록. 미만은 보류 시트
     # 전처리
     split_len: int = 80                 # 이 길이를 넘는 줄은 문장 단위로 분할
@@ -89,6 +89,19 @@ class Config:
             data["config_path"] = str(Path(path).resolve())
         known = {f.name for f in fields(cls)}
         merged = {k: v for k, v in data.items() if k in known}
+        # 이전 버전 설정 호환: hybrid → cascade, page_weights 의 낮은 가중치 규칙 → 관련성 낮음 키워드
+        if merged.get("mode") == "hybrid":
+            merged["mode"] = "cascade"
+        old_rules = data.get("page_weights")
+        if isinstance(old_rules, list) and "low_relevance_patterns" not in merged:
+            low = list(DEFAULT_LOW_RELEVANCE)
+            for item in old_rules:
+                try:
+                    if float(item[1]) <= 0.5 and str(item[0]) not in low:
+                        low.append(str(item[0]))
+                except (TypeError, ValueError, IndexError):
+                    continue
+            merged["low_relevance_patterns"] = low
         merged.update({k: v for k, v in overrides.items() if v is not None and k in known})
         return cls(**merged)
 
@@ -121,14 +134,6 @@ class Config:
         from .goldmap import find_gold_files
         return find_gold_files(self.gold_paths, self.base_dir)
 
-    def threshold(self, trained: bool) -> float:
-        if self.confidence_threshold is not None:
-            return self.confidence_threshold
-        return 0.25 if trained else 0.05
-
-    def verify_set(self) -> set[str]:
-        return {g.strip().upper() for g in self.verify_grades.replace(";", ",").split(",") if g.strip()}
-
     def save(self, path: str | Path) -> Path:
         """설정을 TOML로 저장한다 (표준 라이브러리에 TOML 기록이 없어 직접 쓴다). UI '설정 저장'이 쓴다."""
         path = Path(path).expanduser()
@@ -140,10 +145,9 @@ class Config:
         """결과에 영향을 주는 설정만. 실행 이력의 '무엇이 달라졌나' 비교에 쓴다."""
         return {
             "model": self.model, "prompt_variant": self.prompt_variant, "mode": self.mode,
-            "embed_model": self.embed_model,
-            "confidence_threshold": self.confidence_threshold, "group_max_chars": self.group_max_chars,
-            "verify_grades": self.verify_grades, "page_weights": self.page_weights,
-            "page_type_weights": self.page_type_weights, "default_page_weight": self.default_page_weight,
+            "embed_model": self.embed_model, "group_max_chars": self.group_max_chars,
+            "page_weight_enabled": self.page_weight_enabled, "low_relevance_patterns": self.low_relevance_patterns,
+            "high_relevance_patterns": self.high_relevance_patterns, "low_relevance_weight": self.low_relevance_weight,
             "accept_score": self.accept_score, "split_len": self.split_len,
             "repeated_line_min_pages": self.repeated_line_min_pages, "stoplist": self.stoplist,
             "page_exclude_patterns": self.page_exclude_patterns, "cover_max_lines": self.cover_max_lines,

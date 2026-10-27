@@ -88,8 +88,8 @@ def cfg(tmp_path) -> Config:
 
 
 @pytest.fixture
-def cfg_hybrid(tmp_path) -> Config:
-    return Config(use_cache=False, mode="hybrid", classifier_path=str(tmp_path / "none.npz"), history_path=str(tmp_path / "hist"),
+def cfg_cascade(tmp_path) -> Config:
+    return Config(use_cache=False, mode="cascade", classifier_path=str(tmp_path / "none.npz"), history_path=str(tmp_path / "hist"),
                   gold_paths=[str(tmp_path / "gold")])
 
 

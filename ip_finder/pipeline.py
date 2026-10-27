@@ -1,5 +1,5 @@
-"""읽기 → 전처리(가중치 포함) → 판정(llm / fast / hybrid) → LLM 재확인(선택) → 후처리 → 점수 → 이력 → 리포트.
-CLI, UI, 평가·학습 도구가 공유한다."""
+"""읽기 → 전처리(관련성·가중치 포함) → 판정(cascade / fast / llm) → 후처리 → 골드 반영 → 점수 → 이력 → 리포트.
+cascade = 분류기가 1차로 추출(X 제외)하고, 추출된 후보 전부를 LLM 이 2차로 판정한다. CLI, UI, 평가·학습 도구가 공유한다."""
 from __future__ import annotations
 
 import time
@@ -11,15 +11,16 @@ from typing import Callable
 
 from . import PROMPT_VERSION, __version__
 from .cache import LabelCache
+from .cancel import CancelToken, Cancelled
 from .classify import OllamaEmbedder, load_classifier
-from .config import Config
+from .config import MODES, Config
 from .goldmap import GoldMap
 from .history import History, change_rows, diff_runs, file_hash, make_run_id, settings_diff, text_hash
 from .label import label_grouped, label_page, load_system_prompt
 from .llm import OllamaClient
-from .models import Document, LabeledLine, Line, Page, RunInfo
+from .models import Document, LabeledLine, Page, RunInfo
 from .post import apply_safety_net, apply_scores, apply_title_fix, assign_sections, in_review_list
-from .prep import apply_line_rules, apply_page_rules, apply_page_weights, number_lines
+from .prep import LOW, apply_line_rules, apply_page_rules, apply_page_weights, number_lines
 from .prep.page_rules import IMAGE_PAGE
 from .prep.page_type import page_type
 from .readers import SUPPORTED, load_document
@@ -47,14 +48,26 @@ class Services:
     embedder: object | None = None
     classifier: object | None = None
     gold: GoldMap | None = None      # 골드 정답 반영. None 이면 반영하지 않음 (채점, 골드 시트 생성)
+    cancel: CancelToken | None = None   # UI 중지 버튼. 등록된 클라이언트의 요청을 즉시 끊는다
     _clf_error: str = field(default="", repr=False)
+
+    def __post_init__(self):
+        if self.cancel is not None:
+            self.cancel.register(self.client)
+            self.cancel.register(self.embedder)
 
     def in_gold(self, text: str) -> bool:
         return self.gold is not None and self.gold.get(text) is not None
 
+    def check_cancel(self) -> None:
+        if self.cancel is not None:
+            self.cancel.check()
+
     def llm(self):
         if self.client is None:
             self.client = make_client(self.cfg)
+            if self.cancel is not None:
+                self.cancel.register(self.client)
         return self.client
 
     def ensure_classifier(self) -> bool:
@@ -63,6 +76,8 @@ class Services:
         if self.embedder is None:
             self.embedder = OllamaEmbedder(self.cfg.host, self.cfg.embed_model, timeout_sec=self.cfg.timeout_sec,
                                            keep_alive=self.cfg.keep_alive, cache=self.cache)
+            if self.cancel is not None:
+                self.cancel.register(self.embedder)
         if not self.embedder.available():
             self._clf_error = f"임베딩 모델 {self.cfg.embed_model} 을 쓸 수 없음 (ollama pull {self.cfg.embed_model})"
             return False
@@ -118,12 +133,14 @@ def classifier_desc(cfg: Config, clf) -> str:
 
 def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
                 progress: Progress | None = None, status: Status | None = None) -> list[LabeledLine]:
-    """판정 본체. llm: 페이지별 LLM / fast: 분류기만 / hybrid: 분류기 확신분 채택 + 애매한 문장만 유형별 묶음 LLM."""
+    """판정 본체.
+    cascade: 분류기가 모든 문장을 1차 판정해 X 를 제외하고, 남은 후보 전부를 LLM 이 2차 판정(최종 등급, X 면 제외).
+    fast: 분류기만. llm: 모든 페이지를 LLM 이 판정."""
     targets = [p for p in pages if p.excluded_reason is None and p.active_lines()]
-    mode = cfg.mode
-    if mode not in ("llm", "fast", "hybrid"):
-        raise ValueError(f"알 수 없는 모드: {mode}")
-    if mode in ("fast", "hybrid") and not svc.ensure_classifier():
+    mode = "cascade" if cfg.mode == "hybrid" else cfg.mode
+    if mode not in MODES:
+        raise ValueError(f"알 수 없는 모드: {mode} (cascade | fast | llm)")
+    if mode in ("fast", "cascade") and not svc.ensure_classifier():
         info.warnings.append(f"{svc._clf_error} → llm 모드로 대체")
         mode = "llm"
     info.mode = mode
@@ -137,20 +154,21 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
         for k, page in enumerate(targets, 1):
             if progress:
                 progress(k, len(targets), page)
+            svc.check_cancel()
             if all(svc.in_gold(ln.text) for ln in page.active_lines()):
                 labels = {ln.idx: svc.gold.get(ln.text) for ln in page.active_lines()}   # 전부 골드 → LLM 호출 없음
             else:
-                labels = label_page(client, page, cfg, svc.cache, info, system)
+                labels = label_page(client, page, cfg, svc.cache, info, system, cancel=svc.check_cancel)
             for ln in page.active_lines():
                 lab = labels.get(ln.idx, "?")
                 labeled.append(LabeledLine(page_no=page.no, page_title=page.title, section=page.section, line_idx=ln.idx,
                                            text=ln.text, label=lab, raw_label=lab, notes=_line_notes(ln), source="llm",
-                                           page_weight=page.weight))
+                                           llm_label=lab, page_weight=page.weight))
         info.llm_lines = len(labeled)
         info.llm_sec = getattr(client, "llm_seconds", 0.0) - t0
         return labeled
 
-    # ---- fast / hybrid: 임베딩 → 분류기 ----
+    # ---- fast / cascade: 임베딩 → 분류기 1차 ----
     entries = [(p, ln) for p in targets for ln in p.active_lines()]
     if not entries:
         return labeled
@@ -158,30 +176,34 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
     page_types = [page_type(p.title)[0] for p, _ in entries]
     if status:
         status(f"임베딩 {len(texts)}문장 ({cfg.embed_model})")
+    svc.check_cancel()
     t0 = time.time()
     vectors = svc.embedder.embed(texts)
     info.embed_sec = time.time() - t0
     info.embed_model = cfg.embed_model
     clf = svc.classifier
-    trained = getattr(clf, "kind", "") == "trained"
     info.classifier = classifier_desc(cfg, clf)
-    thr = cfg.threshold(trained)
-    info.threshold = thr
     preds = clf.predict(vectors, texts, page_types)
     for (p, ln), pr in zip(entries, preds):
         labeled.append(LabeledLine(page_no=p.no, page_title=p.title, section=p.section, line_idx=ln.idx, text=ln.text,
                                    label=pr.label, raw_label=pr.label, notes=_line_notes(ln), source="clf",
                                    clf_label=pr.label, clf_conf=pr.confidence, clf_top=pr.top, page_weight=p.weight))
-    if mode == "hybrid":
-        ambiguous = [(p, ln) for (p, ln), pr in zip(entries, preds) if pr.confidence < thr and not svc.in_gold(ln.text)]
+    if mode == "cascade":
+        # 1차: 분류기가 X 로 본 문장은 제외. 2차: 나머지 후보 전부를 LLM 이 판정 (골드 문장은 정답을 쓰므로 제외)
+        candidates = [(p, ln) for (p, ln), pr in zip(entries, preds) if pr.label != "X" and not svc.in_gold(ln.text)]
         n_gold = sum(1 for _, ln in entries if svc.in_gold(ln.text))
+        n_x = len(entries) - len(candidates) - n_gold
         if status:
-            status(f"분류기 확신 {len(entries) - len(ambiguous) - n_gold}문장 채택, 애매한 {len(ambiguous)}문장은 LLM ({cfg.model})"
-                   + (f", 골드 {n_gold}문장은 정답 사용" if n_gold else ""))
-        if ambiguous:
+            status(f"분류기 1차: 후보 {len(candidates)}문장 (제외 {n_x}" + (f", 골드 {n_gold}" if n_gold else "") + f") → LLM 2차 판정 ({cfg.model})")
+        if candidates:
             client = svc.llm()
             t0 = getattr(client, "llm_seconds", 0.0)
-            res = label_grouped(client, ambiguous, cfg, svc.cache, info)
+
+            def prog(k, n, size):
+                if status:
+                    status(f"  LLM 2차 {k}/{n} 묶음 ({size}문장)")
+
+            res = label_grouped(client, candidates, cfg, svc.cache, info, cancel=svc.check_cancel, progress=prog)
             info.llm_sec = getattr(client, "llm_seconds", 0.0) - t0
             for ll in labeled:
                 lab = res.get((ll.page_no, ll.line_idx))
@@ -191,47 +213,17 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
                 if lab == "?":
                     ll.notes.append("LLM 실패, 분류기 라벨 유지")
                     continue
-                if lab != ll.clf_label:
+                ll.llm_label = lab
+                if lab == "X":
+                    info.llm_rejected += 1
+                    ll.notes.append("LLM 2차 제외")
+                elif lab != ll.clf_label:
                     ll.notes.append("불일치")
                 ll.label = ll.raw_label = lab
                 ll.source = "llm"
     info.llm_lines = sum(1 for ll in labeled if ll.source == "llm")
     info.clf_lines = sum(1 for ll in labeled if ll.source == "clf")
     return labeled
-
-
-def verify_lines(labeled: list[LabeledLine], cfg: Config, svc: Services, info: RunInfo, status: Status | None = None) -> None:
-    """분류기가 채택한 verify_grades 등급 문장을 LLM으로 재확인한다 (정밀도 우선 옵션).
-    일치하면 source='verified'(신뢰도 1.0), 다르면 LLM 라벨을 채택하고 '재확인 불일치'를 남긴다(신뢰도 0.65)."""
-    want = cfg.verify_set()
-    if not want:
-        return
-    targets = [ll for ll in labeled if ll.source == "clf" and ll.label in want and not svc.in_gold(ll.text)]
-    if not targets:
-        return
-    if status:
-        status(f"{'/'.join(sorted(want))} 등급 {len(targets)}문장 LLM 재확인 ({cfg.model})")
-    entries = [(Page(no=ll.page_no, title=ll.page_title), Line(idx=ll.line_idx, text=ll.text)) for ll in targets]
-    client = svc.llm()
-    t0 = getattr(client, "llm_seconds", 0.0)
-    res = label_grouped(client, entries, cfg, svc.cache, info)
-    info.llm_sec += getattr(client, "llm_seconds", 0.0) - t0
-    for ll in targets:
-        lab = res.get((ll.page_no, ll.line_idx))
-        if lab is None or lab == "?":
-            ll.notes.append("재확인 실패, 분류기 라벨 유지")
-            continue
-        info.verify_lines += 1
-        if lab == ll.label:
-            ll.source = "verified"
-            ll.notes.append("재확인 일치")
-        else:
-            info.verify_changed += 1
-            ll.notes.append(f"분류기 {ll.clf_label}({ll.clf_conf:.2f})")
-            ll.notes.append(f"재확인 불일치({ll.clf_label}→{lab})")
-            ll.notes.append("불일치")
-            ll.label = ll.raw_label = lab
-            ll.source = "llm"
 
 
 def apply_gold(labeled: list[LabeledLine], gold: GoldMap, info: RunInfo) -> int:
@@ -266,7 +258,8 @@ def snapshot(info: RunInfo, cfg: Config, labeled: list[LabeledLine], doc: Docume
         "source_hash": src_hash, "settings": settings, "elapsed_sec": round(info.elapsed_sec, 1),
         "stats": {"pages_total": info.pages_total, "pages_labeled": info.pages_labeled, "lines": len(labeled),
                   "list": sum(grades.values()), "A": grades.get("A", 0), "B": grades.get("B", 0), "C": grades.get("C", 0), "D": grades.get("D", 0),
-                  "held": info.held_lines, "llm_calls": info.llm_calls, "verify_changed": info.verify_changed},
+                  "held": info.held_lines, "llm_calls": info.llm_calls, "llm_rejected": info.llm_rejected,
+                  "clf_out": info.clf_lines, "pages_low": info.pages_low},
         "lines": lines,
     }
 
@@ -301,26 +294,27 @@ def load_gold_map(cfg: Config) -> GoldMap | None:
 
 
 def run_file(path: Path, cfg: Config, client=None, progress: Progress | None = None, status: Status | None = None,
-             embedder=None, classifier=None, history: History | None = None, use_gold: bool = True) -> Result:
+             embedder=None, classifier=None, history: History | None = None, use_gold: bool = True,
+             cancel: CancelToken | None = None) -> Result:
     t0 = time.time()
     info = RunInfo(source=str(path), model=cfg.model, prompt_version=PROMPT_VERSION,
-                   started_at=datetime.now().isoformat(timespec="seconds"), accept_score=cfg.accept_score)
+                   started_at=datetime.now().isoformat(timespec="seconds"), accept_score=cfg.accept_score,
+                   page_weight_enabled=cfg.page_weight_enabled, low_relevance_weight=cfg.low_relevance_weight)
     doc = load_document(path)
     removed = prepare(doc, cfg)
     info.pages_total = len(doc.pages)
     info.pages_image = sum(1 for p in doc.pages if p.excluded_reason == IMAGE_PAGE)
     info.pages_excluded = sum(1 for p in doc.pages if p.excluded_reason and p.excluded_reason != IMAGE_PAGE)
+    info.pages_low = sum(1 for p in doc.pages if p.relevance == LOW)
     cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)
     gold = load_gold_map(cfg) if use_gold else None
     if gold is not None:
         info.gold_desc = gold.describe()
         if gold.conflicts:
             info.warnings.append(f"골드 {gold.conflicts}문장이 파일마다 정답이 달라 최근 파일을 따랐습니다")
-    svc = Services(cfg, cache, client=client, embedder=embedder, classifier=classifier, gold=gold)
+    svc = Services(cfg, cache, client=client, embedder=embedder, classifier=classifier, gold=gold, cancel=cancel)
     try:
         labeled = label_pages(doc.pages, cfg, svc, info, progress, status)
-        if info.mode in ("fast", "hybrid"):
-            verify_lines(labeled, cfg, svc, info, status)
     finally:
         cache.close()
     info.model = getattr(svc.client, "model", cfg.model) if svc.client is not None else cfg.model
@@ -340,8 +334,8 @@ def run_file(path: Path, cfg: Config, client=None, progress: Progress | None = N
 
 def extract(path: Path, cfg: Config, out_dir: Path | None = None, client=None, progress: Progress | None = None,
             with_ext: bool = False, status: Status | None = None, embedder=None, classifier=None,
-            history: History | None = None) -> tuple[Path, Result]:
-    result = run_file(path, cfg, client, progress, status, embedder, classifier, history)
+            history: History | None = None, cancel: CancelToken | None = None) -> tuple[Path, Result]:
+    result = run_file(path, cfg, client, progress, status, embedder, classifier, history, cancel=cancel)
     out = write_report(output_path(path, out_dir, with_ext), result.doc, result.labeled, result.info, result.removed, result.changes)
     return out, result
 
