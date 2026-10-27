@@ -104,23 +104,39 @@ def label_page(client: LabelClient, page: Page, cfg: Config, cache: LabelCache, 
 def label_grouped(client: LabelClient, entries: list[tuple[Page, Line]], cfg: Config, cache: LabelCache,
                   info: RunInfo | None = None, system: str | None = None, cancel=None,
                   progress=None) -> dict[tuple[int, int], str]:
-    """애매한 문장들을 페이지 유형별로 묶어 호출. {(페이지, 줄): 라벨}"""
+    """후보 문장들을 묶어 호출. {(페이지, 줄): 라벨}
+    cfg.group_by == "type": 페이지 유형별로 묶고 문장마다 슬라이드 제목을 붙인다 (호출 수 적음).
+    cfg.group_by == "page": 페이지별로 묶어 제목·힌트를 머리에 한 번 쓴다 (페이지 문맥 유지, 호출 수 = 후보가 있는 페이지 수)."""
     system = system or load_system_prompt(cfg.prompt_variant)
+    result: dict[tuple[int, int], str] = {}
+    if getattr(cfg, "group_by", "type") == "page":
+        by_page: dict[int, list[tuple[Page, Line]]] = {}
+        for page, ln in entries:
+            by_page.setdefault(page.no, []).append((page, ln))
+        chunks = [(items[0][0], chunk) for _, items in sorted(by_page.items())
+                  for chunk in _chunks_by_chars(items, cfg.max_chars_per_call, lambda e: e[1].text)]
+        for k, (page, chunk) in enumerate(chunks, 1):
+            if progress is not None:
+                progress(k, len(chunks), len(chunk))
+            _, hint = page_type(page.title)
+            user = build_user_prompt(page.title, [ln for _, ln in chunk], page.no, hint)
+            labels = _call(client, system, user, len(chunk), cache, info, f"p{page.no}", cancel)
+            for (p, ln), lab in zip(chunk, labels):
+                result[(p.no, ln.idx)] = lab
+        return result
     by_type: dict[str, list[tuple[Page, Line]]] = {}
     for page, ln in entries:
         by_type.setdefault(page_type(page.title)[0], []).append((page, ln))
-    result: dict[tuple[int, int], str] = {}
     chunks = [(key, chunk) for key, items in by_type.items()
               for chunk in _chunks_by_chars(items, cfg.group_max_chars, lambda e: e[1].text)]
     for k, (key, chunk) in enumerate(chunks, 1):
         hint = HINT_BY_KEY.get(key)
-        if True:
-            if progress is not None:
-                progress(k, len(chunks), len(chunk))
-            user = build_group_prompt(hint, [(p.title, ln.text) for p, ln in chunk])
-            labels = _call(client, system, user, len(chunk), cache, info, f"묶음({key})", cancel)
-            for (p, ln), lab in zip(chunk, labels):
-                result[(p.no, ln.idx)] = lab
+        if progress is not None:
+            progress(k, len(chunks), len(chunk))
+        user = build_group_prompt(hint, [(p.title, ln.text) for p, ln in chunk])
+        labels = _call(client, system, user, len(chunk), cache, info, f"묶음({key})", cancel)
+        for (p, ln), lab in zip(chunk, labels):
+            result[(p.no, ln.idx)] = lab
     return result
 
 

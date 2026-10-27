@@ -6,6 +6,7 @@ model = "qwen3:4b-instruct"          # 정확도 우선이면 "qwen3:8b" (thinki
 host = "http://127.0.0.1:11434"      # 로컬 주소만 허용
 mode = "cascade"                     # cascade: 분류기 1차 추출 → LLM 2차 판정 | fast: 분류기만 | llm: 전부 LLM
 target_grades = "A,B"                # 추출 대상 등급. 1차는 이 등급 문장만 후보로, 2차는 이 등급인지 판정. "A,B,C,D" 로 넓힐 수 있음
+group_by = "type"                    # 2차 LLM 묶음 기준. type: 페이지 유형별(호출 적음) | page: 페이지별(문맥 유지, 호출 많음)
 embed_model = "bge-m3"               # KURE-v1 을 들여왔으면 "kure-v1"
 
 # ---- 정밀도 우선: 페이지 가중치(관련성 높음/낮음)와 점수 ----

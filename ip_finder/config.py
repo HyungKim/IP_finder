@@ -52,6 +52,7 @@ class Config:
     embed_model: str = "bge-m3"         # Ollama 임베딩 모델. KURE-v1 은 tools/import_kure.bat 로 들여온 뒤 "kure-v1"
     classifier_path: str = "data/classifier.npz"   # 학습된 분류기(설치 폴더 기준). 없으면 원형 문장 제로샷
     group_max_chars: int = 1200         # 2차 LLM 묶음 호출 한 번에 넣는 최대 글자 수
+    group_by: str = "type"              # 2차 묶음 기준. type: 페이지 유형별(다른 페이지 문장을 섞음, 호출 적음) / page: 페이지별(문맥 유지, 호출 많음)
     target_grades: str = "A,B"          # 추출 대상 등급. 1차는 이 등급으로 판정된 문장만 후보로, 2차는 이 등급인지 판정. "A,B,C,D" 로 넓힐 수 있음
     # 페이지 가중치 (관련성 높음/낮음 두 분류) 와 점수 (정밀도 우선)
     page_weight_enabled: bool = True    # 끄면 모든 페이지 가중치 1.0
@@ -150,7 +151,7 @@ class Config:
         """결과에 영향을 주는 설정만. 실행 이력의 '무엇이 달라졌나' 비교에 쓴다."""
         return {
             "model": self.model, "prompt_variant": self.prompt_variant, "mode": self.mode,
-            "embed_model": self.embed_model, "group_max_chars": self.group_max_chars, "target_grades": ",".join(self.targets()),
+            "embed_model": self.embed_model, "group_max_chars": self.group_max_chars, "group_by": self.group_by, "target_grades": ",".join(self.targets()),
             "page_weight_enabled": self.page_weight_enabled, "low_relevance_patterns": self.low_relevance_patterns,
             "high_relevance_patterns": self.high_relevance_patterns, "low_relevance_weight": self.low_relevance_weight,
             "accept_score": self.accept_score, "split_len": self.split_len,

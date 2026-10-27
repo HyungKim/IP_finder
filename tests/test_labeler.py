@@ -24,3 +24,17 @@ def test_label_grouped_groups_by_page_type(fake_client):
     assert fake_client.calls == 3 and info.llm_calls == 3            # problem / means / plan 유형별 한 번씩
     assert res[(5, 1)] == "A" and res[(11, 1)] == "D" and res[(4, 1)] == "A"
     assert any("(원인 분석)" in u for u in fake_client.inputs)
+
+
+def test_label_grouped_by_page(fake_client):
+    cfg = Config(use_cache=False, mode="cascade", group_by="page")
+    pages = [Page(no=4, title="원인 분석", lines=[Line(1, "열팽창계수 차이로 응력 발생"), Line(2, "두께 편차 확인")]),
+             Page(no=5, title="개선안 1: 구조 변경", lines=[Line(1, "접착제를 실리콘계로 변경")]),
+             Page(no=6, title="개선안 2: 알고리즘", lines=[Line(1, "PID 보정 항을 추가")])]
+    entries = [(p, ln) for p in pages for ln in p.lines]
+    info = RunInfo(source="", model="", prompt_version="", started_at="")
+    seen = []
+    res = label_grouped(fake_client, entries, cfg, LabelCache(None), info, progress=lambda k, n, size: seen.append((k, n, size)))
+    assert fake_client.calls == 3 and seen == [(1, 3, 2), (2, 3, 1), (3, 3, 1)]        # 페이지마다 한 번 (유형별이면 2번)
+    assert res[(5, 1)] == "A" and res[(6, 1)] == "A" and res[(4, 1)] == "A"
+    assert any(u.startswith("[슬라이드 4] 제목: 원인 분석") for u in fake_client.inputs)   # 페이지 프롬프트 형식
