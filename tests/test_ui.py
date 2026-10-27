@@ -14,7 +14,7 @@ def _ll(label, source="clf"):
 def test_ui_builds_and_fills(tmp_path):
     try:
         from ip_finder.ui import App
-        app = App(Config(use_cache=False, mode="llm", classifier_path=str(tmp_path / "none.npz"), history_path=str(tmp_path / "hist")))
+        app = App(Config(use_cache=False, mode="llm", classifier_path=str(tmp_path / "none.npz"), history_path=str(tmp_path / "hist"), gold_paths=[str(tmp_path / "gold")]))
     except tk.TclError as e:
         pytest.skip(f"디스플레이 없음: {e}")
     try:

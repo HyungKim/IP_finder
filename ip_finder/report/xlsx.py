@@ -28,7 +28,7 @@ HEAD_FILL = PatternFill("solid", fgColor="37474F")
 HEAD_FONT = Font(bold=True, color="FFFFFF")
 FEEDBACK_FILL = PatternFill("solid", fgColor="FFFDE7")
 WRAP = Alignment(wrap_text=True, vertical="top")
-SOURCE_NAME = {"clf": "분류기", "llm": "LLM", "verified": "분류기+LLM"}
+SOURCE_NAME = {"clf": "분류기", "llm": "LLM", "verified": "분류기+LLM", "gold": "골드"}
 FEEDBACK_HELP = "O=맞음, X=틀림(제외), A/B/C/D=올바른 등급"
 
 LINE_HEADERS = ["번호", "섹션", "페이지", "줄", "등급", "발췌", "논의 포인트", "점수", "가중치", "판정", "비고", "피드백", "메모"]
@@ -150,6 +150,7 @@ def write_report(out: Path, doc: Document, labeled: list[LabeledLine], info: Run
         ("확신 임계값", info.threshold if info.threshold is not None else "-"),
         ("목록 점수 기준", info.accept_score), ("점수 미달 보류", info.held_lines),
         ("LLM 재확인 문장", f"{info.verify_lines} (등급 바뀜 {info.verify_changed})" if info.verify_lines else "-"),
+        ("골드 정답 반영", f"{info.gold_lines}문장 (모델 판정과 달랐던 것 {info.gold_changed}) / 읽은 골드: {info.gold_desc}" if info.gold_desc else "없음 (골드 파일이 없거나 use_gold=false)"),
         ("분류기 채택 문장", info.clf_lines), ("LLM 판정 문장", info.llm_lines),
         ("임베딩 시간(초)", round(info.embed_sec, 1)), ("LLM 시간(초)", round(info.llm_sec, 1)),
         ("시작", info.started_at), ("소요 시간(초)", round(info.elapsed_sec, 1)),

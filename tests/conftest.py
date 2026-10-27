@@ -84,12 +84,13 @@ def sample_dir(tmp_path_factory) -> Path:
 
 @pytest.fixture
 def cfg(tmp_path) -> Config:
-    return Config(use_cache=False, mode="llm", history_path=str(tmp_path / "hist"))
+    return Config(use_cache=False, mode="llm", history_path=str(tmp_path / "hist"), gold_paths=[str(tmp_path / "gold")])
 
 
 @pytest.fixture
 def cfg_hybrid(tmp_path) -> Config:
-    return Config(use_cache=False, mode="hybrid", classifier_path=str(tmp_path / "none.npz"), history_path=str(tmp_path / "hist"))
+    return Config(use_cache=False, mode="hybrid", classifier_path=str(tmp_path / "none.npz"), history_path=str(tmp_path / "hist"),
+                  gold_paths=[str(tmp_path / "gold")])
 
 
 @pytest.fixture

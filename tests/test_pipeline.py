@@ -82,7 +82,7 @@ def test_hybrid_falls_back_to_llm_without_embedder(sample_dir, cfg_hybrid, fake_
 
 
 def test_cache_reuses_labels_and_vectors(sample_dir, fake_client, fake_embedder, tmp_path):
-    cfg = Config(use_cache=True, cache_path=str(tmp_path / "cache.sqlite"), mode="llm", history_path=str(tmp_path / "hist"))
+    cfg = Config(use_cache=True, cache_path=str(tmp_path / "cache.sqlite"), mode="llm", history_path=str(tmp_path / "hist"), gold_paths=[str(tmp_path / "gold")])
     _, first = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, fake_client)
     _, second = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, fake_client)
     assert first.info.llm_calls == 7 and first.info.cache_hits == 0
@@ -125,7 +125,7 @@ def test_verify_grades_rechecks_classifier_a(sample_dir, cfg_hybrid, fake_client
 
 
 def test_history_diff_between_runs(sample_dir, fake_client, tmp_path):
-    cfg = Config(use_cache=False, mode="llm", history_path=str(tmp_path / "hist"))
+    cfg = Config(use_cache=False, mode="llm", history_path=str(tmp_path / "hist"), gold_paths=[str(tmp_path / "gold")])
     out1, first = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, fake_client)
     assert first.info.run_id and not first.info.prev_run_id and first.changes == []
     raw = b"".join(p.read_bytes() for p in (tmp_path / "hist" / "runs").glob("*.json"))

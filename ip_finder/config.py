@@ -71,6 +71,9 @@ class Config:
     use_cache: bool = True
     cache_path: str = "data/cache.sqlite"          # 설치 폴더 기준
     history_path: str = "data/history"             # 실행 스냅샷(원문 미저장)과 피드백 이력. 비우면 저장하지 않음
+    # 골드 정답 반영
+    gold_paths: list[str] = field(default_factory=lambda: ["data/gold"])   # 골드 파일 또는 폴더(*_gold.xlsx). feedback/gold-sheet 의 기본 저장 위치는 첫 항목
+    use_gold: bool = True               # 골드에 있는 문장은 새 실행에서 모델 판정 대신 골드 정답을 그대로 쓴다
     config_path: str = ""               # 실제로 읽은 설정 파일 (정보용). 상대 경로의 기준 폴더가 된다
 
     @classmethod
@@ -107,6 +110,17 @@ class Config:
     def history_dir(self) -> Path | None:
         return self.resolve(self.history_path) if self.history_path else None
 
+    def gold_dir(self) -> Path:
+        """feedback / gold-sheet 가 골드를 저장하는 폴더: gold_paths 의 첫 폴더 항목, 없으면 data/gold."""
+        for p in self.gold_paths:
+            if not str(p).lower().endswith(".xlsx"):
+                return self.resolve(p)
+        return self.resolve("data/gold")
+
+    def gold_files(self) -> list[Path]:
+        from .goldmap import find_gold_files
+        return find_gold_files(self.gold_paths, self.base_dir)
+
     def threshold(self, trained: bool) -> float:
         if self.confidence_threshold is not None:
             return self.confidence_threshold
@@ -133,7 +147,7 @@ class Config:
             "accept_score": self.accept_score, "split_len": self.split_len,
             "repeated_line_min_pages": self.repeated_line_min_pages, "stoplist": self.stoplist,
             "page_exclude_patterns": self.page_exclude_patterns, "cover_max_lines": self.cover_max_lines,
-            "title_fix": self.title_fix, "safety_net": self.safety_net,
+            "title_fix": self.title_fix, "safety_net": self.safety_net, "use_gold": self.use_gold,
         }
 
 

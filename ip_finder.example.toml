@@ -30,6 +30,8 @@ use_cache = true
 cache_path = "data/cache.sqlite"        # 판정·임베딩 캐시 (원문 미저장)
 classifier_path = "data/classifier.npz" # ip-finder train 결과. 없으면 제로샷
 history_path = "data/history"           # 실행 이력(원문 미저장). "" 이면 저장 안 함
+gold_paths = ["data/gold"]              # 골드 파일·폴더(*_gold.xlsx). 첫 폴더가 feedback/gold-sheet 의 저장 위치
+use_gold = true                         # 골드에 있는 문장은 새 실행에서 모델 판정 대신 골드 정답을 그대로 씀
 
 # 유형별 기본 가중치 (키워드 규칙에 없는 제목). TOML 규칙상 테이블은 파일 끝에 둔다
 [page_type_weights]

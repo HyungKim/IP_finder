@@ -59,7 +59,7 @@ class LabeledLine:
     label: str                      # A B C D X, 보류는 "X?", 판정 실패는"?"
     raw_label: str                  # 후처리 전 라벨 (분류기 또는 LLM)
     notes: list[str] = field(default_factory=list)   # 보정(A→C), 분할, 단서어: ...
-    source: str = ""                # clf | llm | verified
+    source: str = ""                # clf | llm | verified | gold
     clf_label: str = ""             # 분류기 라벨 (hybrid/fast)
     clf_conf: float | None = None   # 분류기 확신 (1위-2위 차이)
     clf_top: float | None = None    # 분류기 1위 점수 (학습 분류기는 확률)
@@ -99,6 +99,9 @@ class RunInfo:
     held_lines: int = 0             # 점수 미달로 보류된 A~D 문장 수
     verify_lines: int = 0           # LLM 재확인한 문장 수
     verify_changed: int = 0         # 재확인으로 등급이 바뀐 문장 수
+    gold_lines: int = 0             # 골드 정답을 그대로 쓴 문장 수
+    gold_changed: int = 0           # 그중 모델 판정과 달랐던 문장 수
+    gold_desc: str = ""             # 읽은 골드 요약 (파일 수, 문장 수)
     run_id: str = ""                # 이력 저장 ID
     prev_run_id: str = ""           # 같은 파일의 직전 실행 ID (변경 추적 기준)
     settings_diff: list[str] = field(default_factory=list)   # 직전 실행과 달라진 설정

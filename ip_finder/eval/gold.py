@@ -10,11 +10,11 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from .. import PROMPT_VERSION
 from ..config import Config
 from ..pipeline import run_file
-from .score import GOLD_HEADERS
+from ..goldmap import GOLD_HEADERS, GOLD_SUFFIX
 
 RUBRIC_PATH = Path(__file__).parent.parent / "label" / "prompts" / "rubric.md"
 GOLD_WIDTHS = (6, 18, 8, 24, 5, 70, 10, 10, 11, 8, 7, 7, 8, 30)
-SOURCE_NAME = {"clf": "분류기", "llm": "LLM", "verified": "분류기+LLM"}
+SOURCE_NAME = {"clf": "분류기", "llm": "LLM", "verified": "분류기+LLM", "gold": "골드"}
 
 GUIDE = [
     "정답 열에 A / B / C / D / X 중 하나를 적습니다. 모델 라벨이 미리 채워져 있으니 틀린 것만 고치세요.",
@@ -56,8 +56,9 @@ def write_gold_workbook(out: Path, rows: list[list], meta: list[tuple[str, str]]
 
 
 def make_gold_sheet(path: Path, cfg: Config, out: Path | None = None, client=None, embedder=None) -> Path:
-    res = run_file(path, cfg, client, embedder=embedder)
-    out = out or path.with_name(f"{path.stem}_gold.xlsx")
+    """초안 라벨은 모델 판정 그대로(골드 반영 없음). 기본 저장 위치는 설정의 골드 폴더(data/gold)."""
+    res = run_file(path, cfg, client, embedder=embedder, use_gold=False)
+    out = out or cfg.gold_dir() / f"{path.stem}{GOLD_SUFFIX}"
     rows = []
     for n, ll in enumerate(res.labeled, 1):
         answer = "X" if ll.raw_label in ("X", "X?") else ("" if ll.raw_label == "?" else ll.raw_label)

@@ -13,6 +13,7 @@ from . import PROMPT_VERSION, __version__
 from .cache import LabelCache
 from .classify import OllamaEmbedder, load_classifier
 from .config import Config
+from .goldmap import GoldMap
 from .history import History, change_rows, diff_runs, file_hash, make_run_id, settings_diff, text_hash
 from .label import label_grouped, label_page, load_system_prompt
 from .llm import OllamaClient
@@ -45,7 +46,11 @@ class Services:
     client: object | None = None
     embedder: object | None = None
     classifier: object | None = None
+    gold: GoldMap | None = None      # 골드 정답 반영. None 이면 반영하지 않음 (채점, 골드 시트 생성)
     _clf_error: str = field(default="", repr=False)
+
+    def in_gold(self, text: str) -> bool:
+        return self.gold is not None and self.gold.get(text) is not None
 
     def llm(self):
         if self.client is None:
@@ -132,7 +137,10 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
         for k, page in enumerate(targets, 1):
             if progress:
                 progress(k, len(targets), page)
-            labels = label_page(client, page, cfg, svc.cache, info, system)
+            if all(svc.in_gold(ln.text) for ln in page.active_lines()):
+                labels = {ln.idx: svc.gold.get(ln.text) for ln in page.active_lines()}   # 전부 골드 → LLM 호출 없음
+            else:
+                labels = label_page(client, page, cfg, svc.cache, info, system)
             for ln in page.active_lines():
                 lab = labels.get(ln.idx, "?")
                 labeled.append(LabeledLine(page_no=page.no, page_title=page.title, section=page.section, line_idx=ln.idx,
@@ -165,9 +173,11 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
                                    label=pr.label, raw_label=pr.label, notes=_line_notes(ln), source="clf",
                                    clf_label=pr.label, clf_conf=pr.confidence, clf_top=pr.top, page_weight=p.weight))
     if mode == "hybrid":
-        ambiguous = [(p, ln) for (p, ln), pr in zip(entries, preds) if pr.confidence < thr]
+        ambiguous = [(p, ln) for (p, ln), pr in zip(entries, preds) if pr.confidence < thr and not svc.in_gold(ln.text)]
+        n_gold = sum(1 for _, ln in entries if svc.in_gold(ln.text))
         if status:
-            status(f"분류기 확신 {len(entries) - len(ambiguous)}문장 채택, 애매한 {len(ambiguous)}문장은 LLM ({cfg.model})")
+            status(f"분류기 확신 {len(entries) - len(ambiguous) - n_gold}문장 채택, 애매한 {len(ambiguous)}문장은 LLM ({cfg.model})"
+                   + (f", 골드 {n_gold}문장은 정답 사용" if n_gold else ""))
         if ambiguous:
             client = svc.llm()
             t0 = getattr(client, "llm_seconds", 0.0)
@@ -196,7 +206,7 @@ def verify_lines(labeled: list[LabeledLine], cfg: Config, svc: Services, info: R
     want = cfg.verify_set()
     if not want:
         return
-    targets = [ll for ll in labeled if ll.source == "clf" and ll.label in want]
+    targets = [ll for ll in labeled if ll.source == "clf" and ll.label in want and not svc.in_gold(ll.text)]
     if not targets:
         return
     if status:
@@ -224,8 +234,30 @@ def verify_lines(labeled: list[LabeledLine], cfg: Config, svc: Services, info: R
             ll.source = "llm"
 
 
+def apply_gold(labeled: list[LabeledLine], gold: GoldMap, info: RunInfo) -> int:
+    """골드에 있는 문장은 모델 판정 대신 골드 정답. 후처리(보정·안전장치) 뒤에 적용해 사람 판정이 최종이 되게 한다."""
+    applied = 0
+    for ll in labeled:
+        g = gold.get(ll.text)
+        if g is None:
+            continue
+        applied += 1
+        before = "X" if ll.label in ("X?", "?") else ll.label
+        if before != g:
+            info.gold_changed += 1
+            ll.notes.append(f"골드 반영({ll.label}→{g})")
+        else:
+            ll.notes.append("골드 반영")
+        ll.label = ll.raw_label = g
+        ll.source = "gold"
+        ll.hold_reason = ""
+    info.gold_lines = applied
+    return applied
+
+
 def snapshot(info: RunInfo, cfg: Config, labeled: list[LabeledLine], doc: Document, src_hash: str) -> dict:
-    settings = {**cfg.fingerprint(), "prompt_version": PROMPT_VERSION, "classifier": info.classifier or "-", "version": __version__}
+    settings = {**cfg.fingerprint(), "prompt_version": PROMPT_VERSION, "classifier": info.classifier or "-", "version": __version__,
+                "gold": info.gold_desc or "없음"}
     lines = {f"{ll.page_no}:{ll.line_idx}": {"h": text_hash(ll.text), "label": ll.label, "score": ll.score, "in": in_review_list(ll)}
              for ll in labeled}
     grades = Counter(ll.label for ll in labeled if in_review_list(ll))
@@ -261,8 +293,15 @@ def record_history(result: "Result", cfg: Config, history: History | None = None
     history.save_run(snap)
 
 
+def load_gold_map(cfg: Config) -> GoldMap | None:
+    if not cfg.use_gold:
+        return None
+    gm = GoldMap.load(cfg.gold_paths, cfg.base_dir)
+    return gm if gm.files else None
+
+
 def run_file(path: Path, cfg: Config, client=None, progress: Progress | None = None, status: Status | None = None,
-             embedder=None, classifier=None, history: History | None = None) -> Result:
+             embedder=None, classifier=None, history: History | None = None, use_gold: bool = True) -> Result:
     t0 = time.time()
     info = RunInfo(source=str(path), model=cfg.model, prompt_version=PROMPT_VERSION,
                    started_at=datetime.now().isoformat(timespec="seconds"), accept_score=cfg.accept_score)
@@ -272,7 +311,12 @@ def run_file(path: Path, cfg: Config, client=None, progress: Progress | None = N
     info.pages_image = sum(1 for p in doc.pages if p.excluded_reason == IMAGE_PAGE)
     info.pages_excluded = sum(1 for p in doc.pages if p.excluded_reason and p.excluded_reason != IMAGE_PAGE)
     cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)
-    svc = Services(cfg, cache, client=client, embedder=embedder, classifier=classifier)
+    gold = load_gold_map(cfg) if use_gold else None
+    if gold is not None:
+        info.gold_desc = gold.describe()
+        if gold.conflicts:
+            info.warnings.append(f"골드 {gold.conflicts}문장이 파일마다 정답이 달라 최근 파일을 따랐습니다")
+    svc = Services(cfg, cache, client=client, embedder=embedder, classifier=classifier, gold=gold)
     try:
         labeled = label_pages(doc.pages, cfg, svc, info, progress, status)
         if info.mode in ("fast", "hybrid"):
@@ -284,6 +328,8 @@ def run_file(path: Path, cfg: Config, client=None, progress: Progress | None = N
         apply_title_fix(labeled)
     if cfg.safety_net:
         apply_safety_net(labeled)
+    if gold is not None:
+        apply_gold(labeled, gold, info)
     trained = getattr(svc.classifier, "kind", "") == "trained"
     info.held_lines = apply_scores(labeled, cfg, trained)
     info.elapsed_sec = time.time() - t0

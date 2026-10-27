@@ -1,6 +1,8 @@
-# IP Finder v0.4.1
+# IP Finder v0.4.2
 
-설치본을 **완전히 따로 관리**할 수 있게 했습니다. 캐시, 학습한 분류기, 실행 이력, 설정 파일이 모두 설치 폴더의 `data\` 와 `ip_finder.toml` 에만 생기고, 사용자 홈 폴더(`%USERPROFILE%\.ip_finder`)에는 아무것도 만들지 않습니다. 새 폴더에 ZIP을 풀어 `install.bat`를 실행하면 기존 설치본과 아무것도 공유하지 않습니다 (Ollama 모델만 PC 전체 공유). 이전 버전에서 학습한 분류기를 이어 쓰려면 `%USERPROFILE%\.ip_finder\classifier.npz` 를 새 폴더의 `data\classifier.npz` 로 복사하세요. `ip-finder check` 가 설치 폴더와 상태 파일 위치를 보여 줍니다.
+**골드 정답 반영**: 골드 폴더(`data\gold`)의 골드 시트에 있는 문장이 새 실행에 다시 나오면 모델 판정 대신 골드의 정답을 그대로 씁니다 (판정 열 '골드', 점수 1.0, 보류 없음, LLM 호출 없음). 사람이 확정한 판정은 프로그램을 업그레이드하거나 같은 보고서를 다시 돌려도 뒤집히지 않고, '변경 사항' 시트에는 정말 새로운 변화만 남습니다. 채점(`eval`)과 골드 시트 초안에는 반영하지 않으며 `--no-gold` 로 끌 수 있습니다. `feedback` 과 `gold-sheet` 의 기본 저장 위치가 `data\gold` 로 바뀌었고, UI 학습 목록에 그 폴더의 골드가 자동으로 올라옵니다. 다른 곳에 둔 골드는 설정 `gold_paths` 에 적습니다.
+
+v0.4.1: 설치본을 **완전히 따로 관리**할 수 있게 했습니다. 캐시, 학습한 분류기, 실행 이력, 설정 파일이 모두 설치 폴더의 `data\` 와 `ip_finder.toml` 에만 생기고, 사용자 홈 폴더(`%USERPROFILE%\.ip_finder`)에는 아무것도 만들지 않습니다. 새 폴더에 ZIP을 풀어 `install.bat`를 실행하면 기존 설치본과 아무것도 공유하지 않습니다 (Ollama 모델만 PC 전체 공유). 이전 버전에서 학습한 분류기를 이어 쓰려면 `%USERPROFILE%\.ip_finder\classifier.npz` 를 새 폴더의 `data\classifier.npz` 로 복사하세요. `ip-finder check` 가 설치 폴더와 상태 파일 위치를 보여 줍니다.
 
 v0.4.0: **정밀도 우선**으로 바뀌었습니다. 몇 개를 놓치더라도 확실한 것만 검토 목록에 올립니다.
 
@@ -37,4 +39,4 @@ v0.1.1에서는 한글 Windows의 cmd.exe가 UTF-8 배치 파일을 잘못 해�
 - 캐시(해시+라벨+벡터, 원문 미저장), 실행·피드백·학습 이력(원문 미저장), 골드 세트 생성·피드백 가져오기·채점·분류기 학습(`gold-sheet`, `feedback`, `eval`, `train`), 환경 점검(`check`), 페이지 확인(`pages`), 이력(`history`)
 - 오프라인 테스트 44건, 가짜 샘플과 결과 예시, 제안서(PROPOSAL.md)와 출력 예시(EXAMPLE.md)
 
-릴리스 만들기(저장소 소유자): `gh release create v0.4.1 dist/ip_finder_wheels_win_amd64_py312.zip --title "IP Finder v0.4.1" --notes-file RELEASE_NOTES.md`
+릴리스 만들기(저장소 소유자): `gh release create v0.4.2 dist/ip_finder_wheels_win_amd64_py312.zip --title "IP Finder v0.4.2" --notes-file RELEASE_NOTES.md`

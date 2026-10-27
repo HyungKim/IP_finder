@@ -1,6 +1,7 @@
 """문장 점수와 검토 목록/보류 결정 (정밀도 우선).
 
 신뢰도(0~1): 판정 주체와 일치 여부로 정한다.
+  - 골드 정답 반영(사람이 확정): 1.0, 페이지 가중치와 무관하게 점수 1.0
   - LLM 판정 + 분류기 일치(또는 LLM 재확인 일치): 1.0
   - LLM만 판정(llm 모드): 0.9
   - 분류기만(학습 분류기): 1위 확률
@@ -18,6 +19,8 @@ REVIEW_GRADES = ("A", "B", "C", "D")
 
 
 def confidence(ll: LabeledLine, trained: bool) -> float:
+    if ll.source == "gold":
+        return 1.0
     if ll.label == "?" or ll.raw_label == "?":
         return 0.0
     if ll.source == "llm":
@@ -41,7 +44,7 @@ def apply_scores(labeled: list[LabeledLine], cfg: Config, trained: bool) -> int:
     for ll in labeled:
         ll.page_weight = float(ll.page_weight)
         ll.confidence = round(float(confidence(ll, trained)), 3)
-        ll.score = round(ll.confidence * ll.page_weight, 3)
+        ll.score = 1.0 if ll.source == "gold" else round(ll.confidence * ll.page_weight, 3)
         ll.hold_reason = ""
         if ll.label in REVIEW_GRADES and ll.score < cfg.accept_score:
             why = []

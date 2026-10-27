@@ -12,8 +12,8 @@ from openpyxl import load_workbook
 
 from .. import PROMPT_VERSION
 from ..history import History
+from ..goldmap import GOLD_HEADERS, GOLD_SUFFIX, load_gold
 from .gold import write_gold_workbook
-from .score import GOLD_HEADERS, load_gold
 
 _OK = {"O", "o", "0", "ㅇ", "맞음", "✓", "V", "v", "Y", "y"}
 _NO = {"X", "x", "ㅌ", "틀림", "제외", "N", "n"}
@@ -107,15 +107,16 @@ def _read_sheet_simple(ws) -> list[dict]:
     return [dict(zip(header, r)) for r in rows_iter if r and r[0] is not None]
 
 
-def default_gold_path(result_xlsx: Path, source_name: str) -> Path:
+def default_gold_path(result_xlsx: Path, source_name: str, gold_dir: Path | None = None) -> Path:
+    """기본: 설정의 골드 폴더(data/gold)/<보고서 이름>_gold.xlsx. gold_dir 이 없으면 결과 파일 옆."""
     stem = Path(source_name).stem if source_name else result_xlsx.stem.replace("_검토후보", "")
-    return result_xlsx.with_name(f"{stem}_gold.xlsx")
+    return (gold_dir or result_xlsx.parent) / f"{stem}{GOLD_SUFFIX}"
 
 
 def import_feedback(result_xlsx: Path, gold_out: Path | None = None, confirm_unmarked: bool = False,
-                    history: History | None = None) -> dict:
+                    history: History | None = None, gold_dir: Path | None = None) -> dict:
     new_rows, meta = read_feedback(result_xlsx, confirm_unmarked)
-    gold_out = gold_out or default_gold_path(result_xlsx, meta["source_name"])
+    gold_out = gold_out or default_gold_path(result_xlsx, meta["source_name"], gold_dir)
     existing: list[dict] = load_gold(gold_out) if gold_out.exists() else []
     by_key = {(str(r.get("파일")), int(r.get("페이지") or 0), int(r.get("줄") or 0), str(r.get("문장"))): r for r in existing}
     updated, added = 0, 0

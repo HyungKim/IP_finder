@@ -21,6 +21,8 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--verify", help="분류기가 채택한 이 등급 문장을 LLM으로 재확인 (예: A 또는 A,B). 정밀도 우선 옵션")
     p.add_argument("--prompt", choices=["compact", "full"], help="시스템 프롬프트 판 (기본 compact)")
     p.add_argument("--classifier", help="학습된 분류기 파일(.npz) 경로 (기본: 설치 폴더의 data/classifier.npz)")
+    p.add_argument("--gold", action="append", help="골드 파일이나 폴더 (반복 가능). 기본: 설치 폴더의 data/gold. 골드에 있는 문장은 정답을 그대로 씀")
+    p.add_argument("--no-gold", action="store_true", help="골드 정답 반영 끔 (모델 판정만 보고 싶을 때)")
 
 
 def _cfg(args) -> Config:
@@ -31,7 +33,9 @@ def _cfg(args) -> Config:
                        use_cache=False if getattr(args, "no_cache", False) else None,
                        title_fix=False if getattr(args, "no_title_fix", False) else None,
                        safety_net=False if getattr(args, "no_safety_net", False) else None,
-                       history_path="" if getattr(args, "no_history", False) else None)
+                       history_path="" if getattr(args, "no_history", False) else None,
+                       gold_paths=getattr(args, "gold", None) or None,
+                       use_gold=False if getattr(args, "no_gold", False) else None)
 
 
 def cmd_check(args) -> int:
@@ -77,6 +81,8 @@ def cmd_check(args) -> int:
     print(f"  페이지 가중치 규칙 {len(cfg.page_weights)}개 (ip-finder pages <파일> 로 확인)")
     print(f"  캐시: {cfg.cache_file()} (원문 미저장, 해시+라벨+벡터)")
     print(f"  이력: {cfg.history_dir() or '저장 안 함'}  — 캐시·분류기·이력은 모두 설치 폴더의 data/ 아래. 설치본마다 따로 관리됩니다")
+    golds = cfg.gold_files()
+    print(f"  골드: {cfg.gold_dir()} — 파일 {len(golds)}개" + (" (골드에 있는 문장은 새 실행에서 정답을 그대로 씀)" if cfg.use_gold else " (반영 끔)"))
     if sys.platform == "win32":
         try:
             import win32com.client  # noqa: F401
@@ -97,6 +103,8 @@ def _summary(res) -> str:
              f"보류 {held + xq} (점수 미달 {held}, 단서어 {xq})"]
     if info.verify_lines:
         parts.append(f"재확인 {info.verify_lines}문장(바뀜 {info.verify_changed})")
+    if info.gold_lines:
+        parts.append(f"골드 반영 {info.gold_lines}문장(모델과 달랐던 것 {info.gold_changed})")
     if info.prev_run_id:
         ch = info.changes or {}
         parts.append(f"직전 실행 대비 진입 {ch.get('entered', 0)}, 이탈 {ch.get('left', 0)}, 등급 변경 {ch.get('grade', 0)}")
@@ -172,7 +180,8 @@ def cmd_gold_sheet(args) -> int:
         print(f"Ollama에 연결할 수 없습니다 ({cfg.host}).")
         return 1
     out = make_gold_sheet(Path(args.file), cfg, Path(args.out) if args.out else None, client)
-    print(f"골드 시트 생성: {out}\n'정답' 열에서 틀린 등급만 고친 뒤 'ip-finder eval {out}' 로 채점하고, 'ip-finder train {out}' 으로 분류기를 학습하세요.")
+    print(f"골드 시트 생성: {out}\n'정답' 열에서 틀린 등급만 고친 뒤 'ip-finder eval {out}' 로 채점하고, 'ip-finder train {out}' 으로 분류기를 학습하세요.\n"
+          f"골드 폴더({cfg.gold_dir()}) 안의 골드는 다음 실행부터 자동으로 반영됩니다 (같은 문장은 정답 그대로).")
     return 0
 
 
@@ -181,14 +190,14 @@ def cmd_feedback(args) -> int:
     from .history import History
     cfg = _cfg(args)
     rec = import_feedback(Path(args.result), Path(args.out) if args.out else None, confirm_unmarked=args.confirm_unmarked,
-                          history=History(cfg.history_dir()))
+                          history=History(cfg.history_dir()), gold_dir=cfg.gold_dir())
     print(f"피드백 {rec['feedback_rows']}행 → 골드 시트 {rec['gold']} (추가 {rec['added']}, 갱신 {rec['updated']}, 건너뜀 {rec['skipped']}, 골드 총 {rec['gold_rows']}행)")
     if rec["corrections"]:
         print("  내역: " + ", ".join(f"{k} {v}" for k, v in sorted(rec["corrections"].items())))
     if rec["feedback_rows"] == 0:
         print("  피드백 열이 비어 있습니다. 결과 Excel의 검토 목록·보류·제외 문장 시트 '피드백' 열에 O / X / A~D 를 적고 저장한 뒤 다시 실행하세요.")
     else:
-        print(f"  다음: ip-finder train {rec['gold']} [다른 골드 ...]  → 그다음 같은 보고서를 다시 extract 하면 '변경 사항' 시트에 달라진 행이 나옵니다.")
+        print(f"  다음 실행부터 이 문장들은 골드 정답을 그대로 씁니다. 분류기도 갱신하려면: ip-finder train {rec['gold']} [다른 골드 ...]")
     return 0
 
 
@@ -299,16 +308,16 @@ def main(argv: list[str] | None = None) -> int:
     _common(p)
     p.set_defaults(func=cmd_check)
 
-    p = sub.add_parser("gold-sheet", help="골드 세트 라벨링용 엑셀 생성 (모델 초안 라벨 포함)")
+    p = sub.add_parser("gold-sheet", help="골드 세트 라벨링용 엑셀 생성 (모델 초안 라벨 포함, 기본 저장 위치 data/gold)")
     p.add_argument("file")
-    p.add_argument("--out")
+    p.add_argument("--out", help="저장 경로 (기본: 골드 폴더 data/gold/<이름>_gold.xlsx)")
     p.add_argument("--no-cache", action="store_true")
     _common(p)
     p.set_defaults(func=cmd_gold_sheet)
 
     p = sub.add_parser("feedback", help="결과 Excel의 '피드백' 열(O/X/A~D)을 골드 시트로 가져오기")
     p.add_argument("result", help="<이름>_검토후보.xlsx")
-    p.add_argument("--out", help="골드 시트 경로 (기본: 결과 옆 <이름>_gold.xlsx, 있으면 합침)")
+    p.add_argument("--out", help="골드 시트 경로 (기본: 골드 폴더 data/gold/<이름>_gold.xlsx, 있으면 합침)")
     p.add_argument("--confirm-unmarked", action="store_true", help="검토 목록에서 피드백이 빈 행도 '맞음'으로 간주")
     _common(p)
     p.set_defaults(func=cmd_feedback)

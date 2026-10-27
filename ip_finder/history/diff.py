@@ -20,7 +20,7 @@ _SETTING_NAMES = {
     "accept_score": "목록 점수 기준", "split_len": "분할 길이", "repeated_line_min_pages": "반복 문구 기준",
     "stoplist": "수동 제거 목록", "page_exclude_patterns": "페이지 제외 패턴", "cover_max_lines": "표지 기준",
     "title_fix": "제목 보정", "safety_net": "안전장치", "prompt_version": "프롬프트 버전", "classifier": "분류기",
-    "version": "프로그램 버전",
+    "version": "프로그램 버전", "gold": "골드(반영 문장)", "use_gold": "골드 반영",
 }
 
 

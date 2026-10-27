@@ -35,7 +35,7 @@ HOLD_FILL = "#EEEEEE"
 MODES = [("hybrid", "hybrid  —  분류기 확신분 채택, 애매한 문장만 LLM (기본)"),
          ("fast", "fast  —  분류기만, 가장 빠름"),
          ("llm", "llm  —  전부 LLM, 가장 느림")]
-SOURCE_NAME = {"clf": "분류기", "llm": "LLM", "verified": "분류기+LLM"}
+SOURCE_NAME = {"clf": "분류기", "llm": "LLM", "verified": "분류기+LLM", "gold": "골드"}
 TYPE_LABEL = {"means": "수단(개선안·설계)", "result": "결과(검증·효과)", "problem": "과제(원인·문제)", "plan": "계획(향후)",
               "status": "현황(실적·요약)", "general": "기타(유형 모름)"}
 USER_CONFIG = app_root() / CONFIG_NAME     # 설치 폴더의 ip_finder.toml (설치본마다 따로)
@@ -108,6 +108,7 @@ class App(tk.Tk):
         self.after(100, self._poll)
         self.after(400, self.check_env)
         self.after(600, self.refresh_history)
+        self.after(700, self.load_gold_folder)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ------------------------------------------------------------------ 화면 구성
@@ -307,7 +308,7 @@ class App(tk.Tk):
         self.confirm_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(f1b, text="검토 목록에서 피드백이 빈 행도 '맞음'으로 간주 (목록을 끝까지 검토했을 때만)", variable=self.confirm_var).pack(side="left", padx=4)
 
-        f2 = ttk.LabelFrame(root, text=" 3. 분류기 학습  —  정답을 채운 골드 시트(여러 개 가능)로 학습합니다. 학습 후 hybrid/fast 모드가 자동으로 사용 ")
+        f2 = ttk.LabelFrame(root, text=" 3. 분류기 학습  —  골드 폴더(data\\gold)의 골드 시트는 자동으로 올라옵니다. 골드에 있는 문장은 학습과 별개로 다음 실행부터 정답이 그대로 반영됩니다 ")
         f2.grid(row=2, column=0, sticky="ew", padx=6, pady=4)
         f2.columnconfigure(0, weight=1)
         self.gold_list = tk.Listbox(f2, height=4, selectmode="extended")
@@ -315,6 +316,7 @@ class App(tk.Tk):
         b2 = ttk.Frame(f2)
         b2.grid(row=0, column=1, sticky="n", padx=(0, 8), pady=6)
         ttk.Button(b2, text="골드 파일 추가...", command=self.add_gold_dialog, width=16).pack(fill="x", pady=1)
+        ttk.Button(b2, text="골드 폴더 열기", command=lambda: open_path(self.cfg.gold_dir()) if self.cfg.gold_dir().exists() else messagebox.showinfo("골드 폴더", f"아직 없습니다: {self.cfg.gold_dir()}"), width=16).pack(fill="x", pady=1)
         ttk.Button(b2, text="선택 제거", command=self.remove_gold_selected, width=16).pack(fill="x", pady=1)
         ttk.Button(b2, text="학습 실행", command=self.start_train, width=16).pack(fill="x", pady=(6, 1))
         self.clf_var = tk.StringVar(value="")
@@ -503,7 +505,9 @@ class App(tk.Tk):
         verify = ",".join(g for g, v in (("A", self.verify_var.get()), ("B", self.verify_b_var.get())) if v)
         return Config.load(self.cfg.config_path or None, mode=mode, model=self.model_var.get().strip() or None,
                            embed_model=self.embed_var.get().strip() or None, confidence_threshold=thr, use_cache=self.cache_var.get(),
-                           page_weights=rules, page_type_weights=types, accept_score=accept, verify_grades=verify)
+                           page_weights=rules, page_type_weights=types, accept_score=accept, verify_grades=verify,
+                           gold_paths=self.cfg.gold_paths, use_gold=self.cfg.use_gold, history_path=self.cfg.history_path,
+                           cache_path=self.cfg.cache_path, classifier_path=self.cfg.classifier_path)
 
     def apply_rules(self) -> None:
         try:
@@ -732,6 +736,14 @@ class App(tk.Tk):
             self.gold_files.append(path)
             self.gold_list.insert("end", str(path))
 
+    def load_gold_folder(self) -> None:
+        """골드 폴더의 *_gold.xlsx 를 학습 목록에 올린다."""
+        try:
+            for p in self.cfg.gold_files():
+                self._add_gold(p)
+        except Exception:
+            pass
+
     def start_gold_sheet(self) -> None:
         if self._busy():
             return
@@ -749,7 +761,7 @@ class App(tk.Tk):
             raise RuntimeError(f"Ollama 에 연결할 수 없습니다 ({cfg.host}).")
         self._log(f"골드 시트 생성 중: {path.name} (모드 {cfg.mode})", "q")
         out = make_gold_sheet(path, cfg, None, client)
-        self._log(f"생성: {out}\n'라벨링' 시트의 '정답' 열에서 틀린 등급만 고친 뒤 저장하세요. 이 파일은 실제 문장을 담으므로 저장소 밖에 두세요.", "q")
+        self._log(f"생성: {out}\n'라벨링' 시트의 '정답' 열에서 틀린 등급만 고친 뒤 저장하세요. 골드 폴더 안의 골드는 다음 실행부터 자동 반영됩니다 (같은 문장은 정답 그대로).", "q")
         return {"kind": "gold", "path": out}
 
     def open_last_gold(self) -> None:
@@ -768,14 +780,14 @@ class App(tk.Tk):
     def _feedback_job(self, result: Path, cfg: Config, confirm: bool) -> dict:
         from .eval import import_feedback
         from .history import History
-        rec = import_feedback(result, None, confirm_unmarked=confirm, history=History(cfg.history_dir()))
+        rec = import_feedback(result, None, confirm_unmarked=confirm, history=History(cfg.history_dir()), gold_dir=cfg.gold_dir())
         msg = (f"피드백 {rec['feedback_rows']}행 → 골드 시트 {rec['gold']}\n  추가 {rec['added']}, 갱신 {rec['updated']}, 건너뜀 {rec['skipped']}, 골드 총 {rec['gold_rows']}행")
         if rec["corrections"]:
             msg += "\n  내역: " + ", ".join(f"{k} {v}" for k, v in sorted(rec["corrections"].items()))
         if rec["feedback_rows"] == 0:
             msg += "\n  피드백 열이 비어 있습니다. 결과 Excel의 '피드백' 열에 O / X / A~D 를 적고 저장한 뒤 다시 하세요."
         else:
-            msg += "\n  골드 시트가 3번 학습 목록에 추가됐습니다. 학습 후 같은 보고서를 다시 추출하면 '변경 추적' 탭과 Excel '변경 사항' 시트에 달라진 행이 나옵니다."
+            msg += "\n  다음 실행부터 이 문장들은 골드 정답을 그대로 씁니다. 분류기까지 갱신하려면 3번에서 학습하세요. 같은 보고서를 다시 추출하면 '변경 사항' 시트에 달라진 행이 나옵니다."
         self._log(msg, "q")
         return {"kind": "feedback", "gold": rec["gold"]}
 

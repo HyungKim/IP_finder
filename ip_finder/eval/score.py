@@ -5,39 +5,14 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from pathlib import Path
 
-from openpyxl import load_workbook
-
 from ..cache import LabelCache
 from ..config import Config
-from ..models import GRADES, Line, Page, RunInfo
+from ..goldmap import GOLD_HEADERS, LABELS, load_gold, norm_label as _norm
+from ..models import Line, Page, RunInfo
 from ..post import apply_safety_net, apply_scores, apply_title_fix, in_review_list
 from ..prep.page_weight import page_weight
 
-GOLD_HEADERS = ["번호", "파일", "페이지", "제목", "줄", "문장", "모델 라벨", "후처리 라벨", "판정", "확신", "점수", "가중치", "정답", "메모"]
-LABELS = list(GRADES)
 SWEEP = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
-
-
-def _norm(label) -> str:
-    s = str(label or "").strip().upper()
-    return "X" if s in ("X?", "X") else s
-
-
-def load_gold(path: Path) -> list[dict]:
-    wb = load_workbook(str(path), read_only=True, data_only=True)
-    ws = wb["라벨링"]
-    rows_iter = ws.iter_rows(values_only=True)
-    header = [str(h) for h in next(rows_iter)]
-    idx = {h: i for i, h in enumerate(header)}
-    rows = []
-    for r in rows_iter:
-        if r is None or r[idx["문장"]] is None:
-            continue
-        gold = _norm(r[idx["정답"]])
-        if gold not in LABELS:
-            continue
-        rows.append({h: r[idx[h]] for h in GOLD_HEADERS if h in idx} | {"정답": gold})
-    return rows
 
 
 def score(pairs: list[tuple[str, str]]) -> dict:
@@ -93,7 +68,7 @@ def evaluate(gold_path: Path, cfg: Config, rerun: bool = True, client=None, embe
             order.extend(grp)
         cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)
         try:
-            svc = Services(cfg, cache, client=client, embedder=embedder, classifier=classifier)
+            svc = Services(cfg, cache, client=client, embedder=embedder, classifier=classifier)   # 채점에는 골드 반영 없음
             labeled = label_pages(pages, cfg, svc, info)
             if info.mode in ("fast", "hybrid"):
                 verify_lines(labeled, cfg, svc, info)
