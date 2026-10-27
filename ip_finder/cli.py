@@ -21,7 +21,7 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--accept-score", type=float, help="신뢰도×가중치 가 이 값 이상이어야 검토 목록 (기본 0.5). 미만은 보류 시트")
     p.add_argument("--no-page-weight", action="store_true", help="페이지 가중치 끔 (모든 페이지 1.0)")
     p.add_argument("--low-weight", type=float, help="관련성 낮음 페이지의 가중치 (기본 0.4, 0 이면 판정 안 함)")
-    p.add_argument("--short-chars", type=int, help="글자수(공백 제외)가 이 값 이하인 줄은 후보에서 제외 (기본 14)")
+    p.add_argument("--short-chars", type=int, help="글자수(공백 제외)가 이 값 이하인 줄은 후보에서 제외 (기본 10)")
     p.add_argument("--prompt", choices=["compact", "full"], help="시스템 프롬프트 판 (기본 compact)")
     p.add_argument("--classifier", help="학습된 분류기 파일(.npz) 경로 (기본: 설치 폴더의 data/classifier.npz)")
     p.add_argument("--gold", action="append", help="골드 파일이나 폴더 (반복 가능). 기본: 설치 폴더의 data/gold. 골드에 있는 문장은 정답을 그대로 씀")

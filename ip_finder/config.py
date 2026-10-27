@@ -61,7 +61,7 @@ class Config:
     low_relevance_weight: float = 0.4   # 관련성 낮음 페이지의 가중치. 0 이면 그 페이지는 판정하지 않음
     accept_score: float = 0.5           # 신뢰도 × 가중치 가 이 값 이상이어야 검토 목록. 미만은 보류 시트
     # 전처리
-    short_line_chars: int = 14          # 글자수(공백 제외)가 이 값 이하인 줄은 '짧은 조각'으로 후보에서 제외
+    short_line_chars: int = 10          # 글자수(공백 제외)가 이 값 이하인 줄은 '짧은 조각'으로 후보에서 제외
     split_len: int = 80                 # 이 길이를 넘는 줄은 문장 단위로 분할. 나뉜 조각이 short_line_chars 이하이면 옆 조각에 붙임
     repeated_line_min_pages: int = 3    # 이 수 이상 페이지에 같은 줄이 있으면 반복 문구로 제거
     stoplist: list[str] = field(default_factory=list)   # 템플릿별 수동 제거 문구
