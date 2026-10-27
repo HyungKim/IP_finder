@@ -1,5 +1,7 @@
+from ip_finder.config import Config
 from ip_finder.models import LabeledLine
-from ip_finder.post import apply_safety_net, apply_title_fix, discussion_point, section_name
+from ip_finder.post import apply_safety_net, apply_scores, apply_title_fix, discussion_point, in_hold_list, in_review_list, section_name
+from ip_finder.post.scoring import confidence
 
 
 def _ll(text, label, title="개선안 1"):
@@ -36,3 +38,28 @@ def test_safety_net_rescues_only_with_cues():
 def test_templates():
     assert "수단" in discussion_point("B")
     assert discussion_point("Z") == ""
+
+
+def test_confidence_by_source_and_agreement():
+    llm_only = _ll("a", "A"); llm_only.source = "llm"
+    agree = _ll("a", "A"); agree.source = "llm"; agree.clf_label = "A"; agree.clf_conf = 0.01
+    disagree = _ll("a", "A"); disagree.source = "llm"; disagree.clf_label = "C"; disagree.clf_conf = 0.01; disagree.notes = ["불일치"]
+    zero = _ll("a", "A"); zero.source = "clf"; zero.clf_label = "A"; zero.clf_conf = 0.1; zero.clf_top = 0.8
+    trained = _ll("a", "A"); trained.source = "clf"; trained.clf_label = "A"; trained.clf_conf = 0.3; trained.clf_top = 0.72
+    verified = _ll("a", "A"); verified.source = "verified"; verified.clf_label = "A"; verified.clf_conf = 0.3
+    failed = _ll("a", "?"); failed.raw_label = "?"
+    assert confidence(llm_only, False) == 0.9 and confidence(agree, False) == 1.0 and confidence(disagree, False) == 0.65
+    assert abs(confidence(zero, False) - 0.75) < 1e-9 and abs(confidence(trained, True) - 0.72) < 1e-9
+    assert confidence(verified, True) == 1.0 and confidence(failed, True) == 0.0
+
+
+def test_apply_scores_holds_below_accept():
+    rows = [_ll("수단 문장", "A"), _ll("효과 문장", "B"), _ll("제외", "X"), _ll("단서어", "X?")]
+    for r in rows:
+        r.source = "llm"
+    rows[0].page_weight, rows[1].page_weight = 1.0, 0.4
+    held = apply_scores(rows, Config(accept_score=0.5), trained=False)
+    assert held == 1 and rows[0].score == 0.9 and rows[1].score == 0.36
+    assert rows[1].hold_reason.startswith("점수 0.36 < 0.50") and "가중치 0.40" in rows[1].hold_reason
+    assert in_review_list(rows[0]) and not in_review_list(rows[1]) and in_hold_list(rows[1]) and in_hold_list(rows[3])
+    assert not in_review_list(rows[2]) and not in_hold_list(rows[2])

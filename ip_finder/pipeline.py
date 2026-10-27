@@ -1,4 +1,5 @@
-"""읽기 → 전처리 → 판정(llm / fast / hybrid) → 후처리 → 리포트. CLI와 평가·학습 도구가 공유한다."""
+"""읽기 → 전처리(가중치 포함) → 판정(llm / fast / hybrid) → LLM 재확인(선택) → 후처리 → 점수 → 이력 → 리포트.
+CLI, UI, 평가·학습 도구가 공유한다."""
 from __future__ import annotations
 
 import time
@@ -8,15 +9,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from . import PROMPT_VERSION
+from . import PROMPT_VERSION, __version__
 from .cache import LabelCache
 from .classify import OllamaEmbedder, load_classifier
 from .config import Config
+from .history import History, change_rows, diff_runs, file_hash, make_run_id, settings_diff, text_hash
 from .label import label_grouped, label_page, load_system_prompt
 from .llm import OllamaClient
-from .models import Document, LabeledLine, Page, RunInfo
-from .post import apply_safety_net, apply_title_fix, assign_sections
-from .prep import apply_line_rules, apply_page_rules, number_lines
+from .models import Document, LabeledLine, Line, Page, RunInfo
+from .post import apply_safety_net, apply_scores, apply_title_fix, assign_sections, in_review_list
+from .prep import apply_line_rules, apply_page_rules, apply_page_weights, number_lines
 from .prep.page_rules import IMAGE_PAGE
 from .prep.page_type import page_type
 from .readers import SUPPORTED, load_document
@@ -32,6 +34,7 @@ class Result:
     labeled: list[LabeledLine]
     info: RunInfo
     removed: Counter
+    changes: list[dict] = field(default_factory=list)   # 직전 실행 대비 변경 행 (Excel '변경 사항')
 
 
 @dataclass
@@ -74,6 +77,7 @@ def output_path(src: Path, out_dir: Path | None = None, with_ext: bool = False) 
 def prepare(doc: Document, cfg: Config) -> Counter:
     """전처리만 수행 (LLM 없음). 테스트와 골드 시트가 재사용."""
     apply_page_rules(doc, cfg)
+    apply_page_weights(doc, cfg)
     removed = apply_line_rules(doc, cfg)
     number_lines(doc, cfg)
     assign_sections(doc)
@@ -96,6 +100,15 @@ def _line_notes(ln) -> list[str]:
     if ln.source == "table":
         notes.append("표")
     return notes
+
+
+def classifier_desc(cfg: Config, clf) -> str:
+    """실행 정보와 이력에 적는 분류기 설명. 학습 분류기는 학습 시각과 문장 수까지."""
+    if getattr(clf, "kind", "") != "trained":
+        return "제로샷(원형 문장)"
+    meta = getattr(clf, "meta", {}) or {}
+    when = str(meta.get("trained_at", ""))[:16].replace("T", " ")
+    return f"학습({cfg.classifier_file().name}, {when}, {meta.get('n', '?')}문장, 골드 {len(meta.get('sources', []))}개)"
 
 
 def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
@@ -123,7 +136,8 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
             for ln in page.active_lines():
                 lab = labels.get(ln.idx, "?")
                 labeled.append(LabeledLine(page_no=page.no, page_title=page.title, section=page.section, line_idx=ln.idx,
-                                           text=ln.text, label=lab, raw_label=lab, notes=_line_notes(ln), source="llm"))
+                                           text=ln.text, label=lab, raw_label=lab, notes=_line_notes(ln), source="llm",
+                                           page_weight=page.weight))
         info.llm_lines = len(labeled)
         info.llm_sec = getattr(client, "llm_seconds", 0.0) - t0
         return labeled
@@ -142,14 +156,14 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
     info.embed_model = cfg.embed_model
     clf = svc.classifier
     trained = getattr(clf, "kind", "") == "trained"
-    info.classifier = f"학습({cfg.classifier_file().name})" if trained else "제로샷(원형 문장)"
+    info.classifier = classifier_desc(cfg, clf)
     thr = cfg.threshold(trained)
     info.threshold = thr
     preds = clf.predict(vectors, texts, page_types)
     for (p, ln), pr in zip(entries, preds):
         labeled.append(LabeledLine(page_no=p.no, page_title=p.title, section=p.section, line_idx=ln.idx, text=ln.text,
                                    label=pr.label, raw_label=pr.label, notes=_line_notes(ln), source="clf",
-                                   clf_label=pr.label, clf_conf=pr.confidence))
+                                   clf_label=pr.label, clf_conf=pr.confidence, clf_top=pr.top, page_weight=p.weight))
     if mode == "hybrid":
         ambiguous = [(p, ln) for (p, ln), pr in zip(entries, preds) if pr.confidence < thr]
         if status:
@@ -176,11 +190,82 @@ def label_pages(pages: list[Page], cfg: Config, svc: Services, info: RunInfo,
     return labeled
 
 
+def verify_lines(labeled: list[LabeledLine], cfg: Config, svc: Services, info: RunInfo, status: Status | None = None) -> None:
+    """분류기가 채택한 verify_grades 등급 문장을 LLM으로 재확인한다 (정밀도 우선 옵션).
+    일치하면 source='verified'(신뢰도 1.0), 다르면 LLM 라벨을 채택하고 '재확인 불일치'를 남긴다(신뢰도 0.65)."""
+    want = cfg.verify_set()
+    if not want:
+        return
+    targets = [ll for ll in labeled if ll.source == "clf" and ll.label in want]
+    if not targets:
+        return
+    if status:
+        status(f"{'/'.join(sorted(want))} 등급 {len(targets)}문장 LLM 재확인 ({cfg.model})")
+    entries = [(Page(no=ll.page_no, title=ll.page_title), Line(idx=ll.line_idx, text=ll.text)) for ll in targets]
+    client = svc.llm()
+    t0 = getattr(client, "llm_seconds", 0.0)
+    res = label_grouped(client, entries, cfg, svc.cache, info)
+    info.llm_sec += getattr(client, "llm_seconds", 0.0) - t0
+    for ll in targets:
+        lab = res.get((ll.page_no, ll.line_idx))
+        if lab is None or lab == "?":
+            ll.notes.append("재확인 실패, 분류기 라벨 유지")
+            continue
+        info.verify_lines += 1
+        if lab == ll.label:
+            ll.source = "verified"
+            ll.notes.append("재확인 일치")
+        else:
+            info.verify_changed += 1
+            ll.notes.append(f"분류기 {ll.clf_label}({ll.clf_conf:.2f})")
+            ll.notes.append(f"재확인 불일치({ll.clf_label}→{lab})")
+            ll.notes.append("불일치")
+            ll.label = ll.raw_label = lab
+            ll.source = "llm"
+
+
+def snapshot(info: RunInfo, cfg: Config, labeled: list[LabeledLine], doc: Document, src_hash: str) -> dict:
+    settings = {**cfg.fingerprint(), "prompt_version": PROMPT_VERSION, "classifier": info.classifier or "-", "version": __version__}
+    lines = {f"{ll.page_no}:{ll.line_idx}": {"h": text_hash(ll.text), "label": ll.label, "score": ll.score, "in": in_review_list(ll)}
+             for ll in labeled}
+    grades = Counter(ll.label for ll in labeled if in_review_list(ll))
+    return {
+        "run_id": info.run_id, "started_at": info.started_at, "source": info.source, "source_name": Path(info.source).name,
+        "source_hash": src_hash, "settings": settings, "elapsed_sec": round(info.elapsed_sec, 1),
+        "stats": {"pages_total": info.pages_total, "pages_labeled": info.pages_labeled, "lines": len(labeled),
+                  "list": sum(grades.values()), "A": grades.get("A", 0), "B": grades.get("B", 0), "C": grades.get("C", 0), "D": grades.get("D", 0),
+                  "held": info.held_lines, "llm_calls": info.llm_calls, "verify_changed": info.verify_changed},
+        "lines": lines,
+    }
+
+
+def record_history(result: "Result", cfg: Config, history: History | None = None) -> None:
+    """스냅샷 저장 + 같은 파일의 직전 실행과 비교. result.changes 와 info.changes/settings_diff/prev_run_id 를 채운다."""
+    info = result.info
+    history = history or History(cfg.history_dir())
+    if not history.enabled:
+        return
+    src = Path(info.source)
+    info.run_id = history.unique_run_id(make_run_id(info.started_at, src))
+    snap = snapshot(info, cfg, result.labeled, result.doc, file_hash(src))
+    prev = history.previous_run(snap["source_hash"], snap["source_name"], info.run_id)
+    if prev is not None:
+        info.prev_run_id = prev.get("run_id", "")
+        info.settings_diff = settings_diff(prev.get("settings", {}), snap["settings"])
+        d = diff_runs(prev, snap)
+        info.changes = d["counts"]
+        result.changes = change_rows(d, result.labeled)
+        snap["prev_run_id"] = info.prev_run_id
+        snap["settings_diff"] = info.settings_diff
+        snap["changes"] = d["counts"]
+    history.save_run(snap)
+
+
 def run_file(path: Path, cfg: Config, client=None, progress: Progress | None = None, status: Status | None = None,
-             embedder=None, classifier=None) -> Result:
+             embedder=None, classifier=None, history: History | None = None) -> Result:
     t0 = time.time()
     info = RunInfo(source=str(path), model=cfg.model, prompt_version=PROMPT_VERSION,
-                   started_at=datetime.now().isoformat(timespec="seconds"))
+                   started_at=datetime.now().isoformat(timespec="seconds"), accept_score=cfg.accept_score)
     doc = load_document(path)
     removed = prepare(doc, cfg)
     info.pages_total = len(doc.pages)
@@ -190,6 +275,8 @@ def run_file(path: Path, cfg: Config, client=None, progress: Progress | None = N
     svc = Services(cfg, cache, client=client, embedder=embedder, classifier=classifier)
     try:
         labeled = label_pages(doc.pages, cfg, svc, info, progress, status)
+        if info.mode in ("fast", "hybrid"):
+            verify_lines(labeled, cfg, svc, info, status)
     finally:
         cache.close()
     info.model = getattr(svc.client, "model", cfg.model) if svc.client is not None else cfg.model
@@ -197,14 +284,19 @@ def run_file(path: Path, cfg: Config, client=None, progress: Progress | None = N
         apply_title_fix(labeled)
     if cfg.safety_net:
         apply_safety_net(labeled)
+    trained = getattr(svc.classifier, "kind", "") == "trained"
+    info.held_lines = apply_scores(labeled, cfg, trained)
     info.elapsed_sec = time.time() - t0
-    return Result(doc, labeled, info, removed)
+    result = Result(doc, labeled, info, removed)
+    record_history(result, cfg, history)
+    return result
 
 
 def extract(path: Path, cfg: Config, out_dir: Path | None = None, client=None, progress: Progress | None = None,
-            with_ext: bool = False, status: Status | None = None, embedder=None, classifier=None) -> tuple[Path, Result]:
-    result = run_file(path, cfg, client, progress, status, embedder, classifier)
-    out = write_report(output_path(path, out_dir, with_ext), result.doc, result.labeled, result.info, result.removed)
+            with_ext: bool = False, status: Status | None = None, embedder=None, classifier=None,
+            history: History | None = None) -> tuple[Path, Result]:
+    result = run_file(path, cfg, client, progress, status, embedder, classifier, history)
+    out = write_report(output_path(path, out_dir, with_ext), result.doc, result.labeled, result.info, result.removed, result.changes)
     return out, result
 
 

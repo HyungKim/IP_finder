@@ -36,4 +36,6 @@ python3 speed_test2.py                        # 모델별 라벨 속도·정확�
 
 - 목적은 환경 점검과 모델별 페이지당 시간 실측입니다. 실제 보고서를 `sample.json` 형식으로 넣지 마세요.
 - Ollama 설치 후 `ollama pull qwen3:4b-instruct` (약 2.5GB). 8B 비교가 필요하면 `ollama pull qwen3:8b` (약 5.2GB).
+- KURE-v1 임베딩 비교는 `tools\import_kure.bat` 로 들여온 뒤 `ip-finder extract ... --mode fast --embed-model kure-v1` 과 `bge-m3` 를 골드 시트로 `eval` 해 비교합니다.
+- v0.4.0 의 세 모드·두 임베딩 실측(M4)은 상위 README '성능 참고' 절에 있습니다.
 - CPU 전용이면 M4 대비 5~8배 느릴 것으로 추정합니다. 4B 라벨만 출력 기준 7페이지에 1~2분이면 정상 범위입니다.

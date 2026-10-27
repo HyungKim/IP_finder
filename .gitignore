@@ -25,3 +25,7 @@ wheels/
 
 # 학습된 분류기 (회사 데이터로 학습, 저장소 밖에 둔다)
 *.npz
+
+# 회사별 설정과 모델 파일 (저장소 밖 또는 로컬 전용)
+ip_finder.toml
+tools/kure/*.gguf

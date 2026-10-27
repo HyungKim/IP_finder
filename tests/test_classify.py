@@ -12,6 +12,7 @@ def test_page_type():
     assert page_type("향후 계획")[0] == "plan"
     assert page_type("문제점 및 개선 방안") == ("general", None)      # 유형이 섞이면 힌트 없음
     assert page_type("PS-200 보고") == ("general", None)
+    assert page_type("품질 현황")[0] == "status" and page_type("추진 경과")[0] == "status"
 
 
 def test_zero_shot_with_fake_embedder(fake_embedder):

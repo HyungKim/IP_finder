@@ -1,0 +1,5 @@
+# KURE-v1 (nlpai-lab/KURE-v1, MIT) Korean embedding model for Ollama.
+# GGUF: https://huggingface.co/Bingsu/KURE-v1-Q8_0-GGUF  (kure-v1-q8_0.gguf, about 635 MB, Q8_0)
+# Put kure-v1-q8_0.gguf next to this file, then run tools\import_kure.bat (Windows) or:
+#   ollama create kure-v1 -f tools/kure/Modelfile
+FROM ./kure-v1-q8_0.gguf

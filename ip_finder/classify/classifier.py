@@ -20,8 +20,9 @@ PROTOTYPES_PATH = Path(__file__).parent / "prototypes.json"
 @dataclass
 class Prediction:
     label: str
-    confidence: float
+    confidence: float               # 1위 - 2위
     scores: dict[str, float]
+    top: float = 0.0                # 1위 점수 (학습 분류기는 확률, 제로샷은 코사인 유사도)
 
 
 def _normalize(M: np.ndarray) -> np.ndarray:
@@ -47,7 +48,7 @@ def _predictions(scores: np.ndarray, labels: list[str]) -> list[Prediction]:
     for row in scores:
         order = np.argsort(-row)
         top, second = float(row[order[0]]), float(row[order[1]]) if len(order) > 1 else 0.0
-        out.append(Prediction(labels[int(order[0])], top - second, {l: float(v) for l, v in zip(labels, row)}))
+        out.append(Prediction(labels[int(order[0])], top - second, {l: float(v) for l, v in zip(labels, row)}, top))
     return out
 
 
