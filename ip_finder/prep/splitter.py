@@ -5,18 +5,20 @@ import re
 
 from ..config import Config
 from ..models import Document, Line
+from .line_rules import char_count
 
 _SPLIT = re.compile(r"(?<=[.!?。])\s+")
-_MIN_FRAG = 8
+_MIN_FRAG = 15
 
 
-def split_sentences(text: str) -> list[str]:
+def split_sentences(text: str, min_frag: int = _MIN_FRAG) -> list[str]:
+    """문장 부호 뒤에서 나눈다. 글자수(공백 제외)가 min_frag 미만인 조각은 옆 조각에 붙여 짧은 조각을 만들지 않는다."""
     parts = [p.strip() for p in _SPLIT.split(text) if p.strip()]
     if len(parts) <= 1:
         return [text]
     merged: list[str] = []
     for p in parts:
-        if merged and (len(p) < _MIN_FRAG or len(merged[-1]) < _MIN_FRAG):
+        if merged and (char_count(p) < min_frag or char_count(merged[-1]) < min_frag):
             merged[-1] = f"{merged[-1]} {p}"
         else:
             merged.append(p)
@@ -34,7 +36,7 @@ def number_lines(doc: Document, cfg: Config) -> None:
                 new.append(ln)
                 continue
             orig += 1
-            parts = [ln.text] if len(ln.text) <= cfg.split_len else split_sentences(ln.text)
+            parts = [ln.text] if len(ln.text) <= cfg.split_len else split_sentences(ln.text, cfg.short_line_chars + 1)
             for part in parts:
                 idx += 1
                 new.append(Line(idx=idx, text=part, level=ln.level, source=ln.source,

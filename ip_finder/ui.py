@@ -189,7 +189,13 @@ class App(tk.Tk):
         ttk.Label(f_opt, text="목록 점수 기준").grid(row=2, column=0, sticky="w", padx=8, pady=4)
         self.accept_var = tk.StringVar(value=str(self.cfg.accept_score))
         ttk.Entry(f_opt, textvariable=self.accept_var, width=8).grid(row=2, column=1, sticky="w", padx=4)
-        ttk.Label(f_opt, text="(신뢰도×페이지 가중치. 미만은 보류 시트)").grid(row=2, column=1, columnspan=3, sticky="w", padx=(70, 0))
+        ttk.Label(f_opt, text="(신뢰도×가중치, 미만은 보류)").grid(row=2, column=1, sticky="w", padx=(70, 0))
+        ttk.Label(f_opt, text="짧은 줄 제외").grid(row=2, column=2, sticky="e", padx=8)
+        f_short = ttk.Frame(f_opt)
+        f_short.grid(row=2, column=3, sticky="w", padx=4)
+        self.short_var = tk.StringVar(value=str(self.cfg.short_line_chars))
+        ttk.Entry(f_short, textvariable=self.short_var, width=5).pack(side="left")
+        ttk.Label(f_short, text="글자 이하 (공백 제외)").pack(side="left", padx=4)
 
         ttk.Label(f_opt, text="결과 위치").grid(row=3, column=0, sticky="w", padx=8, pady=4)
         self.out_mode = tk.StringVar(value="beside")
@@ -483,6 +489,12 @@ class App(tk.Tk):
         accept = float(self.accept_var.get().strip() or 0.5)
         return low, high, low_w, accept
 
+    def short_chars(self) -> int:
+        v = self.short_var.get().strip()
+        if not v.isdigit():
+            raise ValueError(f"짧은 줄 제외 기준은 0 이상의 정수여야 합니다: {v!r}")
+        return int(v)
+
     def build_cfg(self, mode: str | None = None) -> Config:
         mode = mode or next(k for k, d in MODES if d == self.mode_var.get())
         low, high, low_w, accept = self.current_rules()
@@ -490,7 +502,7 @@ class App(tk.Tk):
         return Config.load(self.cfg.config_path or None, mode=mode, model=self.model_var.get().strip() or None,
                            embed_model=self.embed_var.get().strip() or None, use_cache=self.cache_var.get(),
                            page_weight_enabled=self.pw_var.get(), low_relevance_patterns=low, high_relevance_patterns=high,
-                           low_relevance_weight=low_w, accept_score=accept, target_grades=grades,
+                           low_relevance_weight=low_w, accept_score=accept, target_grades=grades, short_line_chars=self.short_chars(),
                            gold_paths=self.cfg.gold_paths, use_gold=self.cfg.use_gold, history_path=self.cfg.history_path,
                            cache_path=self.cfg.cache_path, classifier_path=self.cfg.classifier_path)
 
@@ -530,6 +542,7 @@ class App(tk.Tk):
         self.high_text.delete("1.0", "end")
         self.low_var.set(str(base.low_relevance_weight))
         self.accept_var.set(str(base.accept_score))
+        self.short_var.set(str(base.short_line_chars))
         self.pw_var.set(True)
 
     # ------------------------------------------------------------------ 환경 점검

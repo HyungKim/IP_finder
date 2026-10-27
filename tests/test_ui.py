@@ -50,6 +50,13 @@ def test_ui_builds_and_fills(tmp_path):
         app.grades_var.set("A·B·C·D  —  과제·계획까지")
         assert app.build_cfg().targets() == ["A", "B", "C", "D"]
         assert c.accept_score == 0.7 and c.page_weight_enabled is False and c.low_relevance_weight == 0.2
+        assert c.short_line_chars == 14
+        app.short_var.set("20")
+        assert app.build_cfg().short_line_chars == 20
+        app.short_var.set("x")
+        with pytest.raises(ValueError):
+            app.build_cfg()
+        app.short_var.set("14")
         assert c.low_relevance_patterns == ["현황", "(고객|클레임)"] and c.high_relevance_patterns == ["KPI\\s*개선"]
         app.low_text.insert("end", "\n(잘못된")
         with pytest.raises(ValueError):

@@ -22,7 +22,8 @@ low_relevance_patterns = [
 high_relevance_patterns = []         # 낮음보다 우선해 높음으로 두는 제목 정규식. 예: ["KPI\\s*개선"]
 
 # ---- 전처리와 후처리 ----
-split_len = 80                       # 이 길이를 넘는 줄은 문장 분할
+short_line_chars = 14                # 글자수(공백 제외)가 이 값 이하인 줄은 후보에서 제외 (제목 조각·표 셀·항목명). 0 이면 끔
+split_len = 80                       # 이 길이를 넘는 줄은 문장 분할. 나뉜 조각이 short_line_chars 이하이면 옆 조각에 붙임
 repeated_line_min_pages = 3          # 이 수 이상 페이지에 같은 줄이 있으면 머리말·바닥글로 제거
 stoplist = ["대외비", "Confidential"] # 템플릿의 고정 문구
 page_exclude_patterns = ["목\\s*차", "차례", "contents", "agenda", "일정", "스케줄", "schedule", "비용", "예산", "투자비", "cost", "budget", "조직", "인력", "담당자", "체계도", "감사합니다", "thank", "q\\s*&\\s*a", "질의", "참고\\s*문헌", "references", "부록", "appendix"]

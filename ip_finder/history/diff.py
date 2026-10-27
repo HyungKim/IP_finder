@@ -17,7 +17,7 @@ _SETTING_NAMES = {
     "model": "LLM 모델", "prompt_variant": "프롬프트 판", "mode": "판정 모드", "embed_model": "임베딩 모델",
     "group_max_chars": "묶음 글자 수", "group_by": "묶음 기준", "target_grades": "추출 등급", "page_weight_enabled": "페이지 가중치 적용",
     "low_relevance_patterns": "관련성 낮음 키워드", "high_relevance_patterns": "관련성 높음 키워드", "low_relevance_weight": "관련성 낮음 가중치",
-    "accept_score": "목록 점수 기준", "split_len": "분할 길이", "repeated_line_min_pages": "반복 문구 기준",
+    "accept_score": "목록 점수 기준", "short_line_chars": "짧은 줄 기준(글자수)", "split_len": "분할 길이", "repeated_line_min_pages": "반복 문구 기준",
     "stoplist": "수동 제거 목록", "page_exclude_patterns": "페이지 제외 패턴", "cover_max_lines": "표지 기준",
     "title_fix": "제목 보정", "safety_net": "안전장치", "prompt_version": "프롬프트 버전", "classifier": "분류기",
     "version": "프로그램 버전", "gold": "골드(반영 문장)", "use_gold": "골드 반영",

@@ -1,4 +1,4 @@
-"""줄 단위 제거 (보수적). 반복 문구, 수동 목록, 짧은 조각, 숫자만, 담당자, 짧은 일정·금액 줄."""
+"""줄 단위 제거. 반복 문구, 수동 목록, 숫자만, 담당자, 짧은 일정·금액 줄, 그리고 글자수가 short_line_chars 이하인 짧은 조각."""
 from __future__ import annotations
 
 import re
@@ -22,6 +22,11 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip().lower()
 
 
+def char_count(text: str) -> int:
+    """공백을 뺀 글자수. 한글·영문·숫자·기호 모두 한 글자."""
+    return len(re.sub(r"\s+", "", text))
+
+
 def apply_line_rules(doc: Document, cfg: Config) -> Counter:
     """removed_by 를 채운다. 규칙별 제거 수를 돌려준다."""
     per_page_sets = [{_norm(ln.text) for ln in p.lines if ln.text.strip()} for p in doc.pages]
@@ -41,14 +46,14 @@ def apply_line_rules(doc: Document, cfg: Config) -> Counter:
                 reason = "수동 목록"
             elif counts[n] >= cfg.repeated_line_min_pages:
                 reason = "반복 문구"
-            elif len(text) <= 3:
-                reason = "짧은 조각"
             elif NUMERIC_ONLY.match(text):
                 reason = "숫자만"
             elif OWNER_RE.search(text):
                 reason = "담당자"
             elif len(text) <= SHORT_RULE_LEN and (DATE_RE.search(text) or MONEY_RE.search(text)) and not has_tech_word(text):
                 reason = "일정/금액"
+            elif char_count(text) <= cfg.short_line_chars:
+                reason = "짧은 조각"       # 제목 조각·표 셀·항목명 같은 짧은 줄은 문맥 없이 판정할 수 없어 후보에서 뺀다
             ln.removed_by = reason
             if reason:
                 removed[reason] += 1
