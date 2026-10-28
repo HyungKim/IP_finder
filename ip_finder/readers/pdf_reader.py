@@ -3,9 +3,11 @@
 patent_finder 의 레이아웃 분석(XY-cut)을 PyMuPDF 위에 옮긴 것이다. 흐름:
 - 문자 → 줄(세로로 절반 이상 겹치는 문자) → 조각(큰 가로 간격에서 끊음: 다단·표 열 분리) → 재귀 XY-cut 으로 단과 블록 순서
   → 같은 영역의 줄을 문단으로 묶음(줄 간격·글씨 크기·목록 표식·오른쪽 여백·들여쓰기로 판단). 줄 끝 하이픈은 이어 붙인다.
-- 페이지 위·아래 8% 의 본문 크기 짧은 글이 3쪽 이상 반복되면 머리말·꼬리말(문서명, 대외비, 쪽 번호)로 보고 지운다.
+- 페이지 위·아래 8% 띠의 글(문서명, 쪽 번호)은 단 나눔 분석에서 떼어 두고 위 띠는 맨 앞, 아래 띠는 맨 뒤에 읽는다. 지우지 않는다
+  (반복 문구는 전처리 규칙이 거른다). 머리말·꼬리말을 지우던 정책은 v0.6.2 에서 폐기했다(제목이 지워지던 문제).
 - 표는 선 개체가 있을 때 PyMuPDF find_tables 로 찾아 행마다 '열 제목: 셀 | …' 한 줄(source="table")로 만든다.
-- 제목 = 페이지 위쪽 35% 안에서 본문 글씨의 1.2배 이상인 줄 묶음 중 가장 큰 것(title_source="font"). 없으면 첫 줄("first-line").
+- 제목 = 페이지 위쪽 35% 안에서 ① 본문 글씨의 1.15배 이상인 줄 중 가장 큰 것("font") → ② 굵은 글씨 줄 중 가장 위("bold")
+  → ③ 본문의 0.8배 이상 크기인 첫 줄("first-line", 8pt 문서명 같은 작은 글은 건너뜀).
 - 회전 페이지(/Rotate)는 화면 기준 좌표로 돌려 읽고, 화면에서 세로로 선 문자는 읽지 않고 센다.
   글꼴 매핑이 깨진 페이지(치환 문자 20% 초과)와 글자 없는 페이지는 본문 없이 둔다(전처리에서 '이미지 페이지').
 """
@@ -24,15 +26,15 @@ import pymupdf
 from ..models import Document, Line, Page
 from ._text import clean, list_marker, table_lines
 
-EDGE_ZONE = 0.08          # 페이지 위·아래 8%: 머리말·꼬리말 후보 영역
+EDGE_ZONE = 0.08          # 페이지 위·아래 8% 띠: 본문 배치 분석에서 떼어 두고 앞·뒤에 읽는다 (지우지 않음)
 TITLE_ZONE = 0.35         # 제목은 페이지 높이의 이 비율 안에 있어야 한다
 HEADING_RATIO = 1.15      # 본문 글씨의 이 배수 이상이면 제목·소제목
+TITLE_MIN_RATIO = 0.8     # 첫 줄을 제목으로 삼을 때(③) 본문 글씨의 이 배수 미만인 작은 글(문서명·쪽 번호)은 건너뛴다
 _DATE_START = re.compile(r"^\d{4}\s*[./년]")
 _NUMBER_DOT_END = re.compile(r"\d\.$")
 MAX_VECTORS = 5000        # 선 개체가 이보다 많으면 표 인식을 건너뛴다 (도면 페이지)
 MAX_LEVEL = 3
 _FLAGS = pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_MEDIABOX_CLIP   # 합자는 풀고, 이미지 블록은 받지 않는다
-_DIGITS = re.compile(r"\d+")
 
 
 @dataclass
@@ -79,7 +81,7 @@ class TextLine:
 
 @dataclass
 class Block:
-    """페이지 안의 읽기 단위. kind: heading | paragraph | list_item | table_row | edge(머리말·꼬리말 영역)."""
+    """페이지 안의 읽기 단위. kind: heading | paragraph | list_item | table_row."""
     kind: str
     text: str
     top: float
@@ -173,6 +175,16 @@ def build_line(chars: list[Char]) -> TextLine | None:
     visible = [c for c in ordered if not c.text.isspace()]
     return TextLine(text="".join(text), xs=xs, top=min(c.top for c in visible), bottom=max(c.bottom for c in visible),
                     size=statistics.median(c.size for c in visible), bold=sum(1 for c in visible if c.bold) * 2 > len(visible))
+
+
+def _band_lines(line_chars: list[Char]) -> list[TextLine]:
+    """위·아래 띠의 한 줄을 큰 가로 간격에서 나눠 각각 한 줄로 (왼쪽의 문서명과 오른쪽의 쪽 번호가 한 줄에 있어도 따로)."""
+    out = []
+    for frag in split_fragments(line_chars, -1):
+        built = build_line(frag.chars)
+        if built is not None:
+            out.append(built)
+    return out
 
 
 # ------------------------------------------------------------------ XY-cut 읽기 순서
@@ -476,7 +488,7 @@ class _PageParser:
         table_chars = {id(c) for table in tables for c in table["chars"]}
         free = [c for c in chars if id(c) not in table_chars]
 
-        # 머리말·꼬리말 영역의 줄은 단 나눔의 영향을 받지 않도록 본문 배치 분석에서 떼어 둔다.
+        # 위·아래 8% 띠의 줄(문서명·쪽 번호)은 단 나눔의 영향을 받지 않도록 본문 배치 분석에서 떼어 둔다. 지우지는 않는다.
         fragments: list[Fragment] = []
         header_lines: list[TextLine] = []
         footer_lines: list[TextLine] = []
@@ -485,13 +497,12 @@ class _PageParser:
             shown = [c for c in line_chars if c.text.strip()]
             if not shown:
                 continue
-            built = build_line(line_chars)
-            if built is None:
+            if build_line(line_chars) is None:
                 continue
             if max(c.bottom for c in shown) < EDGE_ZONE * self.height:
-                header_lines.append(built)
+                header_lines.extend(_band_lines(line_chars))
             elif min(c.top for c in shown) > (1 - EDGE_ZONE) * self.height:
-                footer_lines.append(built)
+                footer_lines.extend(_band_lines(line_chars))
             else:
                 body_lines.append(line_chars)
         tops = []
@@ -542,7 +553,7 @@ class _PageParser:
         for column, left in any_left.items():
             column_left.setdefault(column, left)
         for line in sorted(header_lines, key=lambda l: (l.top, l.x0)):
-            self._paragraph([line], body_size, line.x0, edge=True)
+            self._paragraph([line], body_size, line.x0)
         for column, items in prepared:
             for _top, item in items:
                 if isinstance(item, dict):
@@ -550,7 +561,7 @@ class _PageParser:
                 else:
                     self._paragraph(item, body_size, column_left[column])
         for line in sorted(footer_lines, key=lambda l: (l.top, l.x0)):
-            self._paragraph([line], body_size, line.x0, edge=True)
+            self._paragraph([line], body_size, line.x0)
 
     # ---- 표 ----
     def _tables(self, chars: list[Char]) -> list[dict[str, Any]]:
@@ -642,7 +653,7 @@ class _PageParser:
             items.append((paragraph[0].top, paragraph))
         return sorted(items, key=lambda entry: entry[0])
 
-    def _paragraph(self, item: list[TextLine], body_size: float, left_edge: float, edge: bool = False) -> None:
+    def _paragraph(self, item: list[TextLine], body_size: float, left_edge: float) -> None:
         """줄 묶음 하나를 블록으로 만든다."""
         marker_kind = list_marker(item[0].text)[0]
         text, removed = join_lines(item)
@@ -658,7 +669,7 @@ class _PageParser:
         else:
             kind = "paragraph"
         level = int((item[0].x0 - left_edge) / (1.2 * body_size) + 0.5) if marker_kind else 0
-        self.blocks.append(Block(kind="edge" if edge and kind != "heading" else kind, text=text, top=item[0].top, size=size,
+        self.blocks.append(Block(kind=kind, text=text, top=item[0].top, size=size,
                                  level=max(0, min(MAX_LEVEL, level)), bold=sum(1 for l in item if l.bold) * 2 > len(item),
                                  x0=min(l.x0 for l in item), x1=max(l.x1 for l in item)))
 
@@ -672,21 +683,12 @@ class _Parsed:
     meta: dict[str, Any]
 
 
-def _edge_key(block: Block, height: float) -> str | None:
-    """머리말·꼬리말 반복 판단용 키. 쪽 번호처럼 숫자만 다른 글은 같은 키로 본다."""
-    if block.kind != "edge" or len(block.text) > 80:
-        return None
-    return _DIGITS.sub("#", " ".join(block.text.split()))
-
-
-def _pick_title(p: _Parsed, template: set[str] | None = None) -> None:
+def _pick_title(p: _Parsed) -> None:
     """제목 후보를 고른다 (순서대로). ① 위쪽 35% 안의 제목 크기 줄 중 가장 큰 것(font)
-    ② 굵은 글씨로 본문 크기 이상인 줄 중 가장 위의 것(bold) ③ 위쪽 35% 안의 첫 줄(first-line). 표와 거의 모든 쪽에 반복되는
-    머리말(template: 문서명·대외비)은 제외한다."""
+    ② 굵은 글씨로 본문 크기 이상인 줄 중 가장 위의 것(bold) ③ 위쪽 35% 안에서 본문의 0.8배 이상 크기인 첫 줄(first-line;
+    8pt 문서명·쪽 번호 같은 작은 글은 건너뛰고, 그런 줄뿐이면 그중 첫 줄). 표는 제외한다. 머리말이라고 지우거나 빼는 규칙은 없다."""
     body = float(p.meta.get("body_size") or 0.0)
-    template = template or set()
-    zone = [b for b in p.blocks if b.kind != "table_row" and b.top < TITLE_ZONE * p.height and 0 < len(b.text) <= 120
-            and _edge_key(b, p.height) not in template]
+    zone = [b for b in p.blocks if b.kind != "table_row" and b.top < TITLE_ZONE * p.height and 0 < len(b.text) <= 120]
     if not zone:
         return
     heads = [b for b in zone if b.kind == "heading"]
@@ -694,7 +696,10 @@ def _pick_title(p: _Parsed, template: set[str] | None = None) -> None:
         best, source = max(heads, key=lambda b: (round(b.size, 1), -b.top)), "font"
     else:
         bolds = [b for b in zone if b.bold and b.size >= 0.9 * body]
-        best, source = (min(bolds, key=lambda b: b.top), "bold") if bolds else (zone[0], "first-line")
+        if bolds:
+            best, source = min(bolds, key=lambda b: b.top), "bold"
+        else:
+            best, source = next((b for b in zone if b.size >= TITLE_MIN_RATIO * body), zone[0]), "first-line"
     best.is_title, best.title_source = True, source
 
 
@@ -778,44 +783,17 @@ def _parse_pdf(path: Path) -> tuple[list[_Parsed], list[str]]:
     finally:
         doc.close()
 
-    # 위·아래 8% 띠의 글이 몇 쪽에 반복되는지 센다. 거의 모든 쪽(80% 이상)에 있는 글은 문서명·대외비 같은 틀 글(template).
-    counts: dict[str, set[int]] = {}
+    # 머리말·꼬리말을 반복 횟수로 지우던 규칙은 없다(v0.6.2 폐기). 반복 문구는 전처리가 후보에서만 뺀다.
     for p in parsed:
-        for b in p.blocks:
-            key = _edge_key(b, p.height)
-            if key:
-                counts.setdefault(key, set()).add(p.no)
-    template = {key for key, pages in counts.items() if len(pages) >= max(3, 0.8 * len(parsed))}
-    # 제목은 머리말 제거 전에 고른다(틀 글은 후보에서 뺌). 맨 위 띠 안의 작은 절 제목이 몇 쪽에 반복된다고 지워지지 않게.
-    for p in parsed:
-        _pick_title(p, template)
-    # 반복 머리말·꼬리말: 3쪽 이상(또는 절반 이상)에 같은 꼴로 나오면 지운다. 제목으로 고른 줄은 남긴다.
-    removed: list[str] = []
-    if len(parsed) >= 3:
-        threshold = max(3, len(parsed) // 2)
-        repeated = {key for key, pages in counts.items() if len(pages) >= threshold}
-        if repeated:
-            dropped: set[str] = set()
-            for p in parsed:
-                kept = []
-                for b in p.blocks:
-                    key = _edge_key(b, p.height)
-                    if key in repeated and not b.is_title:
-                        dropped.add(key)
-                        continue
-                    kept.append(b)
-                p.blocks = kept
-            removed = sorted(dropped)
+        _pick_title(p)
     if multi_column:
         notes.append(f"다단/좌우 배치를 나눠 읽은 페이지 {len(multi_column)}쪽 ({_pages(multi_column)}): 읽기 순서를 확인하세요")
     if rotated:
         notes.append(f"세로로 선 문자를 읽지 않은 페이지 {len(rotated)}쪽 ({_pages(rotated)})")
     if unmapped:
         notes.append(f"글꼴 매핑이 깨져 본문을 읽지 못한 페이지 {len(unmapped)}쪽 ({_pages(unmapped)}): 이미지 페이지로 처리")
-    if removed:
-        notes.append("반복 머리말·꼬리말 제거: " + ", ".join(f"'{k}'" for k in removed[:5]) + (" 외" if len(removed) > 5 else ""))
     if table_total:
-        notes.append(f"표 {table_total}개를 행 단위로 읽음")
+        notes.append(f"표 {table_total}개를 셀 단위로 읽음 (열 제목: 셀)")
     return parsed, notes
 
 

@@ -204,8 +204,9 @@ def cmd_layout(args) -> int:
     pages = _page_set(args.pages) if args.pages else None
     for p in args.paths:
         print("\n".join(layout_report(Path(p), pages)))
-    print("\n종류: heading=제목 크기 줄, list_item=목록 항목, paragraph=문단, edge=위·아래 8% 띠의 글(머리말·꼬리말 후보). "
-          "제목 출처: font=제목 크기, bold=굵은 글씨, first-line=위쪽 첫 줄.")
+    print("\n종류: heading=제목 크기 줄, list_item=목록 항목, paragraph=문단. 위·아래 8% 띠의 글(문서명·쪽 번호)도 지우지 않고 보여 줍니다. "
+          "제목 출처: font=제목 크기, bold=굵은 글씨, first-line=위쪽 첫 줄(본문의 0.8배 미만인 작은 글은 건너뜀). "
+          "▪·| 로 나열된 항목은 이 뒤의 읽기 단계에서 각각 한 줄로 나뉩니다.")
     return 0
 
 

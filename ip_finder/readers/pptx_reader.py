@@ -30,6 +30,7 @@ _GRAPHIC_TYPES = {
     MSO_SHAPE_TYPE.PICTURE, MSO_SHAPE_TYPE.AUTO_SHAPE, MSO_SHAPE_TYPE.FREEFORM, MSO_SHAPE_TYPE.LINE,
     MSO_SHAPE_TYPE.CHART, MSO_SHAPE_TYPE.LINKED_PICTURE, MSO_SHAPE_TYPE.MEDIA, MSO_SHAPE_TYPE.DIAGRAM,
 }
+TITLE_MIN_RATIO = 0.8      # 제목 후보는 슬라이드 본문 글씨의 이 배수 이상 (작은 머리글 상자 제외)
 TITLE_ZONE = 0.35      # 슬라이드 높이의 이 비율 안에 있어야 제목 후보
 TITLE_MAX_CHARS = 80   # 이보다 길면 제목이 아니라 본문
 
@@ -139,8 +140,22 @@ def _max_font_pt(shape) -> float:
     return best
 
 
+def _body_font_pt(infos: list[ShapeInfo]) -> float:
+    """슬라이드 본문 글씨 크기의 추정값: 글이 있는 상자들의 명시적 글꼴 크기 중앙값. 명시된 크기가 없으면 0."""
+    sizes = []
+    for info in infos:
+        if _has_text(info.shape):
+            pt = _max_font_pt(info.shape)
+            if pt > 0:
+                sizes.append(pt)
+    sizes.sort()
+    return sizes[len(sizes) // 2] if sizes else 0.0
+
+
 def _title_by_font(infos: list[ShapeInfo], slide_height: int) -> ShapeInfo | None:
-    """위쪽 영역의 텍스트 상자 중 글씨가 가장 큰 것. 크기 정보가 없으면 가장 위의 것."""
+    """위쪽 영역의 텍스트 상자 중 글씨가 가장 큰 것. 크기 정보가 없으면 가장 위의 것.
+    본문 글씨의 0.8배 미만인 작은 상자(문서명·대외비 같은 머리글)는 건너뛴다 (PDF 리더의 first-line 과 같은 기준)."""
+    body = _body_font_pt(infos)
     cands = []
     for info in infos:
         sh = info.shape
@@ -151,7 +166,10 @@ def _title_by_font(infos: list[ShapeInfo], slide_height: int) -> ShapeInfo | Non
             continue
         if slide_height and info.top > slide_height * TITLE_ZONE:
             continue
-        cands.append((-_max_font_pt(sh), info.top, info.reading_order, info))
+        pt = _max_font_pt(sh)
+        if 0 < pt < TITLE_MIN_RATIO * body:
+            continue
+        cands.append((-pt, info.top, info.reading_order, info))
     if not cands:
         return None
     cands.sort(key=lambda t: t[:3])

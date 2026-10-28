@@ -1,10 +1,14 @@
+from itertools import groupby
+
 import pymupdf
 import pytest
 from pptx import Presentation
 from pptx.util import Inches, Pt
 
 from ip_finder import layout_samples as LS
+from ip_finder.pipeline import prepare
 from ip_finder.readers import load_document
+from ip_finder.readers._text import split_items
 
 
 @pytest.fixture(scope="module")
@@ -27,8 +31,8 @@ def test_pptx_reader_skips_notes_and_reads_tables(sample_dir):
     assert "십자형" not in all_text              # 발표자 노트는 읽지 않는다
     assert doc.pages[4].title.startswith("개선안 1") and doc.pages[4].title_source == "placeholder"
     table_lines = [ln for ln in doc.pages[7].lines if ln.source == "table"]
-    assert table_lines and "개선 전" in table_lines[0].text
-    assert doc.pages[6].has_graphics and all("대외비" in ln.text for ln in doc.pages[6].lines)   # 도면 슬라이드: 바닥글만
+    assert table_lines[0].text == "항목: 오프셋 드리프트" and table_lines[1].text.startswith("개선 전: ")   # 표는 셀마다 한 줄
+    assert doc.pages[6].has_graphics and _texts(doc.pages[6]) == ["PS-200 개선 보고", "대외비", "품질혁신팀"]   # 도면 슬라이드: 바닥글만 ('|' 로 나뉨)
 
 
 def test_pdf_reader_titles(sample_dir):
@@ -37,29 +41,34 @@ def test_pdf_reader_titles(sample_dir):
     assert doc.pages[2].title == "배경 및 문제점" and doc.pages[2].title_source == "font"
     assert any("저탄성" in ln.text for ln in doc.pages[4].lines)
     assert doc.pages[6].has_graphics
-    assert all("대외비" not in ln.text for p in doc.pages for ln in p.lines)      # 모든 쪽에 반복되는 꼬리말은 리더가 지운다
-    assert any("반복 머리말·꼬리말 제거" in n for n in doc.notes)
+    assert all("대외비" in _texts(p) for p in doc.pages)                       # 꼬리말은 리더가 지우지 않는다 (전처리의 반복 문구 규칙이 거른다)
+    assert not any("머리말" in n for n in doc.notes)
 
 
 # ------------------------------------------------------------------ PDF 레이아웃
-def test_pdf_single_column_report(layout_dir):
+def test_pdf_single_column_report(layout_dir, cfg):
     doc = load_document(layout_dir / "layout_01_single_column.pdf")
     assert len(doc.pages) == 9
     texts = [ln.text for p in doc.pages for ln in p.lines]
-    assert not any("대외비" in t or t.startswith("- ") for t in texts)          # 머리말·꼬리말·쪽 번호 제거
+    assert texts.count("대외비") == 9 and texts.count("생산기술연구소 정밀가공팀") == 9   # 머리말·꼬리말은 지우지 않고 각각 한 줄 ('|' 와 간격에서 나뉨)
     cover = doc.pages[0]
-    assert cover.title.startswith("SV-700") and _texts(cover)[-1] == "2026. 10. 28."   # 날짜 줄은 앞줄과 합치지 않는다
+    assert cover.title.startswith("SV-700") and "2026. 10. 28." in _texts(cover)   # 날짜 줄은 앞줄과 합치지 않는다
     p3 = doc.pages[2]
     assert p3.title == "배경 및 문제점" and p3.title_source == "font"
-    assert p3.lines[0].text == LS.WRAPPED_BULLET and p3.lines[0].level == 0     # 두 줄로 꺾인 불릿이 한 문장으로
-    assert p3.lines[1].text == LS.SUB_BULLET and p3.lines[1].level == 1         # 하위 불릿은 한 단계 아래
+    body3 = p3.lines[2:]                                                        # 앞 두 줄은 머리말(문서명, 대외비)
+    assert body3[0].text == LS.WRAPPED_BULLET and body3[0].level == 0           # 두 줄로 꺾인 불릿이 한 문장으로
+    assert body3[1].text == LS.SUB_BULLET and body3[1].level == 1               # 하위 불릿은 한 단계 아래
     p4 = doc.pages[3]
-    assert p4.lines[0].text == "1) 구조 요인" and p4.lines[1].text == "1. " + LS.NUMBERED_ITEM   # 번호 표식은 남긴다
-    assert [ln.level for ln in p4.lines] == [0, 0, 0, 0, 0, 0, 0, 1]
+    body4 = p4.lines[2:-2]                                                      # 뒤 두 줄은 꼬리말(팀명, 쪽 번호)
+    assert body4[0].text == "1) 구조 요인" and body4[1].text == "1. " + LS.NUMBERED_ITEM   # 번호 표식은 남긴다
+    assert [ln.level for ln in body4] == [0, 0, 0, 0, 0, 0, 0, 1]
     table = [ln for ln in doc.pages[6].lines if ln.source == "table"]
-    assert len(table) == 4
-    assert table[0].text.startswith("항목: 진동 속도 RMS (24,000 rpm) | 개선 전: 4.5 mm/s | 개선 후: 1.9 mm/s")
-    assert _texts(doc.pages[5])[2:4] == ["제어식", "n_cmd = n_set × (1 + k · sgn(f_res − f_cur) · min(|f_res − f_cur| / f_res, 0.06))"]
+    assert len(table) == 20 and [t.text for t in table[:3]] == ["항목: 진동 속도 RMS (24,000 rpm)", "개선 전: 4.5 mm/s", "개선 후: 1.9 mm/s"]   # 셀마다 한 줄
+    t6 = _texts(doc.pages[5])
+    assert t6[t6.index("제어식") + 1] == "n_cmd = n_set × (1 + k · sgn(f_res − f_cur) · min(|f_res − f_cur| / f_res, 0.06))"   # 수식의 |x| 는 나누지 않는다
+    prepare(doc, cfg)                                                            # 전처리 뒤에는 머리말·꼬리말·쪽 번호가 후보에 없다
+    active = [ln.text for p in doc.pages for ln in p.active_lines()]
+    assert active and not any(t in ("대외비", "생산기술연구소 정밀가공팀") or t.endswith(" -") for t in active)
 
 
 def test_pdf_two_columns_read_left_then_right(layout_dir):
@@ -73,14 +82,14 @@ def test_pdf_two_columns_read_left_then_right(layout_dir):
     assert doc.pages[1].title == "3. 제어 로직 상세" and doc.pages[1].title_source == "font"   # 번호 붙은 소제목도 제목
     assert LS.HYPHEN_SENTENCE in p2                                              # 'com-' + 'puted' → 'computed'
     assert (p2.index("4. 개도 명령 전송 및 15초 대기") < p2.index("4. 영문 요약 (Abstract)")
-            < p2.index("5. 시뮬레이션 조건") < p2.index("항목: 급속 충전 전류 | 현행: 150 A | 제안: 150 A | 비고: SOC 20→80%"))
-    assert sum(1 for ln in doc.pages[1].lines if ln.source == "table") == 4      # 단 아래 전체 폭 표
+            < p2.index("5. 시뮬레이션 조건") < p2.index("항목: 급속 충전 전류") < p2.index("비고: SOC 20→80%"))
+    assert sum(1 for ln in doc.pages[1].lines if ln.source == "table") == 16     # 단 아래 전체 폭 표 (4행 × 4셀)
     p3 = _texts(doc.pages[2])
     heads = [p3.index(h) for h in LS.COLUMN_HEADS]
     assert heads == sorted(heads) and p3.index("7. 결론") > heads[-1]            # 3단 상자는 왼쪽부터, 결론은 그 뒤
     assert "분배 밸브 3개 추가, 모듈 온도 비례 제어" in p3                        # 상자 안에서 꺾인 불릿
     p4 = doc.pages[3].lines
-    assert [ln.source for ln in p4] == ["table"] * 3 + ["body"] + ["table"] * 3 + ["body"]   # 표-설명-표-설명 순서
+    assert [k for k, _ in groupby(ln.source for ln in p4)] == ["body", "table", "body", "table", "body"]   # 머리말-표-설명-표-설명 순서
 
 
 def test_pdf_diagrams_and_image_page(layout_dir):
@@ -90,23 +99,26 @@ def test_pdf_diagrams_and_image_page(layout_dir):
         assert label in p1                                                       # 블록도 상자 라벨은 각각 한 줄
     assert any(t.startswith("Confidence 추정기는 카메라") and t.endswith("사이 신뢰도로 변환") for t in p1)   # 옆 상자 라벨이 끼어도 불릿은 안 끊김
     p3 = doc.pages[2]
-    assert p3.has_graphics and _texts(p3) == ["그림 3. 시험 차량 전방 카메라 영상 (합성 예시 이미지)"]   # 사진 페이지는 캡션만
+    assert p3.has_graphics and [t for t in _texts(p3) if t.startswith("그림")] == ["그림 3. 시험 차량 전방 카메라 영상 (합성 예시 이미지)"]   # 사진 페이지: 캡션 (+머리말·꼬리말)
     p4 = _texts(doc.pages[3])
     first_step = "1. 카메라 프레임마다 평균 조도와 대비를 계산하고 100 ms 이동 평균을 취한다"
     assert first_step in p4 and p4.index("융합 결과 출력") < p4.index(first_step)   # 순서도를 다 읽은 뒤 오른쪽 설명
-    assert _texts(doc.pages[4])[:3] == ["효과 큼 · 적용 쉬움", "신뢰도 기반 가중치 전환", "히스테리시스 0.2 적용"]   # 2×2 상자는 상자 단위
+    t5 = _texts(doc.pages[4])
+    i = t5.index("효과 큼 · 적용 쉬움")                                           # '·' 는 낱말 이음이라 나누지 않는다
+    assert t5[i:i + 3] == ["효과 큼 · 적용 쉬움", "신뢰도 기반 가중치 전환", "히스테리시스 0.2 적용"]   # 2×2 상자는 상자 단위
 
 
 def test_pdf_tables_with_and_without_borders(layout_dir):
     doc = load_document(layout_dir / "layout_04_tables.pdf")
     p2 = [ln.text for ln in doc.pages[1].lines if ln.source == "table"]
-    assert len(p2) == 5 and p2[0] == "공정: 세정 | 3월 불량률: 2.4 % | 6월 불량률: 1.6 % | 9월 불량률: 0.9 % | 주요 불량 유형: 잔류 이물, 얼룩"
-    assert [ln.source for ln in doc.pages[2].lines] == ["table"] * 4 + ["body"] * 4     # 왼쪽 표, 그다음 오른쪽 설명
+    assert len(p2) == 25 and p2[:5] == ["공정: 세정", "3월 불량률: 2.4 %", "6월 불량률: 1.6 %", "9월 불량률: 0.9 %", "주요 불량 유형: 잔류 이물, 얼룩"]   # 셀마다 한 줄
+    p3 = doc.pages[2].lines
+    assert [k for k, _ in groupby(ln.source for ln in p3)] == ["body", "table", "body"] and sum(ln.source == "table" for ln in p3) == 12   # 머리말, 왼쪽 표, 그다음 오른쪽 설명
     p4 = [ln.text for ln in doc.pages[3].lines if ln.source == "table"]                 # 선 없는 공백 정렬 표
-    assert p4 == ["공정: 세정 | 불량률(개선 전): 2.4 % | 불량률(개선 후): 0.9 % | 조치: 세정액 농도 자동 보정",
-                  "공정: 도포 | 불량률(개선 전): 3.1 % | 불량률(개선 후): 0.7 % | 조치: 노즐 압력 폐루프 제어",
-                  "공정: 경화 | 불량률(개선 전): 1.2 % | 불량률(개선 후): 1.1 % | 조치: 변경 없음",
-                  "공정: 검사 | 불량률(개선 전): 0.8 % | 불량률(개선 후): 0.3 % | 조치: 비전 조명 각도 변경"]
+    assert p4 == ["공정: 세정", "불량률(개선 전): 2.4 %", "불량률(개선 후): 0.9 %", "조치: 세정액 농도 자동 보정",
+                  "공정: 도포", "불량률(개선 전): 3.1 %", "불량률(개선 후): 0.7 %", "조치: 노즐 압력 폐루프 제어",
+                  "공정: 경화", "불량률(개선 전): 1.2 %", "불량률(개선 후): 1.1 %", "조치: 변경 없음",
+                  "공정: 검사", "불량률(개선 전): 0.8 %", "불량률(개선 후): 0.3 %", "조치: 비전 조명 각도 변경"]
     assert any(n.startswith("표 ") for n in doc.notes)
 
 
@@ -116,12 +128,14 @@ def test_pdf_mixed_language_and_rotation(layout_dir):
     assert LS.ENGLISH_ONLY in p1 and LS.FORMULA in p1                            # 영어·수식 줄은 리더가 버리지 않는다 (전처리 규칙의 몫)
     p2 = doc.pages[1]
     assert p2.title == "3. Diagnostic coverage" and p2.title_source == "font"
-    assert _texts(p2)[6:11] == ["DC = 92 %", "SFF = 96 %", "PFH = 3.2E-8 /h", "HFT = 1", "Type B"]   # 짧은 줄은 합치지 않는다
+    t2 = _texts(p2)
+    i = t2.index("DC = 92 %")
+    assert t2[i:i + 5] == ["DC = 92 %", "SFF = 96 %", "PFH = 3.2E-8 /h", "HFT = 1", "Type B"]   # 짧은 줄은 합치지 않는다
     p3 = doc.pages[2]                                                            # /Rotate 90 페이지, 화면에서는 바로 선 글
-    assert p3.title.startswith("5. 모듈 온도 시험 결과") and p3.lines[0].text == LS.ROTATED_LINE
-    assert [ln.text for ln in p3.lines if ln.source == "table"][0].startswith("조건: 급속 충전 150 A | 현행 편차: 2.1 ℃")
+    assert p3.title.startswith("5. 모듈 온도 시험 결과") and LS.ROTATED_LINE in _texts(p3)
+    assert [ln.text for ln in p3.lines if ln.source == "table"][:2] == ["조건: 급속 충전 150 A", "현행 편차: 2.1 ℃"]
     p4 = doc.pages[3]                                                            # 옆으로 누운 글은 읽지 않고 센다
-    assert _texts(p4) == [LS.SIDEWAYS_CAPTION] and any("세로로 선 문자" in n for n in doc.notes)
+    assert [t for t in _texts(p4) if t.startswith("그림")] == [LS.SIDEWAYS_CAPTION] and any("세로로 선 문자" in n for n in doc.notes)
 
 
 def test_pdf_title_with_gap_before_dash_stays_whole(tmp_path):
@@ -145,7 +159,8 @@ def test_pdf_title_with_gap_before_dash_stays_whole(tmp_path):
 
 
 def test_pdf_small_repeated_title_in_top_band_is_kept(tmp_path):
-    """본문(18pt)보다 작은 제목(16pt)이 맨 위 8% 띠 안에 있고 몇 쪽에 반복돼도 제목으로 남는다. 모든 쪽의 문서명 머리말은 지운다."""
+    """본문(18pt)보다 작은 제목(16pt)이 맨 위 8% 띠 안에 있고 몇 쪽에 반복돼도 제목이다. 모든 쪽에 있는 8pt 문서명은 본문의
+    0.8배 미만이라 제목 후보에서 건너뛰고, 지우지는 않는다('|' 로 나뉘어 각각 한 줄). 머리말이라고 지우던 정책은 v0.6.2 에서 폐기."""
     font = LS._font()
     doc = pymupdf.open()
     for k in range(6):
@@ -160,8 +175,8 @@ def test_pdf_small_repeated_title_in_top_band_is_kept(tmp_path):
     doc.save(str(path))
     read = load_document(path)
     assert [pg.title for pg in read.pages][1:4] == ["3. 개선안 상세"] * 3 and read.pages[1].title_source == "first-line"
-    assert all(_texts(pg)[0].startswith("본문 첫 줄") for pg in read.pages)
-    assert all("대외비" not in ln.text for pg in read.pages for ln in pg.lines) and any("대외비" in n for n in read.notes)
+    assert all(_texts(pg)[:2] == ["PS-200 개선 보고", "대외비"] and _texts(pg)[2].startswith("본문 첫 줄") for pg in read.pages)
+    assert not any("머리말" in n for n in read.notes)
 
 
 def test_pdf_bold_title_same_size_as_body(tmp_path):
@@ -194,6 +209,68 @@ def test_pdf_empty_and_image_only_pages(tmp_path):
     assert [pg.title_source for pg in read.pages] == ["없음", "없음"]
     assert read.pages[0].lines == [] and not read.pages[0].has_graphics
     assert read.pages[1].lines == [] and read.pages[1].has_graphics
+
+
+def test_split_items_rules():
+    assert split_items("▪ 접착제를 저탄성 실리콘계로 변경 ▪ 다이 하부에 응력 완충층 삽입") == ["접착제를 저탄성 실리콘계로 변경", "다이 하부에 응력 완충층 삽입"]
+    assert split_items("품질 개선 항목 | 원가 절감 항목 | 납기 단축 항목") == ["품질 개선 항목", "원가 절감 항목", "납기 단축 항목"]
+    assert split_items("항목A｜항목B") == ["항목A", "항목B"]                                    # 전각 세로줄
+    assert split_items("• 첫 항목 • 둘째 항목 ■ 셋째") == ["첫 항목", "둘째 항목", "셋째"]
+    assert split_items("오차 |e| 가 0.5 이하이면 기본 비율로 복귀") == ["오차 |e| 가 0.5 이하이면 기본 비율로 복귀"]   # 수식의 |x|
+    assert split_items("연구∙개발 및 시험·평가 체계") == ["연구∙개발 및 시험·평가 체계"]            # 공백 없는 이음 기호
+    assert split_items("항목A|항목B") == ["항목A|항목B"]                                       # 양쪽에 공백이 없으면 나누지 않음
+
+
+def test_listed_items_split_in_pdf_and_pptx(tmp_path):
+    """한 줄에 ▪·| 로 나열된 항목은 PDF 와 PPTX 모두 읽기 단계에서 각각 한 줄이 된다 (계층·출처 유지)."""
+    bullets = "▪ 접착제를 저탄성 실리콘계로 변경 ▪ 다이 하부에 응력 완충층 삽입"
+    single = "▪ 도포량 자동 제어로 두께 편차 관리"
+    bars = "품질 개선 항목 | 원가 절감 항목 | 납기 단축 항목"
+    want = ["접착제를 저탄성 실리콘계로 변경", "다이 하부에 응력 완충층 삽입", "도포량 자동 제어로 두께 편차 관리",
+            "품질 개선 항목", "원가 절감 항목", "납기 단축 항목"]
+    font = LS._font()
+    pdf = pymupdf.open()
+    p = pdf.new_page(width=842, height=595)
+    tw = pymupdf.TextWriter(p.rect)
+    tw.append((50, 70), "개선안 요약", font=font, fontsize=22)
+    tw.append((60, 130), bullets, font=font, fontsize=13)
+    tw.append((60, 150), single, font=font, fontsize=13)
+    tw.append((60, 200), bars, font=font, fontsize=13)                            # 다른 문단 (줄 간격보다 큰 간격)
+    tw.write_text(p)
+    pdf.save(str(tmp_path / "items.pdf"))
+    pg = load_document(tmp_path / "items.pdf").pages[0]
+    assert pg.title == "개선안 요약" and _texts(pg) == want
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])          # 제목만 있는 레이아웃
+    slide.shapes.title.text = "개선안 요약"
+    box = slide.shapes.add_textbox(Inches(1), Inches(2), Inches(8), Inches(2)).text_frame
+    box.text = bullets
+    box.add_paragraph().text = single
+    para = box.add_paragraph()
+    para.text = bars
+    para.level = 1
+    prs.save(str(tmp_path / "items.pptx"))
+    pg = load_document(tmp_path / "items.pptx").pages[0]
+    assert pg.title == "개선안 요약" and [(ln.text, ln.level) for ln in pg.lines] == [(t, 0) for t in want[:3]] + [(t, 1) for t in want[3:]]
+
+
+def test_pptx_small_header_box_is_not_title(tmp_path):
+    """제목 플레이스홀더가 없는 슬라이드: 맨 위의 작은(8pt) 문서명 상자보다, 크기를 명시하지 않은 제목 상자를 고른다."""
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])          # 빈 레이아웃
+    head = slide.shapes.add_textbox(Inches(5), Inches(0.1), Inches(4), Inches(0.3)).text_frame
+    head.text = "PS-200 개선 보고 | 대외비"
+    head.paragraphs[0].runs[0].font.size = Pt(8)
+    title = slide.shapes.add_textbox(Inches(0.5), Inches(0.6), Inches(8), Inches(0.8)).text_frame
+    title.text = "개선안 3: 냉각 유로 이중화"                       # 크기 없음(상속)
+    body = slide.shapes.add_textbox(Inches(0.5), Inches(3), Inches(8), Inches(2)).text_frame
+    body.text = "냉각 유로를 이중 구조로 변경하여 열을 분산"
+    body.paragraphs[0].runs[0].font.size = Pt(14)
+    prs.save(str(tmp_path / "head.pptx"))
+    pg = load_document(tmp_path / "head.pptx").pages[0]
+    assert pg.title == "개선안 3: 냉각 유로 이중화" and pg.title_source == "font"
+    assert _texts(pg) == ["PS-200 개선 보고", "대외비", "냉각 유로를 이중 구조로 변경하여 열을 분산"]   # 머리글은 지우지 않고 '|' 에서 나뉨
 
 
 # ------------------------------------------------------------------ PPTX

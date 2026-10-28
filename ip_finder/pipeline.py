@@ -97,9 +97,9 @@ def output_path(src: Path, out_dir: Path | None = None, with_ext: bool = False) 
 
 def prepare(doc: Document, cfg: Config) -> Counter:
     """전처리만 수행 (LLM 없음). 테스트와 골드 시트가 재사용."""
+    removed = apply_line_rules(doc, cfg)      # 줄 규칙을 먼저: 표지 판정이 꼬리말·날짜를 뺀 줄 수를 쓴다
     apply_page_rules(doc, cfg)
     apply_page_weights(doc, cfg)
-    removed = apply_line_rules(doc, cfg)
     number_lines(doc, cfg)
     assign_sections(doc)
     for page in doc.pages:

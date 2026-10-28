@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ip-finder"
-version = "0.6.1"
+version = "0.6.2"
 description = "보고자료(PDF/PPTX)에서 특허 검토 후보 문장을 온디바이스 LLM으로 추출해 등급을 붙인 Excel 목록을 만든다"
 readme = "README.md"
 requires-python = ">=3.11"

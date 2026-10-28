@@ -48,7 +48,7 @@ class Document:
     kind: str                       # pdf | pptx
     pages: list[Page]
     title: str = ""
-    notes: list[str] = field(default_factory=list)   # 리더가 남기는 안내(다단 감지, 회전 문자, 머리말 제거 등). 실행 정보의 경고로 나간다
+    notes: list[str] = field(default_factory=list)   # 리더가 남기는 안내(다단 감지, 회전 문자, 표 개수 등). 실행 정보의 경고로 나간다
 
 
 @dataclass
