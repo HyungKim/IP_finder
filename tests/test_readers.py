@@ -124,6 +124,63 @@ def test_pdf_mixed_language_and_rotation(layout_dir):
     assert _texts(p4) == [LS.SIDEWAYS_CAPTION] and any("세로로 선 문자" in n for n in doc.notes)
 
 
+def test_pdf_title_with_gap_before_dash_stays_whole(tmp_path):
+    """제목이 두 상자("개선안 2" + "- 냉각 유로…")라 큰 간격이 있어도 한 제목. 본문의 '항목 - 값' 줄도 한 줄."""
+    font = LS._font()
+    doc = pymupdf.open()
+    p = doc.new_page(width=842, height=595)
+    tw = pymupdf.TextWriter(p.rect)
+    tw.append((50, 70), "개선안 2", font=font, fontsize=22)
+    tw.append((200, 70), "- 냉각 유로 이중화 구조", font=font, fontsize=22)
+    tw.append((70, 130), "• 냉각 유로를 이중 구조로 변경하여 열을 분산시킨다", font=font, fontsize=13)
+    tw.append((70, 160), "노즐 압력", font=font, fontsize=13)
+    tw.append((180, 160), "-", font=font, fontsize=13)
+    tw.append((230, 160), "0.30 MPa 고정에서 폐루프 제어로", font=font, fontsize=13)
+    tw.write_text(p)
+    path = tmp_path / "dash.pdf"
+    doc.save(str(path))
+    pg = load_document(path).pages[0]
+    assert pg.title == "개선안 2 - 냉각 유로 이중화 구조" and pg.title_source == "font"
+    assert _texts(pg) == ["냉각 유로를 이중 구조로 변경하여 열을 분산시킨다", "노즐 압력 - 0.30 MPa 고정에서 폐루프 제어로"]
+
+
+def test_pdf_small_repeated_title_in_top_band_is_kept(tmp_path):
+    """본문(18pt)보다 작은 제목(16pt)이 맨 위 8% 띠 안에 있고 몇 쪽에 반복돼도 제목으로 남는다. 모든 쪽의 문서명 머리말은 지운다."""
+    font = LS._font()
+    doc = pymupdf.open()
+    for k in range(6):
+        p = doc.new_page(width=842, height=595)
+        tw = pymupdf.TextWriter(p.rect)
+        tw.append((600, 20), "PS-200 개선 보고 | 대외비", font=font, fontsize=8)          # 모든 쪽에 반복되는 문서명
+        tw.append((40, 42), "3. 개선안 상세" if 1 <= k <= 3 else f"{k + 1}. 다른 절 제목", font=font, fontsize=16)
+        tw.append((60, 120), f"• 본문 첫 줄 {k}: 접착제를 저탄성 실리콘계로 변경", font=font, fontsize=18)
+        tw.append((60, 154), "• 다이 하부에 응력 완충층을 삽입", font=font, fontsize=18)
+        tw.write_text(p)
+    path = tmp_path / "band.pdf"
+    doc.save(str(path))
+    read = load_document(path)
+    assert [pg.title for pg in read.pages][1:4] == ["3. 개선안 상세"] * 3 and read.pages[1].title_source == "first-line"
+    assert all(_texts(pg)[0].startswith("본문 첫 줄") for pg in read.pages)
+    assert all("대외비" not in ln.text for pg in read.pages for ln in pg.lines) and any("대외비" in n for n in read.notes)
+
+
+def test_pdf_bold_title_same_size_as_body(tmp_path):
+    """제목이 본문과 같은 크기지만 굵은 글씨면 제목(bold)."""
+    font = LS._font()
+    doc = pymupdf.open()
+    p = doc.new_page(width=842, height=595)
+    tw = pymupdf.TextWriter(p.rect)
+    tw.append((50, 80), "Thermal control logic review", font=pymupdf.Font("hebo"), fontsize=14)   # Helvetica-Bold
+    tw.append((60, 130), "• 모듈 온도 편차에 비례해 분배 밸브 개도를 바꾼다", font=font, fontsize=14)
+    tw.append((60, 160), "• 편차가 0.5℃ 이하로 줄면 기본 분배 비율로 복귀한다", font=font, fontsize=14)
+    tw.write_text(p)
+    path = tmp_path / "bold.pdf"
+    doc.save(str(path))
+    pg = load_document(path).pages[0]
+    assert pg.title == "Thermal control logic review" and pg.title_source == "bold"
+    assert len(pg.lines) == 2
+
+
 def test_pdf_empty_and_image_only_pages(tmp_path):
     doc = pymupdf.open()
     doc.new_page(width=842, height=595)

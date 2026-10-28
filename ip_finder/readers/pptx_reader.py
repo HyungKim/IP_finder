@@ -203,6 +203,28 @@ def _smartart_lines(slide, shape) -> list[Line]:
     return out
 
 
+def layout_report(path: Path, pages: set[int] | None = None) -> list[str]:
+    """진단용: 슬라이드마다 고른 제목과 도형 목록(읽기 순서, 종류, 위치 %, 글꼴 크기, 글자 수, 앞부분)."""
+    prs = Presentation(str(path))
+    w, h = float(prs.slide_width or 1), float(prs.slide_height or 1)
+    doc = read_pptx(path)
+    out = [f"== {path}", *[f"  안내: {n}" for n in doc.notes]]
+    for sno, slide in enumerate(prs.slides, 1):
+        if pages and sno not in pages:
+            continue
+        pg = doc.pages[sno - 1]
+        out.append(f"-- {sno}쪽  제목: {pg.title[:60] or '(없음)'}  [{pg.title_source}]")
+        for info in assign_reading_order(collect_shapes(slide.shapes)):
+            sh = info.shape
+            kind = ("표" if getattr(sh, "has_table", False) and sh.has_table else "차트" if getattr(sh, "has_chart", False) and sh.has_chart
+                    else "SmartArt" if _graphic_uri(sh) == DIAGRAM_URI else "그림" if sh._element.tag == P + "pic"
+                    else "글상자" if _has_text(sh) else str(sh.shape_type or "도형"))
+            text = _shape_text(sh) if _has_text(sh) else ""
+            out.append(f"     {info.reading_order:2d} {kind:<8} top {100 * info.top / h:4.0f}% left {100 * info.left / w:4.0f}%"
+                       f"  {_max_font_pt(sh) or 0:4.0f}pt{' 그룹' if info.in_group else '    '}  {len(text):3d}자  {text[:50]}")
+    return out
+
+
 def read_pptx(path: Path) -> Document:
     prs = Presentation(str(path))
     slide_height = prs.slide_height or 0

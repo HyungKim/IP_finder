@@ -182,6 +182,33 @@ def cmd_pages(args) -> int:
     return 0
 
 
+def _page_set(spec: str) -> set[int]:
+    """"3-5,8" → {3, 4, 5, 8}"""
+    out: set[int] = set()
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.update(range(int(a), int(b) + 1))
+        else:
+            out.add(int(part))
+    return out
+
+
+def cmd_layout(args) -> int:
+    """읽기 진단: 페이지마다 고른 제목과 블록(종류·글씨 크기·굵기·세로 위치·가로 범위)을 LLM 없이 보여 준다.
+    제목이 잘려 나오거나 본문 첫 줄이 제목으로 잡힐 때 원인을 확인하는 용도."""
+    from .readers import layout_report
+    pages = _page_set(args.pages) if args.pages else None
+    for p in args.paths:
+        print("\n".join(layout_report(Path(p), pages)))
+    print("\n종류: heading=제목 크기 줄, list_item=목록 항목, paragraph=문단, edge=위·아래 8% 띠의 글(머리말·꼬리말 후보). "
+          "제목 출처: font=제목 크기, bold=굵은 글씨, first-line=위쪽 첫 줄.")
+    return 0
+
+
 def cmd_gold_sheet(args) -> int:
     from .eval import make_gold_sheet
     from .pipeline import make_client
@@ -311,6 +338,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("paths", nargs="+")
     _common(p)
     p.set_defaults(func=cmd_pages)
+
+    p = sub.add_parser("layout", help="읽기 진단: 페이지마다 고른 제목과 블록(종류·글씨 크기·굵기·위치)을 LLM 없이 표시")
+    p.add_argument("paths", nargs="+")
+    p.add_argument("--pages", help='보여 줄 페이지 (예: "3-5,8"). 기본 전체')
+    p.set_defaults(func=cmd_layout)
 
     p = sub.add_parser("ui", help="데스크톱 UI 실행 (Tkinter)")
     p.set_defaults(func=lambda a: __import__("ip_finder.ui", fromlist=["main"]).main([]))
