@@ -9,6 +9,8 @@ import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
+from . import READER_VERSION
+
 CONFIG_NAME = "ip_finder.toml"
 
 
@@ -160,6 +162,7 @@ class Config:
             "repeated_line_min_pages": self.repeated_line_min_pages, "stoplist": self.stoplist,
             "page_exclude_patterns": self.page_exclude_patterns, "cover_max_lines": self.cover_max_lines,
             "title_fix": self.title_fix, "safety_net": self.safety_net, "use_gold": self.use_gold,
+            "reader_version": READER_VERSION,
         }
 
 

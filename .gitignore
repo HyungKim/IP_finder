@@ -29,3 +29,6 @@ wheels/
 # 회사별 설정과 모델 파일 (저장소 밖 또는 로컬 전용)
 ip_finder.toml
 tools/kure/*.gguf
+
+# Claude Code personal settings (permission rules)
+.claude/settings.local.json

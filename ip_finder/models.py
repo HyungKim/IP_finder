@@ -12,7 +12,7 @@ class Line:
     idx: int                        # 전처리 후 페이지 내 번호(1부터). 제거된 줄은 0
     text: str
     level: int = 0                  # 불릿 계층. 0이 최상위
-    source: str = "body"            # body | table
+    source: str = "body"            # body | table | diagram(도형·SmartArt·차트 제목 안의 글)
     removed_by: str | None = None   # 전처리 규칙 이름. None이면 LLM에 보냄
     split_from: int | None = None   # 긴 줄을 나눈 경우 원래 줄의 순번
 
@@ -48,6 +48,7 @@ class Document:
     kind: str                       # pdf | pptx
     pages: list[Page]
     title: str = ""
+    notes: list[str] = field(default_factory=list)   # 리더가 남기는 안내(다단 감지, 회전 문자, 머리말 제거 등). 실행 정보의 경고로 나간다
 
 
 @dataclass

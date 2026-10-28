@@ -156,6 +156,8 @@ def label_document(client: LabelClient, doc: Document, cfg: Config, cache: Label
             notes = ["분할"] if ln.split_from else []
             if ln.source == "table":
                 notes.append("표")
+            elif ln.source == "diagram":
+                notes.append("도형")
             out.append(LabeledLine(page_no=page.no, page_title=page.title, section=page.section, line_idx=ln.idx,
                                    text=ln.text, label=lab, raw_label=lab, notes=notes, source="llm"))
     return out

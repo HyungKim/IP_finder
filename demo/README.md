@@ -9,6 +9,7 @@ Python 표준 라이브러리만 사용하고 `127.0.0.1:11434`만 호출합니�
 |---|---|
 | `sample.json` | 설명용 가짜 보고서. 실제 사내 자료 아님 |
 | `sample_report.pptx`, `sample_report.pdf` | 위 JSON으로 만든 가짜 보고서 파일. `python -m ip_finder.samples demo` 로 재생성 |
+| `layout/layout_01~05_*.pdf` | 레이아웃 시험용 가짜 보고서 5건(단일 단 불릿, 2단·3단 문서, 블록도·차트·사진, 표 중심, 영문 혼용·회전 페이지). `python -m ip_finder.layout_samples demo/layout` 로 재생성. 모든 회사·제품·수치는 지어낸 것 |
 | `sample_report_pptx_검토후보.xlsx`, `sample_report_pdf_검토후보.xlsx` | `ip-finder extract` 가 만든 결과 예시 (qwen3:4b-instruct) |
 | `run_demo.py` | v2 초안 방식 시연: 규칙 필터 → LLM 제목 필터 → 페이지별 추출(주제명·질문 생성) → LLM 병합. 기록용 |
 | `results_4b.json` | run_demo, qwen3:4b-instruct (M4, 총 100초) |

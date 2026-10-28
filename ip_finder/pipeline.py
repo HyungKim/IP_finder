@@ -120,6 +120,8 @@ def _line_notes(ln) -> list[str]:
     notes = ["분할"] if ln.split_from else []
     if ln.source == "table":
         notes.append("표")
+    elif ln.source == "diagram":
+        notes.append("도형")
     return notes
 
 
@@ -321,6 +323,7 @@ def run_file(path: Path, cfg: Config, client=None, progress: Progress | None = N
                    started_at=datetime.now().isoformat(timespec="seconds"), accept_score=cfg.accept_score,
                    page_weight_enabled=cfg.page_weight_enabled, low_relevance_weight=cfg.low_relevance_weight)
     doc = load_document(path)
+    info.warnings.extend(doc.notes)
     removed = prepare(doc, cfg)
     info.pages_total = len(doc.pages)
     info.pages_image = sum(1 for p in doc.pages if p.excluded_reason == IMAGE_PAGE)
