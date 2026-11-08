@@ -35,6 +35,8 @@ high_relevance_patterns = []
 low_relevance_weight = 0.4
 
 # ---- 캐시·이력·골드 ----
+# 버전별 폴더를 나란히 둘 때는 골드와 캐시만 공유 폴더를 절대 경로로 가리키고(예: "C:/IPF/shared/gold", "C:/IPF/shared/cache.sqlite"),
+# 이력(history_path)과 학습 분류기(classifier_dir)는 버전마다 따로 둔다. README '버전별 폴더로 나란히 운용하기' 참고.
 use_cache = true
 cache_path = "data/cache.sqlite"        # 임베딩 캐시 (원문 미저장)
 history_path = "data/history"           # 실행 이력(원문 미저장). "" 이면 저장 안 함

@@ -37,6 +37,32 @@
 
 명령줄 설치(공통): `python -m venv .venv && .venv/bin/pip install -e ".[dev]"`, 그리고 `ollama pull bge-m3`.
 
+### 버전별 폴더로 나란히 운용하기
+
+상태 파일(캐시·학습 분류기·실행 이력·골드·설정)은 **설치 폴더의 `data\` 와 `ip_finder.toml` 에만** 생기고 사용자 홈에는 아무것도 만들지 않으므로, 버전마다 폴더를 따로 두면 서로 아무것도 공유하지 않습니다(Ollama 모델만 PC 전체 공유). 릴리스의 Source code (zip) 은 풀면 `IP_finder-<버전>` 폴더가 한 겹 생기므로 그 자체가 버전 폴더가 됩니다.
+
+```
+C:\IPF\
+  v0.6.2\            ← 0.6.2 설치 (ui.bat, .venv, data\, ip_finder.toml)
+  v1.0.0.dev2\       ← 1.0.0.dev2 설치
+  shared\
+    gold\            ← 골드 시트 (모든 버전이 같은 정답을 쓰도록 공유)
+    cache.sqlite     ← 임베딩 캐시 (같은 bge-m3 이면 버전이 달라도 재사용, 시간 절약)
+  results\
+    v0.6.2-all\ ...  ← run-all 결과 폴더 (버전별로 이름 붙여 모으면 compare-runs 로 바로 비교)
+```
+
+1. 새 버전 ZIP 을 `C:\IPF\v<버전>\` 에 풀고 그 폴더에서 `install.bat` 을 실행합니다(새 가상환경을 만듭니다. 인터넷이 막혀 있으면 wheel 번들을 `wheels` 폴더로 둔 뒤 실행). 이전 폴더는 그대로 둡니다.
+2. 공유할 것은 설정 파일로 가리킵니다. 각 폴더의 `ip_finder.toml` 에 절대 경로로:
+   ```toml
+   gold_paths = ["C:/IPF/shared/gold"]
+   cache_path = "C:/IPF/shared/cache.sqlite"
+   ```
+   **따로 둘 것**: `history_path`(실행 이력, 버전마다 기본 `data/history`), `classifier_dir`(학습 분류기 — 1.0 의 npz 는 0.6 과 형식이 다릅니다). 0.6.2 의 설정 키 이름이 다르므로 `ip_finder.toml` 을 폴더 간에 복사하지 말고 각 폴더의 `ip_finder.example.toml` 을 바탕으로 만듭니다.
+3. 버전 간 결과 비교는 결과 폴더로 합니다: 각 버전에서 `run_all.bat C:\IPF\results\v<버전>-all D:\reports` 로 돌린 뒤, 어느 버전 폴더에서든 `compare_runs.bat C:\IPF\results\v0.6.2-all C:\IPF\results\v1.0.0.dev2-all`. 1.0 의 비교 도구는 0.6.x 결과 Excel 의 시트 이름('2차 제외', '1차 제외 (참고)')도 읽습니다. 다만 0.6.x 결과 파일에는 '설정 …' 행이 없어 설정 차이는 적히지 않고 문장 변화만 비교됩니다.
+4. 같은 보고서를 같은 폴더에서 다시 돌릴 때의 '변경 사항' 시트(이력 기준)는 폴더 안에서만 이어집니다. 버전을 가로지르는 비교는 3번의 compare-runs 가 맡습니다.
+
+
 ## 쓰는 법
 
 ### 일상 실행
