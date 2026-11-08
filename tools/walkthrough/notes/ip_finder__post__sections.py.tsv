@@ -1,0 +1,15 @@
+# ip_finder/post/sections.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""제목 접두어가 같은 연속 페이지를 섹션으로 묶는다. 병합은 하지 않는다."""	파일 설명: 제목 접두어로 섹션. 병합은 없음.
+from __future__ import annotations	새 문법 호환.
+import re	정규식.
+from ..models import Document	문서 모델.
+_LEAD_NUM = re.compile(r"^\s*(\d{1,2}|[IVXivx]{1,4}|[가-힣]|[A-Za-z])\s*[.)]\s*")	제목 머리의 번호 꼴: '1.', 'II)', '가.', 'A)' 와 뒤 공백.
+_TRAIL = re.compile(r"[\s\d\-–()#.]+$")	제목 꼬리의 공백·숫자·하이픈·괄호·#·점 묶음.
+def section_name(title: str) -> str:	제목에서 섹션 이름을 뽑는 함수.
+t = re.split(r"\s[-–—|]\s|[:：|]", title, maxsplit=1)[0]	' - ', ' | ', ':' 같은 구분자 앞부분만 (maxsplit=1 은 한 번만 나눔).
+t = _LEAD_NUM.sub("", t)	머리 번호('1.', 'II)', '가.') 제거.
+t = _TRAIL.sub("", t).strip()	꼬리의 숫자·괄호·점 제거 후 공백 정리.
+return t or title.strip()	비면 원래 제목.
+def assign_sections(doc: Document) -> None:	모든 페이지에 섹션을 적는 함수.
+for page in doc.pages:	페이지마다
+page.section = section_name(page.title) if page.title.strip() else ""	제목이 있으면 섹션 이름, 없으면 빈 문자열.

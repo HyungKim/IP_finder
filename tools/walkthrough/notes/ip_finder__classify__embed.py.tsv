@@ -1,0 +1,68 @@
+# ip_finder/classify/embed.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""Ollama 임베딩 호출 (/api/embed). localhost 전용. 벡터는 캐시에 해시 키로 저장한다."""	파일 설명: /api/embed, 로컬 전용, 해시 키 캐시.
+from __future__ import annotations	새 문법 호환.
+import json	JSON.
+import time	시간.
+import urllib.error	URL 오류 타입.
+import urllib.request	간단한 GET 용.
+from ..cache import LabelCache	캐시.
+from ..ollama import AbortableHTTP, CancelledError, OllamaError, assert_local	HTTP 클라이언트와 예외를 ollama 모듈에서 가져온다(llm 패키지가 없어졌다).
+BATCH = 32	한 번에 보내는 문장 수.
+class OllamaEmbedder:	임베더 클래스.
+def __init__(self, host: str, model: str, *, timeout_sec: int = 300, keep_alive: str = "30m",	생성자: 호스트, 모델, 그리고 이름으로만 넘기는 시간 제한·유지 시간·
+cache: LabelCache | None = None):	캐시.
+assert_local(host)	로컬 호스트가 아니면 여기서 오류.
+self.host = host.rstrip("/")	끝의 '/' 제거.
+self.model = model	모델 이름.
+self.timeout = timeout_sec	시간 제한.
+self.keep_alive = keep_alive	유지 시간.
+self.cache = cache	캐시 (없을 수 있음).
+self.calls = 0	호출 수.
+self.cache_hits = 0	캐시 적중 수.
+self.seconds = 0.0	누적 시간.
+self.http = AbortableHTTP(self.host, timeout_sec)	끊을 수 있는 HTTP 객체.
+def cancel(self) -> None:	중지 메서드.
+self.http.cancel()	진행 중인 요청을 끊는다.
+def reset(self) -> None:	초기화 메서드.
+self.http.reset()	취소 깃발 내림.
+def available(self) -> bool:	모델이 설치돼 있는지 확인하는 메서드.
+try:	연결 오류 대비 try.
+with urllib.request.urlopen(self.host + "/api/tags", timeout=10) as r:	/api/tags (설치된 모델 목록)를 10초 제한으로 GET.
+names = [m["name"] for m in json.loads(r.read()).get("models", [])]	모델 이름들.
+return self.model in names or f"{self.model}:latest" in names	설정 모델이 있으면 참 (':latest' 가 붙은 이름도 허용).
+except Exception:	오류면
+return False	거짓.
+def _post(self, inputs: list[str]) -> list[list[float]]:	문장 목록을 Ollama 에 보내 벡터 목록을 받는 내부 메서드 (앞의 _ 는 '바깥에서 직접 부르지 말 것' 관례).
+body = {"model": self.model, "input": inputs, "keep_alive": self.keep_alive}	요청 본문: 모델 이름, 입력 문장들, 모델 유지 시간.
+t0 = time.time()	시작 시각.
+try:	오류를 잡기 위해 try.
+res = self.http.post("/api/embed", body)	/api/embed 에 POST. 결과는 사전.
+except CancelledError:	중지로 끊긴 예외는
+raise	그대로 위로 올린다 (파이프라인이 멈춰야 하므로).
+except OllamaError as e:	Ollama 오류면
+raise OllamaError(f"임베딩 호출 실패: {e}") from e	임베딩 호출 실패로 다시 던진다.
+self.calls += 1	호출 수 +1.
+self.seconds += time.time() - t0	걸린 시간 누적.
+vecs = res.get("embeddings") or []	응답에서 벡터 목록. 없으면 빈 리스트.
+if len(vecs) != len(inputs):	받은 벡터 수가 보낸 문장 수와 다르면
+raise OllamaError(f"임베딩 수 불일치: 기대 {len(inputs)}, 수신 {len(vecs)}")	개수가 다르면 오류.
+return vecs	벡터 목록을 돌려준다.
+def embed(self, texts: list[str]) -> list[list[float]]:	문장 목록을 벡터 목록으로 바꾸는 공개 메서드. 캐시를 먼저 본다.
+out: list[list[float] | None] = [None] * len(texts)	결과 자리를 문장 수만큼 None 으로 마련.
+todo: list[int] = []	아직 벡터가 없는 문장의 번호들.
+for i, t in enumerate(texts):	문장마다 번호와 함께
+key = LabelCache.key(self.model, "embed", t)	캐시 키: (모델, 'embed', 문장) 의 해시.
+v = self.cache.get_vec(key) if self.cache is not None else None	캐시가 있으면 벡터를 찾아보고, 없으면 None.
+if v is not None:	찾았으면
+out[i] = v	그 자리에 넣고
+self.cache_hits += 1	캐시 적중 +1.
+else:	못 찾았으면
+todo.append(i)	할 일 목록에 번호를 넣는다.
+for start in range(0, len(todo), BATCH):	할 일을 32개씩(BATCH) 잘라
+idxs = todo[start:start + BATCH]	이번 묶음의 번호들.
+vecs = self._post([texts[i] for i in idxs])	그 문장들을 보내 벡터를 받는다.
+for i, v in zip(idxs, vecs):	번호와 벡터를 짝지어
+out[i] = v	결과 자리에 넣고
+if self.cache is not None:	캐시가 있으면
+self.cache.set_vec(LabelCache.key(self.model, "embed", texts[i]), v)	같은 키로 저장한다 (다음 실행부터 호출 없음).
+return [v if v is not None else [] for v in out]	결과를 돌려준다. 혹시 None 이 남았으면 빈 리스트로.

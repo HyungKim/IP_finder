@@ -1,0 +1,127 @@
+# ip_finder/eval/score.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""골드 시트 채점: 등급 정확도(정밀도·재현율·F1, 혼동 행렬)와 **검토 목록 정밀도·재현율**.	파일 설명 첫 줄.
+rerun=True 면 골드 문장을 현재 설정의 분류기·후처리·가중치·점수 기준으로 다시 판정해 채점한다 (골드 정답 반영은 끈다)."""	설명 이어짐.
+from __future__ import annotations	새 문법 호환.
+from collections import Counter, defaultdict	Counter 와 defaultdict (없는 키에 기본값을 자동으로 만드는 사전).
+from pathlib import Path	경로.
+from ..cache import LabelCache	캐시.
+from ..config import Config	설정.
+from ..goldmap import GOLD_HEADERS, LABELS, load_gold, norm_label as _norm	골드 열 제목, 라벨 목록, 골드 읽기, 라벨 정규화(_norm 이라는 짧은 이름으로).
+from ..models import Line, Page, RunInfo	모델.
+from ..post import apply_safety_net, apply_scores, apply_title_fix, in_review_list	후처리 함수들.
+from ..prep.page_weight import page_weight	페이지 가중치.
+SWEEP = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8)	기준값 스윕에 쓸 값들.
+def score(pairs: list[tuple[str, str]]) -> dict:	(정답, 예측) 쌍 목록을 채점하는 함수.
+"""pairs = [(정답, 예측)]. 정확도, 등급별 정밀도·재현율·F1, 거시 F1, 혼동 행렬."""	score 설명 문자열.
+total = len(pairs)	전체 수.
+correct = sum(1 for g, p in pairs if g == p)	맞춘 수.
+conf: dict[str, Counter] = defaultdict(Counter)	혼동 행렬: 정답 → (예측 → 수). 없는 키는 자동으로 Counter.
+for g, p in pairs:	쌍마다
+conf[g][p] += 1	센다.
+per = {}	등급별 지표.
+for lab in LABELS:	등급마다
+tp = conf[lab][lab]	참 양성: 정답도 예측도 이 등급.
+fn = sum(conf[lab].values()) - tp	거짓 음성: 정답은 이 등급인데 다른 예측.
+fp = sum(conf[g][lab] for g in LABELS if g != lab)	거짓 양성: 예측은 이 등급인데 정답은 다른 등급.
+prec = tp / (tp + fp) if tp + fp else 0.0	정밀도 = tp / (tp + fp). 분모 0 이면 0.
+rec = tp / (tp + fn) if tp + fn else 0.0	재현율 = tp / (tp + fn).
+f1 = 2 * prec * rec / (prec + rec) if prec + rec else 0.0	F1 = 조화 평균.
+per[lab] = {"support": tp + fn, "precision": prec, "recall": rec, "f1": f1}	등급별 사전: 건수, 정밀도, 재현율, F1.
+present = [lab for lab in LABELS if per[lab]["support"]]	골드에 실제로 있는 등급만.
+macro_f1 = sum(per[lab]["f1"] for lab in present) / len(present) if present else 0.0	거시 F1 = 있는 등급들의 F1 평균.
+return {"total": total, "correct": correct, "accuracy": correct / total if total else 0.0, "macro_f1": macro_f1,	결과 사전(정확도·거시 F1 포함).
+"per_grade": per, "confusion": {g: dict(conf[g]) for g in LABELS}}	등급별 지표, 혼동 행렬.
+def candidate_metrics(pairs: list[tuple[str, str]], targets: tuple[str, ...] = ("A", "B")) -> dict:	후보 지표 함수: 예측이 대상 등급이면 후보.
+"""pairs = [(정답, 예측)]. 예측이 대상 등급이면 '후보'. 재현율 = 정답이 대상인 문장 중 후보가 된 비율, 정밀도 = 후보 중 정답이 대상인 비율."""	설명 문자열.
+pos = sum(1 for g, _ in pairs if g in targets)	정답이 대상 등급인 수.
+cand = [(g, p) for g, p in pairs if p in targets]	후보 목록.
+hit = sum(1 for g, _ in cand if g in targets)	후보 중 정답도 대상인 수.
+return {"positives": pos, "candidates": len(cand), "hits": hit,	결과 사전.
+"recall": hit / pos if pos else 0.0, "precision": hit / len(cand) if cand else 0.0, "targets": "".join(targets)}	재현율·정밀도 계산.
+def list_metrics(rows: list[tuple[str, str, float]], accept: float, targets: tuple[str, ...] = ("A", "B")) -> dict:	검토 목록 지표 함수. rows 는 (정답, 예측, 점수), accept 는 기준, targets 는 추출 등급.
+"""rows = [(정답, 예측 등급, 점수)]. 예측이 대상 등급이고 점수 ≥ accept 이면 목록에 든 것으로 본다."""	list_metrics 설명 문자열.
+in_list = [(g, p) for g, p, s in rows if p in targets and s >= accept]	목록에 든 쌍: 예측이 추출 등급이고 점수가 기준 이상.
+pos = sum(1 for g, _, _ in rows if g in targets)	정답이 추출 등급인 문장 수 (재현율 분모).
+n = len(in_list)	목록 크기.
+hit = sum(1 for g, _ in in_list if g in targets)	목록 중 정답이 추출 등급인 수.
+exact = sum(1 for g, p in in_list if g == p)	목록 중 등급까지 정확히 맞은 수.
+return {"accept": accept, "list": n, "precision_nonx": hit / n if n else 0.0, "precision_grade": exact / n if n else 0.0,	기준, 목록 크기, 정밀도(대상), 정밀도(등급),
+"recall": hit / pos if pos else 0.0, "positives": pos, "targets": "".join(targets)}	재현율, 양성 수, 추출 등급 문자열.
+def pages_from_gold(rows: list[dict], cfg: Config) -> tuple[list[Page], list[dict]]:	골드 행을 가짜 Page 로 만드는 함수(채점 재실행용).
+"""골드 행을 (파일, 페이지) 묶음으로 가짜 Page 로 만든다. 제목으로 가중치를 복원한다."""	설명 문자열.
+groups: dict[tuple, list[dict]] = defaultdict(list)	(파일, 페이지) → 행들. defaultdict(list) 는 없는 키에 빈 리스트를 자동으로.
+for r in rows:	행마다
+groups[(r.get("파일"), r.get("페이지"))].append(r)	같은 페이지끼리 모은다.
+pages, order = [], []	페이지 목록과 행 순서.
+for n, ((_, pno), grp) in enumerate(groups.items(), 1):	페이지 묶음마다 1부터 번호를 붙여
+grp.sort(key=lambda r: int(r.get("줄") or 0))	줄 번호 순으로 정렬.
+lines = [Line(idx=i, text=str(r["문장"])) for i, r in enumerate(grp, 1)]	문장들을 Line 으로 (번호 1부터).
+title = str(grp[0].get("제목") or "")	제목.
+pw = page_weight(title, cfg)	제목으로 가중치.
+pages.append(Page(no=n, title=title, lines=lines, weight=pw.weight, weight_reason=pw.reason, relevance=pw.relevance))	Page 를 만든다 (가중치·근거·관련성 포함).
+order.extend(grp)	행 순서를 기억 (결과와 짝 맞추기용).
+return pages, order	쪽 목록과 행 순서를 돌려준다.
+def evaluate(gold_path: Path, cfg: Config, rerun: bool = True, embedder=None, classifier=None) -> dict:	채점 함수. 임베더·분류기를 받는다.
+rows = load_gold(gold_path)	골드 행.
+if not rows:	없으면
+raise ValueError("채점할 행이 없습니다. '정답' 열을 확인하세요.")	오류.
+info = RunInfo(source=str(gold_path), started_at="")	실행 정보 객체.
+if rerun:	다시 돌리는 경우
+from ..pipeline import Services, classify_lines, finalize_stages	파이프라인의 분류 함수들을 가져온다.
+pages, order = pages_from_gold(rows, cfg)	골드로 가짜 쪽을 만든다.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시.
+try:	닫기를 보장하기 위해 try.
+svc = Services(cfg, cache, embedder=embedder, classifier=classifier)   # 채점에는 골드 반영 없음	서비스 묶음(골드 반영 없음).
+labeled = classify_lines(pages, cfg, svc, info)	분류기로 판정.
+finally:	finally:
+cache.close()	캐시 닫기.
+if cfg.title_fix:	설정대로
+apply_title_fix(labeled)	제목 보정,
+if cfg.safety_net:	설정대로
+apply_safety_net(labeled)	안전장치,
+finalize_stages(labeled, cfg)	단계 확정,
+apply_scores(labeled, cfg)	점수 매기기.
+raw_pairs = [(r["정답"], _norm(ll.raw_label)) for r, ll in zip(order, labeled)]	(정답, 모델 라벨) 쌍 목록. 라벨 정규화(X? → X).
+final_pairs = [(r["정답"], _norm(ll.label)) for r, ll in zip(order, labeled)]	(정답, 후처리 라벨) 쌍 목록.
+triples = [(r["정답"], ll.label if in_review_list(ll) or ll.stage_out == 0 else "X", ll.score) for r, ll in zip(order, labeled)]	(정답, 목록 기준 라벨, 점수) 세 쌍 목록. 목록에 들거나 통과면 라벨, 아니면 X.
+source = f"재실행: 분류기 {info.classifier}" + (f", 임베딩 {info.embed_model}" if info.embed_model else "")	채점에 쓴 설정을 글로.
+source += f", 페이지 가중치 {'켬' if cfg.page_weight_enabled else '끔'}"	페이지 가중치 켬/끔을 덧붙인다.
+else:	다시 돌리지 않는 경우 (--stored)
+raw_pairs = [(r["정답"], _norm(r.get("모델 라벨"))) for r in rows]	(정답, 시트의 모델 라벨) 쌍.
+final_pairs = [(r["정답"], _norm(r.get("후처리 라벨"))) for r in rows]	(정답, 시트의 후처리 라벨) 쌍.
+triples = []	세 쌍 목록.
+for r in rows:	행마다
+try:	숫자 변환 대비.
+s = float(r.get("점수")) if r.get("점수") not in (None, "") else 1.0	점수 열이 있으면 실수로, 없으면 1.0.
+except (TypeError, ValueError):	숫자가 아니면
+s = 1.0	1.0.
+triples.append((r["정답"], str(r.get("후처리 라벨") or "").strip().upper(), s))	(정답, 후처리 라벨 대문자, 점수).
+source = "시트에 저장된 라벨"	출처 설명.
+tg = tuple(cfg.targets())	추출 등급 튜플.
+lm = list_metrics(triples, cfg.accept_score, tg)	현재 기준값의 목록 지표.
+sweep = [list_metrics(triples, a, tg) for a in SWEEP]	기준값 0.3~0.8 각각의 지표.
+return {"source": source, "rows": len(rows), "raw": score(raw_pairs), "final": score(final_pairs),	결과 사전: 출처, 행 수, 모델 라벨 채점, 후처리 채점,
+"candidates": candidate_metrics(raw_pairs, tg), "clf_lines": info.clf_lines,	결과에 후보 지표와 판정 수 포함.
+"list": lm, "sweep": sweep, "accept_score": cfg.accept_score}	목록 지표, 스윕, 기준값.
+def print_report(rep: dict) -> None:	채점 결과를 화면에 찍는 함수.
+print(f"골드 {rep['rows']}문장 / {rep['source']}")	첫 줄: 골드 문장 수와 출처.
+for name, s in (("분류기 라벨", rep["raw"]), ("후처리 후", rep["final"])):	분류기 라벨과 후처리 후 두 번 출력.
+print(f"\n[{name}] 정확도 {s['correct']}/{s['total']} = {s['accuracy']:.1%}  거시 F1 {s['macro_f1']:.1%}")	정확도와 거시 F1 출력.
+print("  등급  건수  정밀도  재현율   F1")	표 머리.
+for lab in LABELS:	등급마다
+m = s["per_grade"][lab]	지표.
+print(f"  {lab:<4} {m['support']:>4}  {m['precision']:6.1%} {m['recall']:6.1%} {m['f1']:6.1%}")	건수, 정밀도, 재현율, F1 을 퍼센트로.
+print("  혼동 행렬 (행=정답, 열=예측): " + " ".join(f"{l:>3}" for l in LABELS))	혼동 행렬 머리 (열 = 예측).
+for g in LABELS:	정답 등급마다
+print(f"    {g:<3} " + " ".join(f"{s['confusion'][g].get(p, 0):>3}" for p in LABELS))	예측별 수.
+cm = rep.get("candidates")	후보 지표가 있으면
+if cm:	출력.
+print(f"\n[후보(분류기가 {cm['targets']} 로 본 문장)] 재현율 {cm['recall']:.1%} ({cm['hits']}/{cm['positives']})  정밀도 {cm['precision']:.1%} ({cm['hits']}/{cm['candidates']})")	재현율·정밀도 한 줄.
+lm = rep.get("list")	목록 지표.
+if lm:	있으면
+print(f"\n[검토 목록] 추출 등급 {lm.get('targets', 'AB')}, 점수 기준 {lm['accept']:.2f}: 목록 {lm['list']}문장 (정답이 대상 등급인 문장 {lm['positives']})")	추출 등급, 기준값, 목록 크기, 양성 수.
+print(f"  정밀도(대상 등급) {lm['precision_nonx']:.1%}   정밀도(등급 일치) {lm['precision_grade']:.1%}   재현율 {lm['recall']:.1%}")	정밀도 두 가지와 재현율.
+print("  점수 기준별:  기준   목록  정밀도(대상)  정밀도(등급)  재현율")	스윕 표 머리.
+for m in rep.get("sweep", []):	기준값마다
+mark = " ◀ 현재" if abs(m["accept"] - lm["accept"]) < 1e-9 else ""	현재 기준값이면 '◀ 현재' 표시.
+print(f"               {m['accept']:.2f}  {m['list']:>5}   {m['precision_nonx']:7.1%}      {m['precision_grade']:7.1%}    {m['recall']:6.1%}{mark}")	한 줄.

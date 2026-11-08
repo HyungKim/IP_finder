@@ -1,0 +1,108 @@
+# ip_finder/classify/base.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""1차 분류기의 공통 틀.	파일 설명 첫 줄.
+모든 분류기는 같은 두 메서드를 가진다.	설명: 두 메서드.
+fit(batch, labels)   : 학습(학습형만). batch 는 골드 문장들, labels 는 정답 등급.	설명: fit.
+predict(batch)       : 문장마다 Prediction(등급, 신뢰도 0~1, 등급별 점수, 1위-2위 차이).	설명: predict.
+Batch 는 문장·임베딩 벡터(필요한 분류기만)·페이지 유형을 함께 든다. 신뢰도는 '1위 등급이 맞을 확률의 추정'으로 통일해	설명: Batch 와 신뢰도의 뜻.
+후처리 점수(신뢰도 × 페이지 가중치)가 분류기 종류와 무관하게 같은 뜻을 갖게 한다."""	설명 이어짐.
+from __future__ import annotations	새 문법 호환 선언.
+import json	JSON(메타 저장).
+from dataclasses import dataclass, field	dataclass 도구.
+from pathlib import Path	경로 타입.
+import numpy as np	numpy.
+from ..models import GRADES	등급 다섯 개.
+LABELS = list(GRADES)	등급 목록(리스트).
+@dataclass	@dataclass.
+class Prediction:	판정 결과 하나.
+label: str	등급.
+confidence: float               # 0~1. 1위 등급이 맞을 확률의 추정 (분류기마다 계산법은 다르지만 뜻은 같다)	신뢰도 0~1.
+scores: dict[str, float]        # 등급별 점수 (확률, 코사인, 투표 비율 등)	등급별 점수 사전.
+top: float = 0.0                # 1위 점수	1위 점수.
+margin: float = 0.0             # 1위 - 2위 (비고에 표시)	1위−2위.
+@dataclass	@dataclass.
+class Batch:	분류기 입력 묶음.
+"""분류기 입력 묶음. vectors 는 임베딩이 필요 없는 분류기(cue, ngram)에서는 None."""	설명 문자열.
+texts: list[str]	문장 목록.
+vectors: np.ndarray | None = None	임베딩 벡터 행렬(없을 수 있음).
+page_types: list[str] = field(default_factory=list)	페이지 유형 목록.
+def __post_init__(self):	생성 직후 보정.
+if not self.page_types:	페이지 유형이 비었으면
+self.page_types = ["general"] * len(self.texts)	모두 general 로 채운다.
+if self.vectors is not None:	벡터가 있으면
+self.vectors = np.asarray(self.vectors, dtype=np.float32)	float32 배열로 통일.
+def __len__(self) -> int:	len(batch) 지원.
+return len(self.texts)	문장 수.
+def subset(self, idx) -> "Batch":	일부 인덱스만 뽑은 새 Batch(교차 검증이 쓴다).
+idx = list(idx)	인덱스를 리스트로.
+return Batch([self.texts[i] for i in idx], None if self.vectors is None else self.vectors[idx],	문장과 벡터(있을 때만)를 골라
+[self.page_types[i] for i in idx])	페이지 유형도 골라 새 Batch.
+def normalize_rows(M: np.ndarray) -> np.ndarray:	행마다 길이 1 로 만드는 함수.
+"""행마다 길이 1 로 (코사인 유사도 = 내적)."""	설명: 코사인 = 내적이 되게.
+M = np.asarray(M, dtype=np.float32)	float32 배열로.
+norms = np.linalg.norm(M, axis=1, keepdims=True)	행 길이.
+norms[norms == 0] = 1.0	길이 0 인 행은 1 로(0 나누기 방지).
+return M / norms	나눈다.
+def softmax(logits: np.ndarray) -> np.ndarray:	소프트맥스 함수.
+z = logits - logits.max(axis=1, keepdims=True)	행마다 최댓값을 빼서 지수 넘침을 막는다.
+e = np.exp(z)	지수.
+return e / e.sum(axis=1, keepdims=True)	행 합으로 나눠 확률.
+def predictions_from_scores(scores: np.ndarray, labels: list[str], confidence: np.ndarray | None = None) -> list[Prediction]:	점수 행렬 → Prediction 목록.
+"""점수 행렬(n × 등급 수)에서 Prediction 목록. confidence 를 주지 않으면 1위 점수를 신뢰도로 쓴다."""	설명 문자열.
+out = []	결과 목록.
+for r, row in enumerate(scores):	행마다
+order = np.argsort(-row)	큰 순서로 정렬한 인덱스.
+top = float(row[order[0]])	1위 점수.
+second = float(row[order[1]]) if len(order) > 1 else 0.0	2위 점수(등급이 하나면 0).
+conf = float(confidence[r]) if confidence is not None else top	신뢰도: 주어졌으면 그 값, 아니면 1위 점수.
+out.append(Prediction(labels[int(order[0])], max(0.0, min(1.0, conf)),	Prediction 생성(신뢰도는 0~1 로 자름).
+{l: float(v) for l, v in zip(labels, row)}, top, top - second))	등급별 점수 사전, 1위, 차이.
+return out	목록 반환.
+class Classifier:	분류기 기본 클래스.
+"""분류기 기본 클래스. 하위 클래스는 name/label/needs_embedding/trainable 과 fit/predict/_arrays/_restore 를 채운다."""	설명 문자열.
+name = ""	이름(등록부 키).
+label = ""	한글 이름.
+needs_embedding = False	임베딩 필요 여부.
+trainable = False	학습 여부.
+def __init__(self, cfg=None):	생성자.
+self.cfg = cfg	설정 보관.
+self.labels: list[str] = list(LABELS)	등급 목록(학습하면 골드에 있는 등급으로 바뀜).
+self.meta: dict = {}	메타 정보(학습 시각 등).
+# ---- 학습·판정 ----	절 주석.
+def fit(self, batch: Batch, y: list[str]) -> None:	학습 메서드(기본은 미구현).
+raise NotImplementedError(f"{self.name} 은 학습하지 않는 분류기입니다")	학습 없는 분류기가 fit 되면 오류.
+def predict(self, batch: Batch) -> list[Prediction]:	판정 메서드.
+raise NotImplementedError	하위 클래스가 채운다.
+def prepare(self, embedder) -> None:	실행 전 준비(기본 빈 동작).
+"""학습 없이 쓰는 분류기가 실행 전에 필요한 것(원형 문장 임베딩 등)을 준비한다. 기본은 아무것도 안 함."""	설명 문자열.
+# ---- 저장·복원 (학습형) ----	절 주석.
+def _arrays(self) -> dict[str, np.ndarray]:	저장할 배열들(기본 없음).
+return {}	빈 사전.
+def _restore(self, arrays: dict[str, np.ndarray]) -> None:	배열에서 복원(기본 없음).
+pass	아무것도 안 함.
+def save(self, path: Path) -> Path:	npz 로 저장.
+path = Path(path)	Path 로.
+path.parent.mkdir(parents=True, exist_ok=True)	폴더 만들기.
+np.savez(path, kind=np.array(self.name), labels=np.array(self.labels),	kind·labels·meta 와
+meta=np.array(json.dumps(self.meta, ensure_ascii=False)), **self._arrays())	하위 클래스의 배열을 함께 저장.
+return path	경로 반환.
+@classmethod	클래스 메서드.
+def load_into(cls, path: Path, cfg=None) -> "Classifier":	npz 에서 이 클래스의 객체로 복원.
+d = np.load(path, allow_pickle=False)	파일 열기(pickle 금지).
+clf = cls(cfg)	빈 객체.
+clf.labels = [str(x) for x in d["labels"]]	등급 목록.
+clf.meta = json.loads(str(d["meta"]))	메타.
+clf._restore({k: d[k] for k in d.files if k not in ("kind", "labels", "meta")})	나머지 배열을 하위 클래스에 넘긴다.
+return clf	객체 반환.
+def describe(self) -> str:	실행 정보에 적는 설명 한 줄.
+"""실행 정보에 적는 한 줄."""	설명 문자열.
+if not self.trainable:	학습 없는 분류기면
+return f"{self.label} (학습 없음)"	이름 + (학습 없음).
+when = str(self.meta.get("trained_at", ""))[:16].replace("T", " ")	학습 시각을 짧게.
+return f"{self.label} (학습 {when}, {self.meta.get('n', '?')}문장, 골드 {len(self.meta.get('sources', []))}개)"	이름, 시각, 문장 수, 골드 파일 수.
+def label_indices(y: list[str], labels: list[str]) -> np.ndarray:	정답 등급 → 인덱스 배열.
+idx = {g: i for i, g in enumerate(labels)}	등급 → 번호 사전.
+return np.array([idx[g] for g in y], dtype=np.int64)	정수 배열.
+def present_labels(y: list[str]) -> list[str]:	골드에 있는 등급만 GRADES 순서로.
+"""골드에 나온 등급만, GRADES 순서로."""	설명 문자열.
+s = set(y)	집합.
+return [g for g in LABELS if g in s]	순서대로 거른다.

@@ -1,0 +1,124 @@
+# ip_finder/classify/classifier.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""문장 등급 분류기 두 종류.	파일 설명: 두 분류기.
+- ZeroShotClassifier: 학습 데이터 없이 등급별 원형 문장(prototypes.json)과의 코사인 유사도로 판정. 확신 = 1위-2위 유사도 차이.	제로샷 설명.
+- TrainedClassifier: 골드 세트로 학습한 소프트맥스 회귀. 입력은 임베딩 + 단서어 특성 13개. 확신 = 1위-2위 확률 차이.	학습 분류기 설명.
+두 클래스는 같은 predict(vectors, texts, page_types) 인터페이스를 가진다."""	같은 인터페이스.
+from __future__ import annotations	새 문법 호환.
+import json	JSON (원형 파일, 메타).
+from dataclasses import dataclass	dataclass.
+from pathlib import Path	경로.
+import numpy as np	numpy.
+from ..config import Config	설정.
+from ..cues import FEATURE_NAMES, cue_features	특성 이름과 특성 함수.
+GRADES = ["A", "B", "C", "D", "X"]	등급 순서 (리스트).
+PROTOTYPES_PATH = Path(__file__).parent / "prototypes.json"	원형 문장 파일 경로 (이 파일 옆의 prototypes.json).
+@dataclass	@dataclass.
+class Prediction:	분류기 판정 결과 하나.
+label: str	라벨 (A~X).
+confidence: float               # 1위 - 2위	확신 = 1위 점수 − 2위 점수.
+scores: dict[str, float]	등급별 점수 사전 (예: {'A': 0.80, 'B': 0.48, …}).
+top: float = 0.0                # 1위 점수 (학습 분류기는 확률, 제로샷은 코사인 유사도)	1위 점수. 학습 분류기는 확률, 제로샷은 코사인 유사도.
+def _normalize(M: np.ndarray) -> np.ndarray:	행렬의 각 행을 길이 1 로 만드는 함수 (코사인 유사도 준비).
+M = np.asarray(M, dtype=np.float32)	numpy float32 배열로.
+norms = np.linalg.norm(M, axis=1, keepdims=True)	행마다 길이(노름). keepdims 로 모양을 (n, 1) 로 유지해 나눗셈이 행별로 되게.
+norms[norms == 0] = 1.0	길이가 0 인 행은 0 으로 나누지 않게 1 로.
+return M / norms	각 행을 길이로 나눈다.
+def load_prototypes(path: Path | None = None) -> dict[str, list[str]]:	원형 문장 파일을 읽는 함수.
+data = json.loads((path or PROTOTYPES_PATH).read_text(encoding="utf-8"))	JSON 을 사전으로.
+return {g: [s for s in data.get(g, [])] for g in GRADES}	등급마다 문장 목록 (없는 등급은 빈 리스트).
+def build_features(vectors: list[list[float]], texts: list[str], page_types: list[str]) -> np.ndarray:	학습 분류기 입력을 만드는 함수: 벡터들, 문장들, 페이지 유형들.
+V = np.asarray(vectors, dtype=np.float32)	벡터 목록을 (n × 1024) 배열로.
+F = np.asarray([cue_features(t, pt) for t, pt in zip(texts, page_types)], dtype=np.float32)	문장마다 단서 특성 13개를 계산해 (n × 13) 배열로.
+return np.hstack([V, F])	가로로 이어 붙여 (n × 1037).
+def _predictions(scores: np.ndarray, labels: list[str]) -> list[Prediction]:	점수 행렬과 라벨 이름 목록을 받아 Prediction 목록으로 바꾸는 함수. 두 분류기가 같이 쓴다.
+out = []	결과 목록.
+for row in scores:	문장(행)마다
+order = np.argsort(-row)	점수가 큰 순서의 번호들 (−row 를 오름차순 정렬하면 큰 것이 앞).
+top, second = float(row[order[0]]), float(row[order[1]]) if len(order) > 1 else 0.0	1위 점수와 2위 점수 (등급이 하나뿐이면 2위는 0).
+out.append(Prediction(labels[int(order[0])], top - second, {l: float(v) for l, v in zip(labels, row)}, top))	Prediction 생성: 1위 라벨, 1위−2위, 등급별 점수 사전, 1위 점수.
+return out	목록을 돌려준다.
+class ZeroShotClassifier:	제로샷 분류기 클래스.
+kind = "zero-shot"	종류 표시. 실행 정보에 '제로샷' 으로 적힌다.
+def __init__(self, embedder, prototypes: dict[str, list[str]]):	생성자: 임베더와 원형 사전({등급: [문장들]}).
+self.labels = [g for g in GRADES if prototypes.get(g)]	원형이 있는 등급만 라벨 목록으로.
+texts = [s for g in self.labels for s in prototypes[g]]	모든 원형 문장을 등급 순서대로 한 줄로 나열.
+self.proto_labels = np.array([i for i, g in enumerate(self.labels) for _ in prototypes[g]])	각 원형이 어느 등급(번호)인지 배열. 예: [0,0,…,1,1,…].
+self.P = _normalize(embedder.embed(texts))	원형 문장들을 임베딩하고 길이 1 로 정규화한 행렬 P (41 × 1024).
+def predict(self, vectors, texts=None, page_types=None) -> list[Prediction]:	판정 메서드. texts, page_types 는 인터페이스를 맞추기 위한 인자 (제로샷은 안 씀).
+if len(vectors) == 0:	문장이 없으면
+return []	빈 목록.
+S = _normalize(vectors) @ self.P.T                      # n × 원형 수	문장 벡터를 정규화해 원형 행렬과 곱한다 → 코사인 유사도 행렬 S (n × 41).
+scores = np.stack([S[:, self.proto_labels == i].max(axis=1) for i in range(len(self.labels))], axis=1)	등급마다 그 등급 원형들 중 최댓값을 뽑아 (n × 등급 수) 점수 행렬로. np.stack 은 열로 쌓기.
+return _predictions(scores, self.labels)	점수 행렬을 Prediction 목록으로.
+class TrainedClassifier:	학습 분류기 클래스 (소프트맥스 회귀).
+kind = "trained"	종류 표시 'trained'.
+def __init__(self, W: np.ndarray, b: np.ndarray, mu: np.ndarray, sigma: np.ndarray, labels: list[str], meta: dict):	생성자: 가중치 W(등급 수 × 1037), 편향 b(등급 수), 표준화용 평균 mu·표준편차 sigma, 라벨 목록, 메타 사전.
+self.W, self.b, self.mu, self.sigma, self.labels, self.meta = W, b, mu, sigma, labels, meta	한 줄에 여섯 값을 각각 self 에 저장.
+def _proba(self, X: np.ndarray) -> np.ndarray:	확률을 계산하는 내부 메서드. X 는 (n × 1037).
+Z = (X - self.mu) / self.sigma	표준화: (값 − 평균) / 표준편차. 학습 때와 같은 mu, sigma 를 써야 한다.
+logits = Z @ self.W.T + self.b	점수(logit) = Z · Wᵀ + b. 결과는 (n × 등급 수). 등급마다 채점표 하나.
+logits -= logits.max(axis=1, keepdims=True)	행마다 최댓값을 빼서 exp 가 넘치지 않게 (결과 확률은 같다).
+P = np.exp(logits)	지수.
+return P / P.sum(axis=1, keepdims=True)	행의 합으로 나눠 합이 1 인 확률로. 이것이 소프트맥스.
+def predict(self, vectors, texts, page_types) -> list[Prediction]:	판정 메서드.
+if len(vectors) == 0:	문장이 없으면
+return []	빈 목록.
+return _predictions(self._proba(build_features(vectors, texts, page_types)), self.labels)	특성 1037 을 만들고 확률을 계산해 Prediction 목록으로.
+@classmethod	@classmethod: TrainedClassifier.train(...) 으로 부른다.
+def train(cls, X: np.ndarray, y: list[str], labels: list[str] | None = None, *, l2: float = 1e-3,	학습 함수. X 특성 행렬, y 정답 라벨 목록, labels 등급 목록(없으면 y 에 있는 것), * 뒤는 이름으로만 넘기는 옵션: L2 규제 0.001,
+epochs: int = 600, lr: float = 0.2, meta: dict | None = None) -> "TrainedClassifier":	반복 600회, 학습률 0.2, 메타 사전.
+labels = labels or [g for g in GRADES if g in set(y)]	등급 목록이 없으면 A~X 중 y 에 있는 것만.
+idx = {g: i for i, g in enumerate(labels)}	등급 → 번호 사전.
+Y = np.zeros((len(y), len(labels)), dtype=np.float32)	정답 행렬 Y (n × 등급 수), 전부 0 으로.
+for r, g in enumerate(y):	문장마다
+Y[r, idx[g]] = 1.0	정답 등급 자리만 1 (원-핫).
+mu = X.mean(axis=0)	특성별 평균.
+sigma = X.std(axis=0) + 1e-6	특성별 표준편차 (+1e-6 으로 0 나눗셈 방지).
+Z = (X - mu) / sigma	표준화한 입력 Z.
+W = np.zeros((len(labels), X.shape[1]), dtype=np.float32)	가중치 W 를 0 으로 시작.
+b = np.zeros(len(labels), dtype=np.float32)	편향 b 를 0 으로 시작.
+n = len(y)	문장 수.
+for _ in range(epochs):	600번 반복:
+logits = Z @ W.T + b	점수 = Z · Wᵀ + b.
+logits -= logits.max(axis=1, keepdims=True)	최댓값 빼기 (안정성).
+P = np.exp(logits)	지수.
+P /= P.sum(axis=1, keepdims=True)	행 합으로 나눠 확률 P.
+G = P - Y	오차 G = 예측 확률 − 정답. 맞춘 문장은 0 에 가깝다.
+W -= lr * (G.T @ Z / n + l2 * W)	W 갱신: 기울기 (Gᵀ · Z / n) 에 규제 λW 를 더한 만큼 학습률 곱해 뺀다 (경사하강).
+b -= lr * G.mean(axis=0)	b 갱신: 오차의 열 평균만큼.
+return cls(W, b, mu, sigma, labels, meta or {})	학습된 값으로 객체를 만들어 돌려준다.
+def save(self, path: Path) -> None:	파일로 저장하는 메서드.
+path.parent.mkdir(parents=True, exist_ok=True)	폴더가 없으면 만든다.
+np.savez(path, W=self.W, b=self.b, mu=self.mu, sigma=self.sigma, labels=np.array(self.labels),	npz(여러 배열을 압축 없이 담는 numpy 파일)로 저장: W, b, mu, sigma, 라벨 배열,
+meta=np.array(json.dumps(self.meta, ensure_ascii=False)))	메타는 JSON 문자열 하나로 (ensure_ascii=False 로 한글 그대로).
+@classmethod	@classmethod: 파일에서 읽어 객체를 만든다.
+def load(cls, path: Path) -> "TrainedClassifier":	읽기 함수.
+d = np.load(path, allow_pickle=False)	allow_pickle=False: 임의 코드 실행 위험이 있는 pickle 을 막는다.
+return cls(d["W"], d["b"], d["mu"], d["sigma"], [str(x) for x in d["labels"]], json.loads(str(d["meta"])))	배열들과 라벨 목록(문자열로), 메타(JSON 풀기)로 객체 생성.
+def cross_validate(X: np.ndarray, y: list[str], k: int = 5, seed: int = 0) -> float:	k겹 교차검증 정확도 함수. seed 로 섞는 순서를 고정한다.
+"""k겹 교차검증 정확도. 표본이 적으면 k를 줄인다."""	설명: 표본이 적으면 k 를 줄인다.
+n = len(y)	문장 수.
+k = max(2, min(k, n))	k 는 2 이상, 문장 수 이하.
+rng = np.random.default_rng(seed)	난수 생성기 (같은 seed 면 같은 순서).
+order = rng.permutation(n)	0~n-1 을 무작위로 섞은 순서.
+folds = np.array_split(order, k)	k 개 묶음(겹)으로 나눈다.
+labels = [g for g in GRADES if g in set(y)]	등급 목록.
+hit = 0	맞춘 수.
+for f in folds:	겹마다
+test = set(int(i) for i in f)	이 겹을 시험용 번호 집합으로,
+tr = [i for i in range(n) if i not in test]	나머지를 학습용으로.
+if len(set(y[i] for i in tr)) < 2:	학습용에 등급이 하나뿐이면
+continue	학습할 수 없어 건너뛴다.
+clf = TrainedClassifier.train(X[tr], [y[i] for i in tr], labels)	학습용으로 분류기를 학습.
+P = clf._proba(X[list(test)])	시험용 문장들의 확률.
+hit += sum(labels[int(np.argmax(P[j]))] == y[i] for j, i in enumerate(test))	확률 최대 등급이 정답과 같은 수를 더한다.
+return hit / n	맞춘 수 / 전체 = 정확도.
+def load_classifier(cfg: Config, embedder):	어느 분류기를 쓸지 고르는 함수.
+"""학습된 분류기 파일이 있으면 그것을, 없으면 원형 문장 제로샷을 돌려준다."""	설명.
+path = cfg.classifier_file()	설정의 분류기 파일 경로.
+if path.exists():	파일이 있으면
+clf = TrainedClassifier.load(path)	학습 분류기를 읽고
+if clf.meta.get("embed_model") not in (None, cfg.embed_model):	학습 때 임베딩 모델이 기록돼 있는데 지금 설정과 다르면
+raise ValueError(f"분류기는 {clf.meta.get('embed_model')} 임베딩으로 학습됐는데 설정은 {cfg.embed_model}입니다.")	오류 (벡터 공간이 달라 쓸 수 없다. 재학습 필요).
+return clf	학습 분류기를 돌려준다.
+return ZeroShotClassifier(embedder, load_prototypes())	파일이 없으면 원형 문장으로 제로샷 분류기를 만든다.

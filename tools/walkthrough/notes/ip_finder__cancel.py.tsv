@@ -1,0 +1,41 @@
+# ip_finder/cancel.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""중지 토큰. UI 의 중지 버튼이 cancel() 을 부르면 진행 중인 Ollama 요청의 소켓을 끊고, 파이프라인은 다음 단계 전에 check() 로 멈춘다."""	파일 설명: 중지 토큰의 동작.
+from __future__ import annotations	새 문법 호환.
+import threading	스레드 도구 (Event, Lock).
+class Cancelled(Exception):	중지됐을 때 던지는 예외 종류.
+pass	내용 없음 (이름만 필요).
+class CancelToken:	중지 토큰 클래스.
+def __init__(self):	생성자.
+self._flag = threading.Event()	스레드 간에 안전한 깃발(Event). set() 하면 켜진다.
+self._abortables: list = []	cancel() 메서드를 가진 객체들(LLM 클라이언트, 임베더) 목록.
+self._lock = threading.Lock()	목록을 여러 스레드가 동시에 건드리지 않게 하는 잠금.
+def register(self, obj) -> None:	끊을 수 있는 객체를 등록하는 메서드.
+"""cancel() 메서드가 있는 객체(OllamaClient, OllamaEmbedder)를 등록한다."""	설명.
+with self._lock:	잠금 안에서
+if obj is not None and hasattr(obj, "cancel") and obj not in self._abortables:	None 이 아니고 cancel 메서드가 있고 아직 없으면
+self._abortables.append(obj)	목록에 넣는다.
+def cancel(self) -> None:	중지 요청 메서드. UI 의 중지 버튼이 부른다.
+self._flag.set()	깃발을 켠다.
+with self._lock:	잠금 안에서
+objs = list(self._abortables)	목록을 복사하고 (잠금을 오래 잡지 않게)
+for o in objs:	객체마다
+try:	오류가 나도 다음 객체로 가도록 try.
+o.cancel()	cancel() → 진행 중인 소켓을 닫는다.
+except Exception:	오류는
+pass	무시.
+@property	@property: token.cancelled 로 읽는다.
+def cancelled(self) -> bool:	중지됐는지.
+return self._flag.is_set()	깃발 상태.
+def check(self) -> None:	확인 메서드. 파이프라인이 단계 사이에서 부른다.
+if self._flag.is_set():	깃발이 켜져 있으면
+raise Cancelled()	Cancelled 예외를 던져 흐름을 끊는다.
+def reset(self) -> None:	다음 작업 전에 초기화하는 메서드.
+self._flag.clear()	깃발을 내린다.
+with self._lock:	잠금 안에서
+objs = list(self._abortables)	등록 목록을 복사하고
+for o in objs:	객체마다
+if hasattr(o, "reset"):	reset 메서드가 있으면
+try:	오류 대비 try.
+o.reset()	취소 깃발을 내린다.
+except Exception:	오류는
+pass	무시.

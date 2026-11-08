@@ -1,0 +1,166 @@
+# ip_finder/compare/ladder.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""사다리 실행(ladder): 스위치(또는 어떤 설정이든)를 한 칸씩 바꿔 가며 같은 보고서들을 반복 실행하고, 칸마다 무엇이 달라졌는지 비교한다.	파일 설명 첫 줄.
+cumulative(누적): 기준선 → +1번째 칸 → +1·2번째 칸 → …  각 칸은 직전 칸과 비교한다 ("이 스위치를 켜니 무엇이 변했나")	설명: 누적.
+single(단독):     기준선 → 기준선+1번째 칸만 → 기준선+2번째 칸만 → …  각 칸은 기준선과 비교한다 (순서에 안 흔들리는 독립 기여)	설명: 단독.
+설정 파일(TOML) 예:	설명: 설정 파일 예 시작.
+name = "prep"	예: 이름.
+mode = "cumulative"	예: 방식.
+[[step]]	예: 칸.
+name = "layout"                 # switches.py 의 스위치 이름 → 켠다	예: 스위치 칸.
+[[step]]	예: 칸.
+label = "k-NN 분류기"	예: 이름표.
+set = { classifier = "knn" }    # 임의의 Config 필드도 바꿀 수 있다	예: 임의 설정.
+실험이므로 골드 정답 반영(use_gold)과 실행 이력 저장은 끈다. 임베딩 캐시는 켜 두어 같은 문장은 한 번만 계산한다."""	설명: 골드·이력 끔, 캐시 켬.
+from __future__ import annotations	새 문법 호환 선언.
+import time	시간.
+import tomllib	TOML 읽기.
+from dataclasses import dataclass, field	dataclass.
+from pathlib import Path	경로.
+from ..cache import LabelCache	캐시.
+from ..classify import load_classifier, needs_embedding	분류기 로더.
+from ..config import Config	설정.
+from ..pipeline import extract, make_embedder	실행과 임베더.
+from ..switches import BY_NAME, SWITCHES, set_switch	스위치 도구.
+from .records import RunDiff, RunRecord, aggregate_gold, compare_records, gold_metrics, pair_records, record_from_result	기록·비교 도구.
+@dataclass	@dataclass.
+class Step:	사다리 칸.
+name: str                       # 스위치 이름 또는 임의 이름	이름.
+label: str                      # 한글 이름	한글 이름.
+set: dict = field(default_factory=dict)   # Config 필드 → 값	바꿀 설정 사전.
+def apply(self, cfg: Config) -> None:	설정에 적용.
+if self.name in BY_NAME:	스위치 이름이면
+set_switch(cfg, self.name, True)	켠다.
+for k, v in self.set.items():	set 항목마다
+if not hasattr(cfg, k):	없는 필드면
+raise ValueError(f"사다리 칸 '{self.name}': 모르는 설정 {k}")	오류.
+setattr(cfg, k, v)	값을 쓴다.
+@dataclass	@dataclass.
+class Ladder:	사다리.
+name: str = "prep"	이름.
+mode: str = "cumulative"        # cumulative | single	방식.
+steps: list[Step] = field(default_factory=list)	칸 목록.
+def default_ladder(names: list[str] | None = None, mode: str = "cumulative") -> Ladder:	기본 사다리.
+"""기본 사다리: 스위치 전부를 switches.py 순서대로 (레이아웃 → 줄 규칙 → 페이지 규칙 → 후처리)."""	설명 문자열.
+names = names or [s.name for s in SWITCHES]	이름이 없으면 스위치 전부.
+return Ladder("switches", mode, [Step(n, BY_NAME[n].label) for n in names])	칸 목록으로.
+def load_ladder(path: Path) -> Ladder:	TOML 에서 사다리 읽기.
+data = tomllib.loads(Path(path).read_text(encoding="utf-8"))	파일 읽기.
+steps = []	칸 목록.
+for i, st in enumerate(data.get("step", []), 1):	[[step]] 마다
+name = str(st.get("name") or st.get("label") or f"step{i}")	이름(없으면 label, 그것도 없으면 stepN).
+label = str(st.get("label") or (BY_NAME[name].label if name in BY_NAME else name))	한글 이름(스위치면 등록부에서).
+sets = dict(st.get("set") or {})	set 사전.
+if name not in BY_NAME and not sets:	스위치도 아니고 set 도 없으면
+raise ValueError(f"사다리 칸 {i}: 스위치 이름(name)이거나 set 이 있어야 합니다")	오류.
+steps.append(Step(name, label, sets))	칸 추가.
+mode = str(data.get("mode") or "cumulative")	방식.
+if mode not in ("cumulative", "single"):	둘 중 하나가 아니면
+raise ValueError(f"mode 는 cumulative 또는 single: {mode}")	오류.
+return Ladder(str(data.get("name") or Path(path).stem), mode, steps)	Ladder 생성.
+def step_config(base: Config, ladder: Ladder, upto: int) -> Config:	칸 번호까지 적용한 설정.
+"""upto = -1 이면 기준선 그대로. cumulative 는 0..upto 칸을 모두, single 은 upto 칸만 적용한다."""	설명 문자열.
+cfg = base.copy(use_gold=False, history_path="")	복사본(골드 반영·이력 끔).
+if upto < 0:	기준선이면
+return cfg	그대로.
+for i, st in enumerate(ladder.steps):	칸마다
+if (ladder.mode == "cumulative" and i <= upto) or (ladder.mode == "single" and i == upto):	누적이면 upto 까지, 단독이면 upto 만
+st.apply(cfg)	적용.
+return cfg	반환.
+@dataclass	@dataclass.
+class StepResult:	칸 하나의 결과.
+index: int                      # -1 = 기준선	번호(-1 기준선).
+name: str	이름.
+label: str	한글 이름.
+cfg: Config	설정.
+out_dir: Path	결과 폴더.
+records: list[RunRecord] = field(default_factory=list)	파일별 기록.
+elapsed: float = 0.0	시간.
+gold: dict = field(default_factory=dict)            # 보고서 전체 합산 골드 지표	합산 골드 지표.
+per_file_gold: list[dict] = field(default_factory=list)	파일별 골드 지표.
+def totals(self):	상태별 합계.
+from collections import Counter	Counter.
+c: Counter = Counter()	빈 합계.
+for r in self.records:	기록마다
+c.update(r.by_status())	더한다.
+return c	반환.
+def grade_counts(self):	검토 목록 등급별 합계.
+from collections import Counter	Counter.
+c: Counter = Counter()	빈.
+for r in self.records:	기록마다
+c.update(r.grade_counts())	더한다.
+return c	반환.
+@property	속성.
+def title(self) -> str:	표시 제목.
+return "기준선" if self.index < 0 else f"{self.index + 1}. {self.label}"	기준선 또는 'N. 이름'.
+@dataclass	@dataclass.
+class LadderResult:	사다리 전체 결과.
+ladder: Ladder	사다리.
+inputs: list[Path]	입력 파일.
+base_cfg: Config	기준 설정.
+steps: list[StepResult]	칸 결과들.
+diffs: list[tuple[StepResult, StepResult, list[RunDiff]]]    # (비교 기준 칸, 이 칸, 파일별 비교)	비교 목록(기준 칸, 이 칸, 파일별 RunDiff).
+out_dir: Path	결과 폴더.
+gold_used: bool = False	골드를 썼는지.
+def _slug(name: str) -> str:	폴더 이름용 안전한 글자만.
+return "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in name)[:24] or "step"	영숫자·-·_ 만 남기고 24자로.
+def preflight(base_cfg: Config, ladder: Ladder, embedders: dict, cache) -> dict[tuple[str, str], object]:	사전 점검: 모든 칸의 분류기를 미리 만든다.
+"""모든 칸의 분류기를 미리 만들어 본다. 학습 파일이 없거나 임베딩 모델이 없으면 실행 전에 바로 알린다."""	설명 문자열.
+classifiers: dict[tuple[str, str], object] = {}	(분류기, 임베딩) → 분류기 객체.
+for i in range(-1, len(ladder.steps)):	기준선부터 마지막 칸까지
+cfg = step_config(base_cfg, ladder, i)	그 칸의 설정.
+key = (cfg.classifier, cfg.embed_model)	열쇠.
+if key in classifiers:	이미 만들었으면
+continue	다음.
+emb = None	임베더 없음.
+if needs_embedding(cfg.classifier):	임베딩이 필요하면
+emb = embedders.get(cfg.embed_model)	모델별 임베더.
+if emb is None:	없으면
+emb = make_embedder(cfg, cache)	만들고
+embedders[cfg.embed_model] = emb	보관.
+if not emb.available():	모델이 없으면
+raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 (ollama pull {cfg.embed_model})")	실행 전에 오류.
+classifiers[key] = load_classifier(cfg, emb)	분류기 로드.
+return classifiers	반환.
+def run_ladder(inputs: list[Path], base_cfg: Config, ladder: Ladder, out_dir: Path, gold_rows: list[dict] | None = None,	사다리 실행 본체.
+status=None, cancel=None, embedders: dict | None = None) -> LadderResult:	이어짐.
+"""inputs 전부를 기준선과 각 칸 설정으로 실행한다. embedders 는 {임베딩 모델: 임베더} (테스트는 가짜를 넣는다)."""	설명 문자열.
+out_dir = Path(out_dir)	Path.
+out_dir.mkdir(parents=True, exist_ok=True)	폴더 만들기.
+embedders = embedders if embedders is not None else {}	임베더 사전(테스트는 가짜).
+cache = LabelCache(base_cfg.cache_file() if base_cfg.use_cache else None)	캐시 하나를 전체 실행에 공유.
+try:	try.
+classifiers = preflight(base_cfg, ladder, embedders, cache)	사전 점검.
+results: list[StepResult] = []	칸 결과 목록.
+for i in range(-1, len(ladder.steps)):	기준선(-1)부터
+cfg = step_config(base_cfg, ladder, i)	칸 설정.
+st = ladder.steps[i] if i >= 0 else None	칸 객체(기준선은 None).
+name = st.name if st else "baseline"	폴더 이름용 이름.
+label = st.label if st else "기준선"	한글 이름.
+folder = out_dir / (f"step-{i + 1:02d}-{_slug(name)}")	step-00-baseline, step-01-layout …
+folder.mkdir(parents=True, exist_ok=True)	폴더 만들기.
+sr = StepResult(i, name, label, cfg, folder)	칸 결과 객체.
+if status:	상태 알림.
+status(f"[{i + 1}/{len(ladder.steps)}] {label}: 파일 {len(inputs)}개 실행")	메시지.
+t0 = time.time()	시간 재기.
+clf = classifiers[(cfg.classifier, cfg.embed_model)]	이 칸의 분류기.
+emb = embedders.get(cfg.embed_model)	이 칸의 임베더.
+for f in inputs:	입력 파일마다
+if cancel is not None:	중지 토큰이 있으면
+cancel.check()	확인.
+out, res = extract(f, cfg, folder, embedder=emb, classifier=clf, use_gold=False, with_ext=True)	실행(골드 반영 끔, 확장자 포함 이름).
+rec = record_from_result(res, cfg, out)	기록으로.
+sr.records.append(rec)	보관.
+if gold_rows:	골드가 있으면
+sr.per_file_gold.append(gold_metrics(rec, gold_rows, tuple(cfg.targets())))	골드 지표.
+sr.elapsed = time.time() - t0	칸 시간.
+if gold_rows:	골드가 있으면
+sr.gold = aggregate_gold(sr.per_file_gold)	합산.
+results.append(sr)	결과에.
+diffs = []	비교 목록.
+for n, sr in enumerate(results[1:], 1):	두 번째 칸(첫 칸)부터
+base = results[n - 1] if ladder.mode == "cumulative" else results[0]	누적이면 직전, 단독이면 기준선.
+pairs = pair_records(base.records, sr.records)	파일 짝짓기.
+diffs.append((base, sr, [compare_records(a, b) for a, b in pairs]))	파일별 비교.
+finally:	끝나면
+cache.close()	캐시 닫기.
+return LadderResult(ladder, list(inputs), base_cfg, results, diffs, out_dir, bool(gold_rows))	LadderResult.

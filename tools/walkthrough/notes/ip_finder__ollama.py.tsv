@@ -1,0 +1,86 @@
+# ip_finder/ollama.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""Ollama 와 주고받는 HTTP. 표준 라이브러리만 쓰고, 127.0.0.1 바깥 호스트는 만들 때부터 거부한다.	파일 설명 첫 줄.
+0단계에서는 임베딩(/api/embed)만 쓴다. 진행 중인 요청은 cancel() 로 소켓을 끊어 즉시 돌아온다 (UI 중지 버튼)."""	설명: 0단계는 임베딩만, 중지 가능.
+from __future__ import annotations	새 문법 호환 선언.
+import http.client	HTTP 연결 모듈.
+import json	JSON 변환.
+import socket	소켓(중지 시 끊는 데 쓴다).
+import threading	스레드 잠금.
+import urllib.parse	URL 분해.
+import urllib.request	간단한 GET 요청.
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}	로컬로 인정하는 호스트 이름 세 가지.
+class OllamaError(RuntimeError):	Ollama 호출 오류의 예외 클래스.
+"""Ollama 호출 실패 (연결 불가, 오류 응답, 응답 형식 불일치)."""	설명 문자열.
+class CancelledError(OllamaError):	사용자가 중지한 경우의 예외(OllamaError 의 하위).
+"""사용자가 중지해 요청을 끊음."""	설명 문자열.
+def assert_local(host: str) -> None:	호스트가 로컬인지 검사하는 함수.
+"""호스트가 로컬 주소가 아니면 예외. 사내 자료가 바깥으로 나가지 않게 하는 첫 번째 방어선."""	설명 문자열.
+parsed = urllib.parse.urlparse(host)	URL 을 분해해
+name = (parsed.hostname or "").lower()	호스트 이름을 소문자로.
+if name not in LOCAL_HOSTS:	로컬 목록에 없으면
+raise OllamaError(f"외부 호스트 금지: {host!r}. 로컬 Ollama(127.0.0.1)만 허용합니다.")	오류를 던진다(요청을 보내기 전에 막는다).
+def installed_models(host: str, timeout: int = 10) -> list[str]:	설치된 모델 이름 목록을 받는 함수.
+"""설치된 모델 이름 목록. 연결이 안 되면 빈 목록."""	설명 문자열.
+try:	실패해도 프로그램이 죽지 않게 try.
+with urllib.request.urlopen(host.rstrip("/") + "/api/tags", timeout=timeout) as r:	/api/tags 에 GET.
+return [m["name"] for m in json.loads(r.read()).get("models", [])]	응답 JSON 의 models 에서 이름만 뽑는다.
+except Exception:	어떤 오류든
+return []	빈 목록으로.
+def server_available(host: str, timeout: int = 10) -> bool:	서버가 응답하는지만 확인.
+try:	try.
+with urllib.request.urlopen(host.rstrip("/") + "/api/tags", timeout=timeout):	/api/tags 열기.
+return True	열리면 True.
+except Exception:	실패하면
+return False	False.
+class AbortableHTTP:	중지 가능한 POST 클라이언트.
+"""http.client 기반 POST. 다른 스레드에서 cancel() 하면 진행 중인 요청의 소켓을 닫아 즉시 돌아온다."""	설명 문자열.
+def __init__(self, host: str, timeout: int):	생성자: 호스트 문자열과 시간 제한.
+parsed = urllib.parse.urlparse(host)	URL 분해.
+self._host, self._port = parsed.hostname or "127.0.0.1", parsed.port or 11434	호스트 이름과 포트(기본 11434).
+self._timeout = timeout	시간 제한 저장.
+self._conn: http.client.HTTPConnection | None = None	진행 중인 연결(없으면 None).
+self._lock = threading.Lock()	다른 스레드와 동시에 건드리지 않게 잠금.
+self._cancelled = False	중지 플래그.
+def cancel(self) -> None:	중지: 진행 중인 요청의 소켓을 끊는다.
+with self._lock:	잠금 안에서
+self._cancelled = True	플래그를 세우고
+conn = self._conn	현재 연결을 집는다.
+if conn is not None:	연결이 있으면
+try:	try.
+if conn.sock is not None:	소켓이 있으면
+conn.sock.shutdown(socket.SHUT_RDWR)	양방향으로 닫아 읽기 대기에서 즉시 깨어나게 한다.
+except OSError:	소켓 오류는
+pass	무시.
+try:	try.
+conn.close()	연결 닫기.
+except OSError:	오류는
+pass	무시.
+def reset(self) -> None:	중지 플래그를 내린다(다음 실행 전).
+with self._lock:	잠금 안에서
+self._cancelled = False	플래그 False.
+def post(self, path: str, body: dict) -> dict:	POST 요청을 보내 JSON 응답을 돌려준다.
+with self._lock:	잠금 안에서
+if self._cancelled:	이미 중지됐으면
+raise CancelledError("중지됨")	바로 중지 예외.
+conn = http.client.HTTPConnection(self._host, self._port, timeout=self._timeout)	새 HTTP 연결.
+self._conn = conn	cancel 이 찾을 수 있게 저장.
+try:	try.
+conn.request("POST", path, body=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})	JSON 본문으로 POST.
+res = conn.getresponse()	응답 받기.
+data = res.read()	본문 읽기.
+if res.status >= 400:	400 이상이면
+raise OllamaError(f"Ollama 응답 {res.status}: {data[:200]!r}")	오류(앞 200바이트 포함).
+return json.loads(data)	JSON 으로 풀어 돌려준다.
+except (OSError, http.client.HTTPException, ValueError) as e:	소켓·HTTP·JSON 오류를 한꺼번에 잡는다.
+with self._lock:	잠금 안에서
+cancelled = self._cancelled	중지 여부를 본다.
+if cancelled:	중지 때문이면
+raise CancelledError("중지됨") from e	중지 예외로 바꾼다.
+raise OllamaError(f"Ollama 호출 실패 ({self._host}:{self._port}): {e}") from e	아니면 호출 실패 예외.
+finally:	성공·실패 모두
+with self._lock:	잠금 안에서
+self._conn = None	연결 참조를 지운다.
+try:	try.
+conn.close()	연결 닫기.
+except OSError:	오류는
+pass	무시.

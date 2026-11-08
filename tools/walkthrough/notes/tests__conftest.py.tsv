@@ -1,0 +1,46 @@
+# tests/conftest.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""오프라인 테스트 공통 설정. 실제 Ollama 를 호출하지 않는다 (가짜 임베더).	파일 설명: 오프라인 테스트, 가짜 임베더.
+0단계는 LLM 이 없으므로 가짜 LLM 클라이언트도 없다."""	설명: 가짜 LLM 없음.
+from __future__ import annotations	새 문법 호환 선언.
+from pathlib import Path	경로.
+import pytest	pytest.
+from ip_finder.config import Config	설정.
+from ip_finder.cues import cue_features	단서 특성(가짜 벡터 재료).
+from ip_finder.samples import make_all	가짜 보고서 생성.
+from ip_finder.switches import set_all	스위치 전부 켜기.
+class FakeEmbedder:	가짜 임베더 클래스.
+"""단서어 특성을 벡터로 쓰는 가짜 임베더. 원형 문장과 본문 문장이 같은 규칙으로 임베딩되므로 제로샷이 결정적으로 동작."""	설명 문자열.
+def __init__(self, available: bool = True):	생성자(가용 여부 지정 가능).
+self.model = "fake-embed"	모델 이름.
+self._available = available	가용 여부.
+self.calls = 0	호출 수.
+self.cache_hits = 0	캐시 적중 수(실제 임베더와 같은 속성).
+self.seconds = 0.0	시간.
+def available(self):	연결 확인 흉내.
+return self._available	가용 여부 반환.
+def embed(self, texts):	임베딩: 문장마다 단서 특성 벡터.
+self.calls += 1	호출 수 +1.
+out = []	결과.
+for t in texts:	문장마다
+f = cue_features(t, "general")[:9]           # 페이지 유형 차원 제외	단서 9개(페이지 유형 제외).
+out.append([*f, 0.3 + 0.01 * (len(t) % 7)])  # 영벡터 방지용 상수 차원	길이에 따른 상수 차원을 붙여 영벡터를 막는다.
+return out	라벨 목록을 돌려준다.
+@pytest.fixture(scope="session")	세션 범위 픽스처.
+def sample_dir(tmp_path_factory) -> Path:	가짜 보고서 폴더.
+d = tmp_path_factory.mktemp("samples")	임시 폴더.
+make_all(d)	PDF·PPTX 생성.
+return d	반환.
+@pytest.fixture	픽스처.
+def cfg(tmp_path) -> Config:	기준선 설정.
+"""기준선: 스위치 전부 끔, proto 분류기, 가짜 임베딩."""	설명 문자열.
+return Config(use_cache=False, embed_model="fake-embed", history_path=str(tmp_path / "hist"), gold_paths=[str(tmp_path / "gold")],	캐시 끔, 가짜 임베딩, 임시 이력·골드 폴더,
+classifier_dir=str(tmp_path / "clf"))	임시 분류기 폴더.
+@pytest.fixture	픽스처.
+def cfg_all(cfg) -> Config:	전부 켠 설정.
+"""스위치 전부 켬 (cfg 와 별개의 복사본)."""	설명 문자열(복사본이어야 cfg 가 바뀌지 않는다).
+c = cfg.copy()	복사.
+set_all(c, True)	전부 켬.
+return c	반환.
+@pytest.fixture	픽스처.
+def fake_embedder() -> FakeEmbedder:	가짜 임베더.
+return FakeEmbedder()	생성.

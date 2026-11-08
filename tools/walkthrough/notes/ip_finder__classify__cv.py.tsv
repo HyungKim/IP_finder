@@ -1,0 +1,34 @@
+# ip_finder/classify/cv.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""교차 검증 도우미. 학습형 분류기를 골드로 채점할 때 '학습에 쓴 문장으로 채점하는' 착시를 피하려고 k 겹으로 나눈다.	파일 설명 첫 줄.
+층화(stratified): 등급 비율이 겹마다 비슷하게 섞는다. 골드가 적으면 k 를 줄인다."""	설명: 층화.
+from __future__ import annotations	새 문법 호환 선언.
+import numpy as np	numpy.
+from .base import Batch, Classifier, Prediction	공통 틀.
+def stratified_folds(y: list[str], k: int = 5, seed: int = 0) -> list[list[int]]:	층화 k 겹 나누기.
+"""등급별로 섞어 k 개 겹으로 나눈 인덱스 목록. 표본 수보다 k 가 크면 k 를 줄인다."""	설명 문자열.
+n = len(y)	표본 수.
+k = max(2, min(k, n))	k 는 2 이상, 표본 수 이하.
+rng = np.random.default_rng(seed)	난수 생성기(seed 고정 → 재현 가능).
+folds: list[list[int]] = [[] for _ in range(k)]	빈 겹 k 개.
+for g in sorted(set(y)):	등급마다
+idx = [i for i in range(n) if y[i] == g]	그 등급의 인덱스.
+rng.shuffle(idx)	섞는다.
+for j, i in enumerate(idx):	순서대로
+folds[j % k].append(i)	겹에 돌아가며 넣는다(등급 비율 유지).
+return [sorted(f) for f in folds if f]	비지 않은 겹만, 정렬해서.
+def out_of_fold_predict(clf: Classifier, batch: Batch, y: list[str], k: int = 5, seed: int = 0) -> list[Prediction | None]:	교차 검증 밖 판정.
+"""각 문장을 자기가 들어가지 않은 겹으로 학습한 분류기로 판정한다. 학습이 불가능한 겹(등급이 하나뿐)은 None."""	설명 문자열.
+n = len(y)	표본 수.
+out: list[Prediction | None] = [None] * n	결과 자리.
+for test in stratified_folds(y, k, seed):	겹마다
+test_set = set(test)	시험 집합.
+train = [i for i in range(n) if i not in test_set]	나머지가 학습.
+if len(set(y[i] for i in train)) < 2:	학습 집합에 등급이 하나뿐이면
+continue	건너뜀.
+clf.fit(batch.subset(train), [y[i] for i in train])	학습.
+for i, pr in zip(test, clf.predict(batch.subset(test))):	시험 집합 판정.
+out[i] = pr	자리에 넣는다.
+return out	결과.
+def cv_accuracy(clf: Classifier, batch: Batch, y: list[str], k: int = 5, seed: int = 0) -> float:	교차 검증 정확도 한 숫자.
+preds = out_of_fold_predict(clf, batch, y, k, seed)	밖 판정.
+return sum(1 for p, g in zip(preds, y) if p is not None and p.label == g) / len(y) if y else 0.0	맞은 비율.

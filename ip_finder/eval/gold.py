@@ -7,20 +7,20 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from .. import PROMPT_VERSION
+from .. import __version__
 from ..config import Config
 from ..pipeline import run_file
 from ..goldmap import GOLD_HEADERS, GOLD_SUFFIX
 
-RUBRIC_PATH = Path(__file__).parent.parent / "label" / "prompts" / "rubric.md"
+RUBRIC_PATH = Path(__file__).parent / "rubric.md"
 GOLD_WIDTHS = (6, 18, 8, 24, 5, 70, 10, 10, 11, 8, 7, 7, 8, 30)
-SOURCE_NAME = {"clf": "분류기", "llm": "LLM", "verified": "분류기+LLM", "gold": "골드"}
+SOURCE_NAME = {"clf": "분류기", "gold": "골드"}
 
 GUIDE = [
     "정답 열에 A / B / C / D / X 중 하나를 적습니다. 모델 라벨이 미리 채워져 있으니 틀린 것만 고치세요.",
     "X는 기술 내용이 없거나 특허팀과 논의할 가치가 없는 문장입니다. 정밀도 우선이므로 판정이 어려우면 X로 두고 메모에 이유를 적으세요.",
     "채점: ip-finder eval <이 파일>   (현재 설정으로 다시 판정해 채점)   /   --stored (저장된 라벨을 채점)",
-    "학습: ip-finder train <이 파일> [다른 골드 파일 ...]   → 분류기 저장 후 cascade/fast 모드의 1차 판정에 자동으로 사용",
+    "학습: ip-finder train --classifier knn <이 파일> [다른 골드 ...]   → data/classifiers/knn.npz 저장. 비교: ip-finder compare-classifiers",
     "결과 Excel의 '피드백' 열에 적은 내용은 ip-finder feedback <결과.xlsx> 로 이 형식의 골드 시트에 합쳐집니다.",
 ]
 
@@ -55,17 +55,18 @@ def write_gold_workbook(out: Path, rows: list[list], meta: list[tuple[str, str]]
     return out
 
 
-def make_gold_sheet(path: Path, cfg: Config, out: Path | None = None, client=None, embedder=None) -> Path:
-    """초안 라벨은 모델 판정 그대로(골드 반영 없음). 기본 저장 위치는 설정의 골드 폴더(data/gold)."""
-    res = run_file(path, cfg, client, embedder=embedder, use_gold=False)
+def make_gold_sheet(path: Path, cfg: Config, out: Path | None = None, embedder=None, classifier=None) -> Path:
+    """초안 라벨은 분류기 판정 그대로(골드 반영 없음). 기본 저장 위치는 설정의 골드 폴더(data/gold)."""
+    res = run_file(path, cfg, embedder=embedder, classifier=classifier, use_gold=False)
     out = out or cfg.gold_dir() / f"{path.stem}{GOLD_SUFFIX}"
     rows = []
     for n, ll in enumerate(res.labeled, 1):
         answer = "X" if ll.raw_label in ("X", "X?") else ("" if ll.raw_label == "?" else ll.raw_label)
         rows.append([n, path.name, ll.page_no, ll.page_title, ll.line_idx, ll.text, ll.raw_label, ll.label,
-                     SOURCE_NAME.get(ll.source, ll.source) + (f"({ll.clf_label}→{ll.llm_label})" if ll.clf_label and ll.llm_label else ""),
+                     SOURCE_NAME.get(ll.source, ll.source),
                      round(ll.clf_conf, 3) if ll.clf_conf is not None else "",
                      float(ll.score), float(ll.page_weight), answer, ""])
-    meta = [("파일", str(path)), ("판정 모드", res.info.mode), ("LLM 모델", cfg.model), ("임베딩 모델", res.info.embed_model or "-"),
-            ("분류기", res.info.classifier or "-"), ("프롬프트 버전", PROMPT_VERSION), ("생성", res.info.started_at)]
+    meta = [("파일", str(path)), ("프로그램 버전", __version__), ("1차 분류기", res.info.classifier or "-"),
+            ("임베딩 모델", res.info.embed_model or "-"), ("읽기 방식", res.info.reader),
+            ("스위치", ", ".join(f"{k}={'켬' if v else '끔'}" for k, v in res.info.switches.items())), ("생성", res.info.started_at)]
     return write_gold_workbook(out, rows, meta)

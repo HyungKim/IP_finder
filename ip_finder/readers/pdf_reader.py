@@ -724,10 +724,42 @@ def _to_page(p: _Parsed) -> Page:
     return Page(no=p.no, title=title, lines=lines, has_graphics=p.has_graphics, title_source=title_source)
 
 
-def read_pdf(path: Path) -> Document:
+def read_pdf(path: Path, layout: bool = True) -> Document:
+    """layout=True: 레이아웃 분석(아래 _PageParser). layout=False: 원시 읽기(_read_raw)."""
+    if not layout:
+        return _read_raw(path)
     parsed, notes = _parse_pdf(path)
     pages = [_to_page(p) for p in parsed]
     return Document(path=Path(path), kind="pdf", pages=pages, title=pages[0].title if pages else "", notes=notes)
+
+
+def _read_raw(path: Path) -> Document:
+    """레이아웃 분석 없는 원시 읽기(기준선). PyMuPDF 의 기본 텍스트 추출이 주는 줄을 그 순서 그대로 한 줄씩 Line 으로 만든다.
+    다단·문단·표·제목 판단은 전혀 하지 않는다. 쪽의 첫 줄을 제목으로 둔다(페이지 규칙이 볼 제목이 필요해서).
+    그림·선 개체 수는 세어 has_graphics 만 채운다(이미지 페이지 판단용)."""
+    doc = pymupdf.open(path)
+    pages: list[Page] = []
+    try:
+        for pno, page in enumerate(doc, 1):
+            raw = page.get_text("text", flags=_FLAGS)
+            texts = [clean(t) for t in raw.splitlines()]
+            texts = [t for t in texts if t]
+            try:
+                images = len(page.get_image_info())
+            except Exception:
+                images = 0
+            try:
+                vectors = len(page.get_cdrawings())
+            except Exception:
+                vectors = 0
+            title = texts[0] if texts else ""
+            lines = [Line(idx=0, text=t) for t in texts[1:]]
+            pages.append(Page(no=pno, title=title, lines=lines, has_graphics=images > 0 or vectors > 3,
+                              title_source="raw" if title else "없음"))
+    finally:
+        doc.close()
+    return Document(path=Path(path), kind="pdf", pages=pages, title=pages[0].title if pages else "",
+                    notes=["원시 읽기(레이아웃 분석 끔): 줄 순서·문단·표·제목을 분석하지 않음"], reader="raw")
 
 
 def layout_report(path: Path, pages: set[int] | None = None) -> list[str]:

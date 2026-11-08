@@ -1,0 +1,27 @@
+# ip_finder/readers/ppt_convert.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""구형 .ppt → .pptx 변환. 윈도우의 PowerPoint(COM, pywin32)가 필요하다. 변환본은 원본 옆에 만든다."""	파일 설명: 윈도우 PowerPoint 필요, 변환본은 원본 옆.
+from __future__ import annotations	새 문법 호환.
+import sys	플랫폼 확인용.
+from pathlib import Path	경로.
+PP_SAVE_AS_OPENXML = 24   # ppSaveAsOpenXMLPresentation	PowerPoint 의 '다른 이름으로 저장' 형식 번호: OpenXML(.pptx).
+PP_SAVE_AS_PDF = 32       # ppSaveAsPDF (2단계 썸네일용)	PDF 형식 번호 (현재는 안 씀).
+def convert_ppt_to_pptx(path: Path, out: Path | None = None) -> Path:	변환 함수. 출력 경로를 돌려준다.
+out = out or path.with_suffix(".pptx")	출력 경로가 없으면 확장자만 .pptx 로 바꾼 경로.
+if out.exists():	이미 있으면
+return out	다시 변환하지 않고 그 경로.
+if sys.platform != "win32":	윈도우가 아니면
+raise RuntimeError(	오류:
+f"{path.name}: .ppt 변환은 윈도우의 PowerPoint(COM)에서만 가능합니다. "	변환은 윈도우 PowerPoint 에서만,
+"PowerPoint에서 .pptx로 저장한 뒤 다시 실행하세요."	직접 저장한 뒤 다시 실행하라는 안내.
+)	오류 끝.
+try:	가져오기 대비.
+import win32com.client  # type: ignore	pywin32 의 COM 모듈.
+except ImportError as e:  # pragma: no cover	없으면
+raise RuntimeError("pywin32가 필요합니다: pip install pywin32") from e	설치 안내 오류.
+app = win32com.client.Dispatch("PowerPoint.Application")	PowerPoint 를 띄운다 (COM 자동화).
+pres = app.Presentations.Open(str(path.resolve()), True, False, False)  # ReadOnly, Untitled, WithWindow	읽기 전용·창 없이 연다.
+try:	닫기를 보장.
+pres.SaveAs(str(out.resolve()), PP_SAVE_AS_OPENXML)	.pptx 로 저장.
+finally:	finally:
+pres.Close()	문서를 닫는다.
+return out	출력 경로.

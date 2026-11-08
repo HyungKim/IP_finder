@@ -1,0 +1,127 @@
+# ip_finder/eval/feedback.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""결과 Excel의 '피드백' 열을 골드 시트로 가져온다.	파일 설명.
+피드백 값: O(맞음) / X(틀림, 제외) / A·B·C·D(올바른 등급). 비어 있으면 무시 (confirm_unmarked=True 면 검토 목록의 빈 행을 '맞음'으로).	피드백 값의 뜻.
+골드 파일이 이미 있으면 같은 (파일, 페이지, 줄, 문장) 행은 정답을 덮어쓰고, 없는 행은 뒤에 붙인다."""	기존 골드와 합치는 규칙.
+from __future__ import annotations	새 문법 호환.
+from collections import Counter	개수 세는 사전.
+from datetime import datetime	현재 시각.
+from pathlib import Path	경로.
+from openpyxl import load_workbook	엑셀 읽기.
+from .. import __version__	프로그램 버전.
+from ..history import History	이력.
+from ..goldmap import GOLD_HEADERS, GOLD_SUFFIX, load_gold	골드 열 제목·파일 꼬리·읽기 함수.
+from .gold import write_gold_workbook	골드 쓰기 함수.
+_OK = {"O", "o", "0", "ㅇ", "맞음", "✓", "V", "v", "Y", "y"}	'맞음' 으로 해석하는 값들 (O, 0, ㅇ, 맞음, ✓, V, Y …).
+_NO = {"X", "x", "ㅌ", "틀림", "제외", "N", "n"}	'틀림·제외' 로 해석하는 값들.
+FEEDBACK_SHEETS = ("검토 목록", "보류", "분류기 제외 (참고)", "후처리 제외", "2차 제외", "1차 제외 (참고)", "제외 문장")   # 뒤 셋은 0.x 결과 파일 호환	피드백을 읽는 시트 이름들(옛 결과 파일 호환 포함).
+def _read_sheet(ws) -> list[dict]:	시트를 행(사전) 목록으로 읽는 내부 함수.
+rows_iter = ws.iter_rows(values_only=True)	값 반복자.
+try:	빈 시트 대비.
+header = [str(h) for h in next(rows_iter)]	첫 행이 열 제목.
+except StopIteration:	행이 하나도 없으면
+return []	빈 목록.
+idx = {h: i for i, h in enumerate(header)}	열 제목 → 번호.
+out = []	결과.
+for r in rows_iter:	행마다
+if r is None or idx.get("발췌") is None or r[idx["발췌"]] in (None, ""):	빈 행이거나 발췌 열이 없거나 발췌가 비었으면
+continue	건너뛴다.
+out.append({h: r[i] for h, i in idx.items()})	열 제목으로 사전.
+return out	돌려준다.
+def interpret(feedback, current_label: str) -> str | None:	피드백 값을 정답 등급으로 바꾸는 함수. 못 바꾸면 None.
+"""피드백 값을 정답 등급으로. 해석할 수 없으면 None."""	설명.
+s = str(feedback or "").strip()	문자열로, 공백 제거.
+if not s:	비면
+return None	None (피드백 없음).
+up = s.upper()	대문자.
+if up in ("A", "B", "C", "D"):	A~D 면
+return up	그 등급.
+if s in _OK or up in _OK:	O·ㅇ·맞음·V·Y 같은 '맞음' 표시면
+return "X" if current_label in ("X", "X?", "?") else current_label	현재 라벨을 정답으로 (X?·? 는 X).
+if s in _NO or up in _NO:	X·ㅌ·틀림·제외·N 이면
+return "X"	X.
+return None	그 밖은 None.
+def read_feedback(result_xlsx: Path, confirm_unmarked: bool = False) -> tuple[list[dict], dict]:	결과 엑셀에서 피드백 행을 읽어 골드 행으로 만드는 함수. (행 목록, 메타) 를 돌려준다.
+"""결과 Excel에서 피드백이 있는 행을 읽어 골드 행(dict)으로 만든다."""	설명.
+wb = load_workbook(str(result_xlsx), read_only=True, data_only=True)	읽기 전용으로 연다.
+titles: dict[int, str] = {}	페이지 번호 → 제목.
+if "페이지" in wb.sheetnames:	'페이지' 시트가 있으면
+for r in _read_sheet_simple(wb["페이지"]):	행마다
+try:	숫자 변환 오류 대비.
+titles[int(r.get("페이지"))] = str(r.get("제목") or "")	제목을 모은다.
+except (TypeError, ValueError):	숫자가 아니면
+continue	건너뛴다.
+info = {}	실행 정보 사전.
+if "실행 정보" in wb.sheetnames:	'실행 정보' 시트가 있으면
+for r in wb["실행 정보"].iter_rows(min_row=2, values_only=True):	둘째 행부터
+if r and r[0]:	항목 이름이 있으면
+info[str(r[0])] = r[1]	값을 저장.
+source_name = Path(str(info.get("입력 파일") or result_xlsx.stem.replace("_검토후보", ""))).name	원본 보고서 이름: 실행 정보의 입력 파일, 없으면 결과 파일 이름에서 '_검토후보' 를 뗀 것.
+rows, skipped, corrections = [], 0, Counter()	행 목록, 건너뛴 수, 수정 종류별 수.
+for sheet in FEEDBACK_SHEETS:	피드백 시트마다
+if sheet not in wb.sheetnames:	없으면
+continue	건너뛴다.
+for r in _read_sheet(wb[sheet]):	행마다
+label = str(r.get("등급") or "").strip()	등급 열.
+fb = r.get("피드백")	피드백 값.
+gold = interpret(fb, label)	정답으로 해석.
+if gold is None:	해석할 수 없으면
+if str(fb or "").strip():	뭔가 적혀 있었다면
+skipped += 1	건너뛴 수 +1,
+continue	다음 행.
+if confirm_unmarked and sheet == "검토 목록" and label in ("A", "B", "C", "D"):	빈 행 확인 옵션이고 검토 목록 시트의 A~D 면
+gold = label	현재 등급을 정답으로 (맞다고 간주).
+else:	아니면
+continue	다음 행.
+try:	숫자 변환 대비.
+page_no = int(r.get("페이지"))	페이지 번호.
+line_idx = int(r.get("줄") or 0)	줄 번호 (없으면 0).
+except (TypeError, ValueError):	숫자가 아니면
+skipped += 1	건너뛴 수 +1,
+continue	다음 행.
+norm_label = "X" if label in ("X?", "?") else label	비교용 라벨: X?·? 는 X.
+corrections[f"{norm_label}→{gold}" if norm_label != gold else f"{gold} 확인"] += 1	수정 종류 세기: 'A→B' 또는 'A 확인'.
+rows.append({"파일": source_name, "페이지": page_no, "제목": titles.get(page_no, ""), "줄": line_idx,	골드 행 사전: 파일, 페이지, 제목, 줄,
+"문장": str(r.get("발췌")), "모델 라벨": norm_label, "후처리 라벨": label, "판정": r.get("판정") or "",	문장(발췌), 모델 라벨, 후처리 라벨, 판정,
+"확신": "", "점수": r.get("점수") if r.get("점수") not in (None, "") else "", "가중치": r.get("가중치") or "",	확신(빈칸), 점수, 가중치,
+"정답": gold, "메모": str(r.get("메모") or "")})	정답, 메모.
+return rows, {"source_name": source_name, "skipped": skipped, "corrections": dict(corrections),	행 목록과 메타(원본 이름, 건너뛴 수, 수정 종류,
+"run_id": str(info.get("실행 ID") or ""), "classifier": str(info.get("1차 분류기") or "")}	실행 ID 와 분류기 설명.
+def _read_sheet_simple(ws) -> list[dict]:	열 제목으로 사전을 만드는 단순 읽기 함수.
+rows_iter = ws.iter_rows(values_only=True)	값 반복자.
+try:	빈 시트 대비.
+header = [str(h) for h in next(rows_iter)]	첫 행이 열 제목.
+except StopIteration:	없으면
+return []	빈 목록.
+return [dict(zip(header, r)) for r in rows_iter if r and r[0] is not None]	첫 셀이 있는 행만 사전으로.
+def default_gold_path(result_xlsx: Path, source_name: str, gold_dir: Path | None = None) -> Path:	기본 골드 경로를 만드는 함수.
+"""기본: 설정의 골드 폴더(data/gold)/<보고서 이름>_gold.xlsx. gold_dir 이 없으면 결과 파일 옆."""	설명.
+stem = Path(source_name).stem if source_name else result_xlsx.stem.replace("_검토후보", "")	보고서 이름의 줄기 (없으면 결과 파일 이름에서).
+return (gold_dir or result_xlsx.parent) / f"{stem}{GOLD_SUFFIX}"	골드 폴더(없으면 결과 파일 옆)/<줄기>_gold.xlsx.
+def import_feedback(result_xlsx: Path, gold_out: Path | None = None, confirm_unmarked: bool = False,	결과 엑셀의 피드백을 골드 시트로 가져오는 함수. 저장 경로, 빈 행 확인 옵션,
+history: History | None = None, gold_dir: Path | None = None) -> dict:	이력 객체, 골드 폴더.
+new_rows, meta = read_feedback(result_xlsx, confirm_unmarked)	엑셀에서 피드백이 있는 행과 메타 정보를 읽는다.
+gold_out = gold_out or default_gold_path(result_xlsx, meta["source_name"], gold_dir)	저장 경로가 없으면 기본 경로 (골드 폴더/<보고서 이름>_gold.xlsx).
+existing: list[dict] = load_gold(gold_out) if gold_out.exists() else []	기존 골드가 있으면 읽어 둔다.
+by_key = {(str(r.get("파일")), int(r.get("페이지") or 0), int(r.get("줄") or 0), str(r.get("문장"))): r for r in existing}	(파일, 페이지, 줄, 문장) → 행 사전.
+updated, added = 0, 0	갱신 수, 추가 수.
+for r in new_rows:	새 행마다
+k = (r["파일"], r["페이지"], r["줄"], r["문장"])	같은 키.
+if k in by_key:	이미 있으면
+by_key[k]["정답"] = r["정답"]	정답을 덮어쓰고
+if r["메모"]:	메모가 있으면
+by_key[k]["메모"] = r["메모"]	메모도.
+updated += 1	갱신 수 +1.
+else:	없으면
+by_key[k] = r	새로 넣고
+added += 1	추가 수 +1.
+rows = []	저장할 행 목록.
+for n, r in enumerate(by_key.values(), 1):	합친 행마다 1부터 번호를 붙여
+rows.append([n] + [r.get(h, "") if r.get(h, "") is not None else "" for h in GOLD_HEADERS[1:]])	번호 + 열 제목 순서의 값들 (None 은 빈칸).
+meta_rows = [("파일", meta["source_name"]), ("피드백 원본", str(result_xlsx)), ("프로그램 버전", __version__),	메타 행: 파일, 원본, 버전.
+("갱신", datetime.now().isoformat(timespec="seconds")), ("행 수", str(len(rows)))]	갱신 시각, 행 수.
+write_gold_workbook(gold_out, rows, meta_rows)	골드 통합 문서로 저장.
+record = {"result": str(result_xlsx), "gold": str(gold_out), "source_name": meta["source_name"], "run_id": meta["run_id"],	이력 기록: 결과 파일, 골드 파일, 원본 이름, 실행 ID,
+"feedback_rows": len(new_rows), "added": added, "updated": updated, "skipped": meta["skipped"],	피드백 행 수, 추가·갱신·건너뛴 수,
+"corrections": meta["corrections"], "gold_rows": len(rows)}	수정 종류, 골드 총 행 수.
+(history or History(None)).log_feedback(record)	이력에 남긴다 (이력이 없으면 꺼진 History 로 아무것도 안 함).
+return record	기록을 돌려준다.

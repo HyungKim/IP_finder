@@ -1,0 +1,62 @@
+# ip_finder/prep/line_rules.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""줄 단위 제거 규칙. 모두 스위치로 켜고 끈다(기본 끔).	파일 설명 첫 줄: 모든 규칙은 스위치.
+- rule_repeated_line: 여러 쪽에 반복되는 줄(머리말·꼬리말·쪽 번호)과 stoplist 의 고정 문구	설명: 반복 규칙.
+- rule_pattern_lines: 숫자만, '담당:' 으로 시작, 30자 이하의 일정·금액 줄(기술 단서어가 없을 때)	설명: 패턴 규칙.
+- rule_require_korean: 한글이 한 글자도 없는 줄(영어·숫자·기호만)	설명: 한글 없음 규칙.
+- rule_short_line: 공백 제외 글자수가 short_line_chars 이하인 짧은 조각	설명: 짧은 조각 규칙.
+빈 줄은 스위치와 무관하게 늘 뺀다. 앞의 규칙이 먼저 사유가 된다(더 구체적인 사유가 우선)."""	설명: 빈 줄과 우선순위.
+from __future__ import annotations	새 문법 호환.
+import re	정규식.
+from collections import Counter	개수 세는 사전.
+from ..config import Config	설정.
+from ..cues import has_tech_word	단서어 검사 함수.
+from ..models import Document	문서 모델.
+DATE_RE = re.compile(	날짜 꼴 정규식 시작.
+r"(\d{4}\s*[./년-]\s*\d{1,2}|\d{1,2}\s*월(\s*\d{1,2}\s*일)?|[1-4]\s*분기|\bQ[1-4]\b|\d{1,2}/\d{1,2}|상반기|하반기|\d{4}\s*년|\d{1,2}\s*주차)",	2026.11, 11월 3일, 3분기, Q2, 11/03, 상반기, 2026년, 12주차 같은 꼴.
+re.IGNORECASE,	대소문자 구분 없이.
+)	정규식 끝.
+MONEY_RE = re.compile(r"(\d[\d,.]*\s*(억|만|천)?\s*원\b|\d[\d,.]*\s*(억|만원|천원|KRW|USD|달러|\$)|단가|비용|예산|투자비)")	금액 꼴: 숫자+원, 억·만·천, KRW·USD·달러·$, 그리고 단가·비용·예산·투자비 낱말.
+OWNER_RE = re.compile(r"^\s*(담당|담당자|작성자|작성|보고자|발표자|부서|책임자|PM|PL|TF)\s*[:：]")	줄 머리의 담당자 표기: '담당:', '작성자:', 'PM:' 등 (전각 콜론 포함).
+NUMERIC_ONLY = re.compile(r"^[\s\d.,%/()\-–~:]+$")	숫자·기호만으로 된 줄 (쪽 번호, 축 숫자).
+HANGUL_RE = re.compile(r"[가-힣ㄱ-ㅎㅏ-ㅣ]")	한글 글자 또는 자모 하나.
+SHORT_RULE_LEN = 30	일정/금액 규칙이 적용되는 최대 길이 30자.
+def _norm(text: str) -> str:	비교용 정규화 함수.
+return re.sub(r"\s+", " ", text).strip().lower()	연속 공백을 하나로, 양끝 제거, 소문자.
+def has_korean(text: str) -> bool:	한글이 있는지.
+return HANGUL_RE.search(text) is not None	정규식으로 찾아 None 이 아니면 참.
+def char_count(text: str) -> int:	공백 뺀 글자수.
+"""공백을 뺀 글자수. 한글·영문·숫자·기호 모두 한 글자."""	설명.
+return len(re.sub(r"\s+", "", text))	공백을 모두 지운 길이.
+def apply_line_rules(doc: Document, cfg: Config) -> Counter:	줄 제거 규칙 본체. 문서와 설정을 받아 규칙별 제거 수(Counter)를 돌려준다.
+"""removed_by 를 채운다. 규칙별 제거 수를 돌려준다."""	설명: 각 줄의 removed_by 를 채운다.
+per_page_sets = [{_norm(ln.text) for ln in p.lines if ln.text.strip()} for p in doc.pages]	페이지마다 '정규화한 줄 글' 의 집합. 같은 페이지 안 중복은 한 번만 센다.
+counts: Counter = Counter()	글마다 몇 페이지에 나오는지 셀 Counter.
+for s in per_page_sets:	페이지 집합마다
+counts.update(s)	글들을 세어 더한다 (페이지 수 = 등장 횟수).
+stop = {_norm(s) for s in cfg.stoplist}	설정의 수동 제거 목록을 정규화한 집합.
+removed: Counter = Counter()	규칙별 제거 수.
+for page in doc.pages:	페이지마다
+for ln in page.lines:	줄마다
+text = ln.text.strip()	양끝 공백을 뗀 글.
+n = _norm(text)	정규화(공백 하나로, 소문자).
+reason = None	아직 사유 없음.
+if not text:	빈 글이면
+reason = "빈 줄"	'빈 줄'.
+elif cfg.rule_repeated_line and n in stop:	반복 스위치가 켜져 있고 수동 목록에 있으면 '수동 목록'.
+reason = "수동 목록"	'수동 목록'.
+elif cfg.rule_repeated_line and counts[n] >= cfg.repeated_line_min_pages:	반복 스위치가 켜져 있고 기준 쪽 수 이상 반복되면 '반복 문구'.
+reason = "반복 문구"	'반복 문구' (머리말·바닥글·대외비).
+elif cfg.rule_pattern_lines and NUMERIC_ONLY.match(text):	패턴 스위치가 켜져 있고 숫자·기호만이면 '숫자만'.
+reason = "숫자만"	'숫자만'.
+elif cfg.rule_require_korean and not has_korean(text):	한글 스위치가 켜져 있고 한글이 없으면 '한글 없음'.
+reason = "한글 없음"       # 영어·숫자·기호만 있는 줄 (모델명, 영문 항목명, 수식)은 한국어 보고서에서 본문이 아니다	'한글 없음' (모델명, 영문 항목, 수식).
+elif cfg.rule_pattern_lines and OWNER_RE.search(text):	패턴 스위치가 켜져 있고 '담당:' 으로 시작하면 '담당자'.
+reason = "담당자"	'담당자'.
+elif cfg.rule_pattern_lines and len(text) <= SHORT_RULE_LEN and (DATE_RE.search(text) or MONEY_RE.search(text)) and not has_tech_word(text):	패턴 스위치가 켜져 있고 짧은 일정·금액 줄(기술 단어 없음)이면 '일정/금액'.
+reason = "일정/금액"	'일정/금액'.
+elif cfg.rule_short_line and char_count(text) <= cfg.short_line_chars:	짧은 줄 스위치가 켜져 있고 글자수가 기준 이하이면 '짧은 조각'.
+reason = "짧은 조각"       # 제목 조각·표 셀·항목명 같은 짧은 줄은 문맥 없이 판정할 수 없어 후보에서 뺀다	'짧은 조각' (제목 조각, 표 셀, 항목명).
+ln.removed_by = reason	줄에 사유를 적는다 (None 이면 살아남음).
+if reason:	사유가 있으면
+removed[reason] += 1	규칙별로 센다.
+return removed	통계를 돌려준다.

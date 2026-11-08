@@ -1,0 +1,38 @@
+# ip_finder/classify/proto.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""원형 문장 코사인 분류기(제로샷). 등급마다 미리 적어 둔 예시 문장(prototypes.json)을 임베딩해 두고,	파일 설명 첫 줄.
+새 문장은 가장 비슷한 예시의 등급으로 판정한다. 학습 데이터가 전혀 없을 때의 출발점.	설명 이어짐.
+신뢰도 = min(0.9, 0.65 + (1위 코사인 − 2위 코사인)). 차이가 0 이면 0.65, 0.25 이상이면 0.9 로 상한."""	설명: 신뢰도 공식.
+from __future__ import annotations	새 문법 호환 선언.
+import json	JSON.
+from pathlib import Path	경로.
+import numpy as np	numpy.
+from .base import Batch, Classifier, LABELS, Prediction, normalize_rows, predictions_from_scores	공통 틀.
+PROTOTYPES_PATH = Path(__file__).parent / "prototypes.json"	원형 문장 파일 경로(패키지 안).
+def load_prototypes(path: Path | None = None) -> dict[str, list[str]]:	원형 문장 읽기.
+data = json.loads((path or PROTOTYPES_PATH).read_text(encoding="utf-8"))	JSON 읽기.
+return {g: [s for s in data.get(g, [])] for g in LABELS}	등급별 목록으로(없는 등급은 빈 목록).
+class PrototypeClassifier(Classifier):	원형 문장 분류기 클래스.
+name = "proto"	이름.
+label = "원형 문장 코사인 (제로샷)"	한글 이름.
+needs_embedding = True	임베딩 필요.
+trainable = False	학습 없음.
+def __init__(self, cfg=None, prototypes: dict[str, list[str]] | None = None):	생성자(원형을 바꿔 넣을 수 있다).
+super().__init__(cfg)	부모 생성자.
+self.prototypes = prototypes or load_prototypes()	원형 문장 사전.
+self.labels = [g for g in LABELS if self.prototypes.get(g)]	원형이 있는 등급만.
+self.P: np.ndarray | None = None	원형 임베딩 행렬(prepare 가 채움).
+self.proto_labels = np.array([i for i, g in enumerate(self.labels) for _ in self.prototypes[g]])	원형마다 등급 번호 배열.
+def prepare(self, embedder) -> None:	준비: 원형 문장을 임베딩한다.
+texts = [s for g in self.labels for s in self.prototypes[g]]	등급 순서대로 원형 문장 나열.
+self.P = normalize_rows(embedder.embed(texts))	임베딩 후 길이 1 로.
+def predict(self, batch: Batch) -> list[Prediction]:	판정.
+if len(batch) == 0:	빈 배치면
+return []	빈 목록.
+if self.P is None:	준비가 안 됐으면
+raise RuntimeError("원형 문장이 임베딩되지 않았습니다 (prepare(embedder) 먼저)")	오류.
+S = normalize_rows(batch.vectors) @ self.P.T                       # n × 원형 수	문장 × 원형 코사인 행렬.
+scores = np.stack([S[:, self.proto_labels == i].max(axis=1) for i in range(len(self.labels))], axis=1)	등급마다 그 등급 원형 중 최대 코사인 → 문장 × 등급.
+order = np.sort(scores.astype(np.float64), axis=1)	행마다 오름차순 정렬(float64 로).
+margin = order[:, -1] - (order[:, -2] if scores.shape[1] > 1 else 0.0)	1위−2위 차이.
+conf = np.minimum(0.9, 0.65 + np.maximum(0.0, margin))          # float64: 0.65 가 그대로 0.65 로 남게	신뢰도 = min(0.9, 0.65 + 차이).
+return predictions_from_scores(scores, self.labels, conf)	Prediction 목록.

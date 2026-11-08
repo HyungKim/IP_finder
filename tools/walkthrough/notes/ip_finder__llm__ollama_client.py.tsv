@@ -1,0 +1,152 @@
+# ip_finder/llm/ollama_client.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""Ollama 호출. localhost 외의 호스트는 생성 단계에서 거부한다. 표준 라이브러리만 쓴다.	파일 설명: 로컬 전용, 표준 라이브러리만.
+진행 중인 요청은 cancel() 로 즉시 끊을 수 있다 (소켓을 닫으면 Ollama 도 생성을 중단한다)."""	즉시 중지 원리.
+from __future__ import annotations	새 문법 호환.
+import http.client	저수준 HTTP (소켓을 직접 닫기 위해).
+import json	JSON.
+import socket	소켓 상수 (SHUT_RDWR).
+import threading	잠금.
+import time	시간.
+import urllib.error	URL 오류 타입.
+import urllib.parse	URL 분해.
+import urllib.request	간단한 GET 용.
+LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}	허용 호스트 집합.
+GRADES = ["A", "B", "C", "D", "X"]	등급 목록 (스키마 enum 용).
+class LLMError(RuntimeError):	LLM 오류 종류 (RuntimeError 의 일종).
+pass	내용 없음.
+class CancelledError(LLMError):	중지로 끊긴 오류 (LLMError 의 일종).
+"""사용자가 중지해 요청을 끊음."""	설명.
+class AbortableHTTP:	끊을 수 있는 HTTP POST 클래스.
+"""http.client 기반 POST. 다른 스레드에서 cancel() 하면 진행 중인 요청의 소켓을 닫아 즉시 돌아온다."""	설명.
+def __init__(self, host: str, timeout: int):	생성자: 호스트 주소와 시간 제한.
+parsed = urllib.parse.urlparse(host)	주소 분해.
+self._host, self._port = parsed.hostname or "127.0.0.1", parsed.port or 11434	호스트 이름(없으면 127.0.0.1)과 포트(없으면 11434).
+self._timeout = timeout	시간 제한.
+self._conn: http.client.HTTPConnection | None = None	진행 중인 연결 (없으면 None).
+self._lock = threading.Lock()	잠금.
+self._cancelled = False	취소 깃발.
+def cancel(self) -> None:	취소 메서드. 다른 스레드에서 부른다.
+with self._lock:	잠금 안에서
+self._cancelled = True	깃발을 켜고
+conn = self._conn	진행 중인 연결을 꺼낸다.
+if conn is not None:	연결이 있으면
+try:	오류 대비 try.
+if conn.sock is not None:	소켓이 살아 있으면
+conn.sock.shutdown(socket.SHUT_RDWR)	읽기·쓰기 모두 닫는다 (shutdown). 상대(Ollama)도 끊긴 것을 알고 생성을 멈춘다.
+except OSError:	이미 닫혔으면
+pass	무시.
+try:	다시 try.
+conn.close()	연결 객체를 닫는다.
+except OSError:	오류는
+pass	무시.
+def reset(self) -> None:	취소 깃발을 내리는 메서드 (다음 작업 전에 UI 가 부른다).
+with self._lock:	잠금 안에서
+self._cancelled = False	깃발 끔.
+def post(self, path: str, body: dict) -> dict:	POST 요청 메서드. 경로와 본문(사전). 응답 사전을 돌려준다.
+with self._lock:	잠금 안에서
+if self._cancelled:	이미 취소됐으면
+raise CancelledError("중지됨")	바로 중지 예외.
+conn = http.client.HTTPConnection(self._host, self._port, timeout=self._timeout)	새 HTTP 연결 (시간 제한 포함).
+self._conn = conn	진행 중인 연결로 기억 (cancel 이 닫을 수 있게).
+try:	오류 대비 try.
+conn.request("POST", path, body=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})	본문을 JSON 바이트로 바꿔 POST. 헤더는 JSON.
+res = conn.getresponse()	응답 받기.
+data = res.read()	본문 읽기.
+if res.status >= 400:	상태 코드가 400 이상이면
+raise LLMError(f"Ollama 응답 {res.status}: {data[:200]!r}")	오류 (응답 앞 200바이트 포함).
+return json.loads(data)	JSON 을 사전으로 풀어 돌려준다.
+except (OSError, http.client.HTTPException, ValueError) as e:	소켓 오류·HTTP 오류·JSON 오류면
+with self._lock:	잠금 안에서
+cancelled = self._cancelled	취소 깃발을 읽고
+if cancelled:	취소 중이었으면
+raise CancelledError("중지됨") from e	중지 예외로 (사용자가 끊은 것).
+raise LLMError(f"Ollama 호출 실패 ({self._host}:{self._port}): {e}") from e	아니면 호출 실패 오류 (주소 포함).
+finally:	finally: 성공이든 실패든
+with self._lock:	잠금 안에서
+self._conn = None	진행 중인 연결 표시를 지우고
+try:	try.
+conn.close()	연결을 닫는다.
+except OSError:	오류는
+pass	무시.
+def assert_local(host: str) -> None:	호스트가 로컬인지 검사하는 함수. 아니면 오류.
+parsed = urllib.parse.urlparse(host)	주소를 분해.
+name = (parsed.hostname or "").lower()	호스트 이름을 소문자로.
+if name not in LOCAL_HOSTS:	허용 목록(127.0.0.1, localhost, ::1)에 없으면
+raise LLMError(f"외부 호스트 금지: {host!r}. 로컬 Ollama(127.0.0.1)만 허용합니다.")	'외부 호스트 금지' 오류. 클라이언트 생성 시점에 막힌다.
+def label_schema(n: int) -> dict:	라벨 n개용 JSON 스키마를 만드는 함수.
+return {	최상위는 객체.
+"type": "object",	속성 'labels' 는 배열이고,
+"properties": {"labels": {"type": "array", "items": {"type": "string", "enum": GRADES},	원소는 A B C D X 중 하나(enum)인 문자열,
+"minItems": n, "maxItems": n}},	길이는 정확히 n (minItems = maxItems).
+"required": ["labels"],	labels 는 필수.
+}	스키마 끝.
+class OllamaClient:	LLM 클라이언트 클래스.
+def __init__(self, host: str, model: str, *, timeout_sec: int = 600, keep_alive: str = "30m",	생성자: 호스트, 모델, 이름으로만 넘기는 시간 제한·유지 시간·
+num_ctx: int = 2048, retries: int = 2):	문맥 창·재시도 수.
+assert_local(host)	로컬 검사.
+self.host = host.rstrip("/")	끝의 '/' 제거.
+self.model = model	모델.
+self.timeout = timeout_sec	시간 제한.
+self.keep_alive = keep_alive	유지 시간.
+self.num_ctx = num_ctx	문맥 창.
+self.retries = retries	재시도 수.
+self.calls = 0	호출 수.
+self.prompt_tokens = 0	입력 토큰 누적.
+self.output_tokens = 0	출력 토큰 누적.
+self.llm_seconds = 0.0	시간 누적.
+self.http = AbortableHTTP(self.host, timeout_sec)	끊을 수 있는 HTTP.
+def cancel(self) -> None:	중지 메서드.
+"""진행 중인 호출을 즉시 끊는다. 다음 호출 전에 reset() 하지 않으면 이후 호출도 바로 CancelledError."""	설명: reset 전까지는 이후 호출도 바로 중지 오류.
+self.http.cancel()	소켓 끊기.
+def reset(self) -> None:	초기화.
+self.http.reset()	취소 깃발 내림.
+# ----- 상태 확인 -----	주석: 상태 확인 메서드들.
+def _get(self, path: str) -> dict:	GET 요청 (10초 제한).
+with urllib.request.urlopen(self.host + path, timeout=10) as r:	열어서
+return json.loads(r.read())	JSON 으로.
+def available(self) -> bool:	서버가 살아 있는지.
+try:	오류 대비.
+self._get("/api/tags")	모델 목록을 요청해 보고
+return True	되면 참.
+except Exception:	오류면
+return False	거짓.
+def installed_models(self) -> list[str]:	설치된 모델 이름 목록.
+try:	오류 대비.
+return [m["name"] for m in self._get("/api/tags").get("models", [])]	이름들.
+except Exception:	오류면
+return []	빈 목록.
+def has_model(self) -> bool:	설정 모델이 설치돼 있는지.
+names = self.installed_models()	목록.
+return self.model in names or f"{self.model}:latest" in names	있으면 참 (':latest' 포함).
+# ----- 호출 -----	주석: 호출.
+def _post(self, path: str, body: dict) -> dict:	POST 를 HTTP 객체에 넘기는 메서드 (테스트가 이 메서드를 가로챈다).
+return self.http.post(path, body)	위임.
+def chat_labels(self, system: str, user: str, n: int) -> list[str]:	n개 줄의 라벨을 받아 오는 메서드.
+"""n개 줄에 대한 라벨 배열을 돌려준다. 길이와 값은 JSON 스키마로 강제한다."""	설명: 길이와 값을 스키마로 강제.
+body = {	요청 본문 시작.
+"model": self.model, "stream": False, "think": False, "keep_alive": self.keep_alive,	모델, 스트리밍 끔(한 번에 받기), 사고 모드 끔, 모델 유지 시간,
+"format": label_schema(n),	출력 형식 = 위의 스키마 (Ollama 가 디코딩 단계에서 강제),
+"options": {"temperature": 0, "num_ctx": self.num_ctx, "num_predict": 6 * n + 24},	옵션: 온도 0(결정적), 문맥 창, 최대 출력 토큰 6n+24,
+"messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],	메시지: 시스템 프롬프트와 사용자 메시지.
+}	본문 끝.
+last: Exception | None = None	마지막 오류를 기억할 변수.
+for attempt in range(self.retries + 1):	재시도 포함 최대 3회 (retries=2).
+t0 = time.time()	시작 시각.
+try:	오류를 잡기 위해 try.
+res = self._post("/api/chat", body)	/api/chat 에 POST.
+self.calls += 1	호출 수 +1.
+self.llm_seconds += time.time() - t0	시간 누적.
+self.prompt_tokens += int(res.get("prompt_eval_count") or 0)	입력 토큰 수 누적 (prompt_eval_count).
+self.output_tokens += int(res.get("eval_count") or 0)	출력 토큰 수 누적 (eval_count).
+labels = json.loads(res["message"]["content"]).get("labels", [])	응답 내용(JSON 문자열)을 풀어 labels 배열을 꺼낸다.
+if len(labels) != n:	길이가 n 과 다르면
+raise LLMError(f"라벨 수 불일치: 기대 {n}, 수신 {len(labels)}")	오류로 보고 다시 시도.
+return [str(x).strip().upper() for x in labels]	각 라벨을 문자열로, 공백 제거, 대문자로 바꿔 돌려준다.
+except CancelledError:	중지로 끊긴 예외는
+raise	바로 위로 (재시도 안 함).
+except (KeyError, ValueError, LLMError) as e:	키 없음·JSON 오류·LLM 오류면
+last = e	기억해 두고
+if "호출 실패" in str(e):	'호출 실패'(연결 자체가 안 됨)면
+raise LLMError(f"Ollama에 연결할 수 없습니다 ({self.host}): {e}") from e	재시도 없이 연결 오류로 끝낸다.
+time.sleep(0.5)	0.5초 쉬고 다시 시도.
+raise LLMError(f"라벨 호출 실패({self.retries + 1}회): {last}")	3회 다 실패하면 마지막 오류를 담아 오류.

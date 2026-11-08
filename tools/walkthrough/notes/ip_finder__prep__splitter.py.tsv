@@ -1,0 +1,46 @@
+# ip_finder/prep/splitter.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""활성 줄에 번호를 붙이고, rule_split_long 스위치가 켜져 있으면 긴 줄을 문장 단위로 나눈다."""	파일 설명: 번호 매기기와 분할 스위치.
+from __future__ import annotations	새 문법 호환.
+import re	정규식.
+from ..config import Config	설정.
+from ..models import Document, Line	문서와 줄 모델.
+from .line_rules import char_count, has_korean	글자수·한글 검사 함수.
+_SPLIT = re.compile(r"(?<=[.!?。])\s+")	문장 끝 부호(. ! ? 。) 바로 뒤의 공백에서 나누는 정규식. (?<=…) 는 '앞이 이것이면'.
+_MIN_FRAG = 15	조각 최소 글자수 기본값 (실제로는 설정값 short_line_chars+1 을 넘긴다).
+def split_sentences(text: str, min_frag: int = _MIN_FRAG, require_korean: bool = False) -> list[str]:	긴 글을 문장으로 나누는 함수. 짧은 조각이나 한글 없는 조각은 옆에 붙인다.
+"""문장 부호 뒤에서 나눈다. 글자수(공백 제외)가 min_frag 미만이거나(require_korean 이면) 한글이 없는 조각은 옆 조각에 붙인다."""	설명.
+parts = [p.strip() for p in _SPLIT.split(text) if p.strip()]	부호 뒤에서 나누고 양끝 공백을 떼고 빈 것은 버린다.
+if len(parts) <= 1:	조각이 하나뿐이면
+return [text]	원문 그대로.
+merged: list[str] = []	합쳐 가며 만들 목록.
+for p in parts:	조각마다
+weak = False	약한 조각인지 (앞 조각에 붙일지).
+if merged:	이미 모은 것이 있으면
+weak = char_count(p) < min_frag or char_count(merged[-1]) < min_frag	이 조각이나 앞 조각이 최소 글자수보다 짧으면 약함.
+if require_korean and (not has_korean(p) or not has_korean(merged[-1])):	한글 필수인데 이 조각이나 앞 조각에 한글이 없으면
+weak = True	약함.
+if weak:	약하면
+merged[-1] = f"{merged[-1]} {p}"	앞 조각 뒤에 공백 하나 두고 붙인다.
+else:	아니면
+merged.append(p)	새 조각으로.
+return merged	결과.
+def number_lines(doc: Document, cfg: Config) -> None:	활성 줄에 번호를 붙이고 긴 줄을 나누는 함수. 문서를 직접 고친다(돌려주는 값 없음).
+for page in doc.pages:	페이지마다
+new: list[Line] = []	새 줄 목록.
+idx = 0	활성 줄 번호 (1부터).
+orig = 0	원래 줄 순번 (분할 추적용).
+for ln in page.lines:	줄마다
+if not ln.active:	제거된 줄이면
+ln.idx = 0	번호 0 으로 두고
+new.append(ln)	그대로 넣고
+continue	다음으로.
+orig += 1	원래 줄 순번 증가.
+if cfg.rule_split_long and len(ln.text) > cfg.split_len:       # 긴 줄 분할 스위치	분할 스위치가 켜져 있고 줄이 길면
+parts = split_sentences(ln.text, cfg.short_line_chars + 1, cfg.rule_require_korean)	문장 단위로 나눈다(짧은 조각 기준과 한글 규칙을 넘긴다).
+else:	아니면
+parts = [ln.text]	아니면 그대로 한 조각.
+for part in parts:	조각마다
+idx += 1	번호 증가.
+new.append(Line(idx=idx, text=part, level=ln.level, source=ln.source,	새 Line: 번호, 글, 계층·출처는 원래 줄 것,
+split_from=orig if len(parts) > 1 else None))	나뉜 경우에만 split_from 에 원래 순번.
+page.lines = new	페이지 줄 목록 교체.

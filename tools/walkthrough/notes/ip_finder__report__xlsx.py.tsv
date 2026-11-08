@@ -1,0 +1,196 @@
+# ip_finder/report/xlsx.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""Excel 리포트 (0단계).	파일 설명 첫 줄.
+시트: 검토 목록 / 보류 / 분류기 제외 (참고) / 후처리 제외 / 전처리 제외 / 페이지 / 변경 사항 / 제외 페이지 / 이미지 페이지 / 실행 정보.	설명: 시트 목록.
+- 문장 시트의 열은 모두 같다(LINE_HEADERS). '확신'은 분류기가 낸 신뢰도(0~1), '판정'은 분류기/골드.	설명: 문장 시트 열.
+- '전처리 제외'에는 규칙에 걸린 줄과 제외된 쪽의 줄이 사유와 함께 들어가 스위치가 무엇을 뺐는지 사람이 바로 본다.	설명: 전처리 제외 시트.
+- '실행 정보'에는 스위치 표와 '설정 <이름>' 행이 있어 비교 명령(compare-runs)이 결과 파일만으로 설정 차이를 읽는다.	설명: 실행 정보의 설정 행.
+검토 목록·보류·제외 시트에는 '피드백' 열이 있어 O / X / A~D 를 적으면 ip-finder feedback 이 골드 시트로 가져간다."""	피드백 열.
+from __future__ import annotations	새 문법 호환.
+from collections import Counter	개수 세는 사전.
+from pathlib import Path	경로.
+from openpyxl import Workbook	통합 문서.
+from openpyxl.styles import Alignment, Font, PatternFill	서식.
+from openpyxl.utils import get_column_letter	열 번호 → 글자 (1 → 'A').
+from openpyxl.worksheet.datavalidation import DataValidation	드롭다운(데이터 유효성 검사).
+from .. import STAGE, __version__	단계 이름과 버전.
+from ..config import CLASSIFIER_NAMES, Config	분류기 이름표와 Config.
+from ..models import Document, LabeledLine, RunInfo	모델.
+from ..post import (STATUS_CLF_OUT, STATUS_HOLD, STATUS_PAGE_OUT, STATUS_POST_OUT, STATUS_PREP_OUT, STATUS_REVIEW,	상태 상수와 판정 함수들(첫 줄).
+in_hold_list, in_review_list, is_stage1_out, is_stage2_out)	이어짐.
+from ..post.templates import discussion_point	논의 포인트.
+from ..prep.page_rules import IMAGE_PAGE	'이미지 페이지' 상수.
+from ..switches import describe as describe_switches, table_rows	스위치 설명과 표 행.
+FILLS = {	등급별 셀 배경색 사전.
+"A": PatternFill("solid", fgColor="FFE0B2"),	A 주황빛.
+"B": PatternFill("solid", fgColor="FFF9C4"),	B 노랑빛.
+"C": PatternFill("solid", fgColor="DCEDC8"),	C 연두빛.
+"D": PatternFill("solid", fgColor="BBDEFB"),	D 하늘빛.
+"X?": PatternFill("solid", fgColor="EEEEEE"),	X? 회색.
+"?": PatternFill("solid", fgColor="FFCDD2"),	? 분홍 (판정 실패).
+}	사전 끝.
+HEAD_FILL = PatternFill("solid", fgColor="37474F")	제목 행 배경(짙은 회색).
+HEAD_FONT = Font(bold=True, color="FFFFFF")	제목 행 글꼴(굵게, 흰색).
+FEEDBACK_FILL = PatternFill("solid", fgColor="FFFDE7")	피드백·메모 열 배경(연노랑).
+WRAP = Alignment(wrap_text=True, vertical="top")	셀 정렬: 줄바꿈, 위쪽 맞춤.
+SOURCE_NAME = {"clf": "분류기", "gold": "골드"}	판정 주체 이름.
+FEEDBACK_HELP = "O=맞음, X=틀림(제외), A/B/C/D=올바른 등급"	피드백 입력 안내문.
+SHEET_REVIEW, SHEET_HOLD, SHEET_CLF_OUT, SHEET_POST_OUT, SHEET_PREP_OUT = STATUS_REVIEW, STATUS_HOLD, "분류기 제외 (참고)", STATUS_POST_OUT, STATUS_PREP_OUT	문장 시트 이름들(상태 이름과 같게).
+SHEET_PAGES, SHEET_CHANGES, SHEET_INFO = "페이지", "변경 사항", "실행 정보"	페이지·변경 사항·실행 정보 시트 이름.
+LINE_HEADERS = ["번호", "섹션", "페이지", "줄", "등급", "발췌", "논의 포인트", "점수", "가중치", "확신", "판정", "비고", "피드백", "메모"]	문장 시트의 열 이름(확신 열 추가, 1차/2차 열 제거).
+LINE_WIDTHS = [6, 14, 8, 5, 6, 60, 34, 7, 7, 7, 8, 28, 8, 24]	열 너비.
+FEEDBACK_COL = LINE_HEADERS.index("피드백") + 1	'피드백' 열 번호 (1부터). index 는 0부터라 +1.
+PREP_HEADERS = ["페이지", "상태", "사유", "발췌", "출처"]	전처리 제외 시트의 열.
+SETTING_PREFIX = "설정 "          # 실행 정보에서 설정 행의 접두어. compare-runs 가 이 접두어로 설정을 읽는다	실행 정보의 설정 행 접두어(compare-runs 가 읽는다).
+is_clf_rejected = is_stage1_out	옛 이름 호환: 분류기 제외.
+is_post_rejected = is_stage2_out	옛 이름 호환: 후처리 제외.
+is_held = in_hold_list	옛 이름 호환: 보류.
+def _sheet(wb: Workbook, title: str, headers: list[str], widths: list[int], first: bool = False):	시트를 만들고 제목 행을 꾸미는 함수. first 면 통합 문서의 기본 시트를 쓴다.
+ws = wb.active if first else wb.create_sheet()	첫 시트면 기본 시트, 아니면 새 시트.
+ws.title = title	시트 이름.
+ws.append(headers)	제목 행.
+for c in range(1, len(headers) + 1):	열마다
+cell = ws.cell(row=1, column=c)	제목 셀.
+cell.fill, cell.font = HEAD_FILL, HEAD_FONT	짙은 배경과 흰 굵은 글꼴.
+ws.column_dimensions[get_column_letter(c)].width = widths[c - 1]	열 너비.
+ws.freeze_panes = "A2"	첫 행 고정 (스크롤해도 제목 보임).
+return ws	시트를 돌려준다.
+def _finish(ws, n_cols: int, feedback_col: int | None = None) -> None:	시트 마무리 함수. 열 수와 피드백 열 번호.
+if ws.max_row > 1:	데이터가 있으면
+ws.auto_filter.ref = f"A1:{get_column_letter(n_cols)}{ws.max_row}"	자동 필터를 전체 범위에.
+for row in ws.iter_rows(min_row=2):	둘째 행부터 모든 행의
+for cell in row:	모든 셀을
+cell.alignment = WRAP	줄바꿈·위쪽 정렬로.
+if feedback_col and ws.max_row > 1:	피드백 열이 있고 데이터가 있으면
+col = get_column_letter(feedback_col)	열 글자 (예: 'N').
+dv = DataValidation(type="list", formula1='"O,X,A,B,C,D"', allow_blank=True, showErrorMessage=False)	드롭다운 목록 O, X, A, B, C, D. 빈칸 허용, 다른 값 입력도 막지 않음.
+dv.promptTitle, dv.prompt = "피드백", FEEDBACK_HELP	입력 안내 제목과 문구.
+ws.add_data_validation(dv)	시트에 유효성 검사 등록.
+dv.add(f"{col}2:{col}{ws.max_row}")	피드백 열의 2행부터 끝까지 적용.
+for r in range(2, ws.max_row + 1):	각 행의
+ws.cell(row=r, column=feedback_col).fill = FEEDBACK_FILL	피드백 셀 배경을 연노랑으로,
+ws.cell(row=r, column=feedback_col + 1).fill = FEEDBACK_FILL	옆 메모 셀도 연노랑으로.
+def _line_row(n: int, ll: LabeledLine, extra: list | None = None) -> list:	문장 하나를 엑셀 행(리스트)으로 만드는 함수. extra 는 추가 열(보류 사유).
+return [n, ll.section, ll.page_no, ll.line_idx, ll.label, ll.text, discussion_point(ll.label), ll.score, ll.page_weight,	번호, 섹션, 페이지, 줄, 등급, 발췌, 논의 포인트, 점수, 가중치,
+ll.clf_conf if ll.clf_conf is not None else "", SOURCE_NAME.get(ll.source, ll.source), ", ".join(ll.notes), "", ""] + (extra or [])	확신(분류기 신뢰도), 판정 주체, 비고, 피드백·메모 빈 칸.
+def _line_sheet(wb, title, rows: list[LabeledLine], first=False, extra_header: str | None = None, extra_of=None, note: str | None = None):	문장 시트 하나를 만드는 함수. first 는 첫 시트인지, extra_header/extra_of 는 추가 열, note 는 빈 시트 안내문.
+headers = LINE_HEADERS + ([extra_header] if extra_header else [])	열 제목 (추가 열 있으면 붙임).
+widths = LINE_WIDTHS + ([40] if extra_header else [])	너비.
+ws = _sheet(wb, title, headers, widths, first=first)	시트 생성 (제목 행 꾸밈 포함).
+for n, ll in enumerate(rows, 1):	문장마다 번호를 붙여
+ws.append(_line_row(n, ll, [extra_of(ll)] if extra_of else None))	행을 추가한다.
+ws.cell(row=ws.max_row, column=5).fill = FILLS.get(ll.label, FILLS["X?"]) if ll.label in FILLS else PatternFill()	등급 셀(5열)에 색을 칠한다. 색이 없는 라벨(X)은 칠하지 않음.
+if not rows and note:	문장이 없고 안내문이 있으면
+ws.append(["", "", "", "", "", note])	발췌 열에 안내문 한 줄.
+_finish(ws, len(headers), FEEDBACK_COL)	필터·정렬·피드백 드롭다운 마무리.
+return ws	시트를 돌려준다.
+def prep_rows(doc: Document) -> list[list]:	전처리 제외 시트 행을 만드는 함수.
+"""'전처리 제외' 시트 행: 규칙에 걸린 줄(상태 전처리 제외, 사유 = 규칙 이름)과 제외된 쪽의 줄(상태 페이지 제외, 사유 = 쪽 제외 사유)."""	설명 문자열.
+src_name = {"body": "본문", "table": "표", "diagram": "도형"}	출처 이름표.
+out = []	빈 목록.
+for p in doc.pages:	문서의 페이지마다
+for ln in p.lines:	쪽의 줄마다
+if not ln.text.strip():	빈 줄은
+continue	건너뛴다.
+if ln.removed_by:                       # 줄 규칙이 먼저 (규칙 때문에 쪽이 비어 제외된 경우 규칙 이름이 더 정확하다)	줄 규칙에 걸렸으면(쪽 제외보다 먼저)
+out.append([p.no, STATUS_PREP_OUT, ln.removed_by, ln.text, src_name.get(ln.source, ln.source)])	전처리 제외 행.
+elif p.excluded_reason is not None:	쪽이 제외됐으면
+out.append([p.no, STATUS_PAGE_OUT, p.excluded_reason, ln.text, src_name.get(ln.source, ln.source)])	페이지 제외 행.
+return out	경로를 돌려준다.
+def write_report(out: Path, doc: Document, labeled: list[LabeledLine], info: RunInfo,	엑셀을 쓰는 본체. 출력 경로, 문서, 문장 목록, 실행 정보,
+removed: Counter | None = None, changes: list[dict] | None = None, cfg: Config | None = None) -> Path:	write_report 인자: 제거 수, 변경 행, 그리고 설정(cfg).
+wb = Workbook()	새 통합 문서.
+_line_sheet(wb, SHEET_REVIEW, [ll for ll in labeled if in_review_list(ll)], first=True, note="검토 목록에 오른 문장이 없습니다.")	검토 목록 시트.
+def hold_reason(ll: LabeledLine) -> str:	보류 사유를 만드는 작은 함수.
+return ll.hold_reason or ("분류기는 제외, 기술 단서어 있음" if ll.label == "X?" else "판정 실패")	보류 사유: 점수 사유 또는 X?/실패 설명.
+_line_sheet(wb, SHEET_HOLD, [ll for ll in labeled if in_hold_list(ll)], extra_header="보류 사유", extra_of=hold_reason, note="보류된 문장이 없습니다.")	보류 시트.
+_line_sheet(wb, SHEET_CLF_OUT, [ll for ll in labeled if is_stage1_out(ll)],	분류기 제외 시트.
+note=f"분류기가 {info.target_grades} 밖으로 본 문장이 없습니다.")	비어 있을 때 안내.
+_line_sheet(wb, SHEET_POST_OUT, [ll for ll in labeled if is_stage2_out(ll)],	후처리 제외 시트.
+note="분류기는 통과시켰지만 후처리(보정)나 골드가 대상 등급 밖으로 바꾼 문장이 없습니다.")	비어 있을 때 안내.
+ws = _sheet(wb, SHEET_PREP_OUT, PREP_HEADERS, [8, 11, 26, 64, 6])	전처리 제외 시트 만들기.
+rows = prep_rows(doc)	행 계산.
+for r in rows:	행마다
+ws.append(r)	행 추가.
+if not rows:	없으면
+ws.append(["", "", "", "전처리·페이지 규칙에 걸린 줄이 없습니다 (스위치가 모두 꺼져 있으면 비어 있는 것이 정상)."])	안내(기준선에서는 비어 있는 것이 정상).
+_finish(ws, len(PREP_HEADERS))	마무리.
+ws = _sheet(wb, SHEET_PAGES, ["페이지", "제목", "관련성", "가중치", "근거", "상태", "문장", "목록", "보류", "분류기 제외", "후처리 제외", "전처리 제외", "제목 출처"],	페이지 시트 열(분류기 제외·후처리 제외·전처리 제외 수).
+[8, 48, 8, 8, 22, 26, 7, 7, 7, 9, 9, 9, 10])	열 너비.
+by_page: dict[int, list[LabeledLine]] = {}	페이지 번호 → 그 페이지의 문장들.
+for ll in labeled:	문장마다
+by_page.setdefault(ll.page_no, []).append(ll)	페이지별로 모은다.
+for p in doc.pages:	페이지마다
+rows_p = by_page.get(p.no, [])	이 쪽의 판정 문장.
+ws.append([p.no, p.title, p.relevance, p.weight, p.weight_reason, p.excluded_reason or "판정", len(rows_p),	쪽 정보와 문장 수,
+sum(1 for ll in rows_p if in_review_list(ll)), sum(1 for ll in rows_p if in_hold_list(ll)),	목록·보류 수,
+sum(1 for ll in rows_p if is_stage1_out(ll)), sum(1 for ll in rows_p if is_stage2_out(ll)),	분류기 제외·후처리 제외 수,
+sum(1 for ln in p.lines if ln.removed_by and ln.text.strip()), p.title_source])	전처리 제외 줄 수, 제목 출처.
+_finish(ws, 13)	마무리.
+ws = _sheet(wb, SHEET_CHANGES, ["변경", "페이지", "줄", "발췌", "이전", "현재", "목록", "판정", "설명"], [10, 8, 5, 64, 8, 8, 6, 11, 44])	변경 사항 시트(직전 실행 대비).
+if info.prev_run_id:	직전 실행이 있으면
+ws.append(["기준", "", "", f"직전 실행 {info.prev_run_id} 과 비교 (현재 {info.run_id})", "", "", "", "", ""])	'기준' 행: 어느 실행과 비교했는지.
+for s in info.settings_diff or ["설정 변경 없음"]:	달라진 설정마다 (없으면 '설정 변경 없음')
+ws.append(["설정", "", "", s, "", "", "", "", ""])	'설정' 행.
+for r in changes or []:	변경 문장마다
+ws.append([r["kind"], r["page"], r["line"], r["text"], r["old"], r["new"], r["in_list"], r["source"], r["desc"]])	변경 종류, 페이지, 줄, 발췌, 이전, 현재, 목록 여부, 판정 출처, 설명.
+if not changes:	변경 문장이 없으면
+ws.append(["", "", "", "변경된 문장 없음", "", "", "", "", ""])	'변경된 문장 없음'.
+else:	직전 실행이 없으면
+ws.append(["", "", "", "이 파일의 이전 실행 기록이 없어 비교하지 않았습니다. 두 결과 파일을 직접 비교하려면 ip-finder compare-runs A.xlsx B.xlsx", "", "", "", "", ""])	이전 실행이 없을 때 안내(compare-runs 소개).
+_finish(ws, 9)	마무리.
+ws = _sheet(wb, "제외 페이지", ["페이지", "제목", "사유"], [8, 50, 30])	제외 페이지 시트: 페이지, 제목, 사유.
+for p in doc.pages:	페이지마다
+if p.excluded_reason and p.excluded_reason != IMAGE_PAGE:	제외됐고 이미지 페이지가 아니면
+ws.append([p.no, p.title, p.excluded_reason])	한 행.
+_finish(ws, 3)	마무리.
+ws = _sheet(wb, "이미지 페이지", ["페이지", "제목", "비고"], [8, 50, 40])	이미지 페이지 시트.
+for p in doc.pages:	페이지마다
+if p.excluded_reason == IMAGE_PAGE:	이미지 페이지면
+ws.append([p.no, p.title, "텍스트 없음. 도면·그림이면 직접 확인"])	한 행 (직접 확인 안내).
+_finish(ws, 3)	마무리.
+ws = _sheet(wb, SHEET_INFO, ["항목", "값"], [26, 100])	실행 정보 시트.
+grade_counts = Counter(ll.label for ll in labeled)	전체 등급 분포.
+list_counts = Counter(ll.label for ll in labeled if in_review_list(ll))	목록 등급 분포.
+n_clf_out = sum(1 for ll in labeled if is_stage1_out(ll))	분류기 제외 수.
+n_post_out = sum(1 for ll in labeled if is_stage2_out(ll))	후처리 제외 수.
+n_prep = len(rows)	전처리·페이지 제외 줄 수.
+rows_info = [	행 목록 시작.
+("입력 파일", info.source), ("실행 ID", info.run_id or "-"), ("직전 실행 ID", info.prev_run_id or "-"),	입력 파일, 실행 ID, 직전 실행 ID.
+("프로그램 버전", info.version or __version__), ("단계", STAGE),	버전과 단계.
+("읽기 방식", "레이아웃 분석" if info.reader == "layout" else "원시 읽기 (레이아웃 분석 끔)"),	읽기 방식.
+("스위치", describe_switches(cfg) if cfg is not None else ", ".join(f"{k}={'켬' if v else '끔'}" for k, v in info.switches.items())),	스위치 한 줄(cfg 가 있으면 describe, 없으면 info 의 상태).
+("1차 분류기", f"{CLASSIFIER_NAMES.get(info.classifier_name, info.classifier_name)} — {info.classifier}"),	분류기 이름과 설명.
+("임베딩 모델", info.embed_model or "- (이 분류기는 임베딩을 쓰지 않음)"),	임베딩 모델(안 쓰면 안내).
+("추출 등급", info.target_grades),	추출 등급.
+("판정 흐름", f"읽기 → 전처리 → 1차 분류기({info.target_grades} 만 통과) → 후처리 → 점수 ≥ {info.accept_score} 이면 검토 목록, 미만은 보류"),	판정 흐름 한 줄.
+("단계별 문장 수", f"판정 {len(labeled)} → 분류기 제외 {n_clf_out} → 후처리 제외 {n_post_out} → 보류 {sum(1 for ll in labeled if in_hold_list(ll))} → 검토 목록 {sum(list_counts.values())}  (전처리·페이지 제외 줄 {n_prep})"),	단계별 문장 수.
+("페이지 가중치", f"{'켬' if info.page_weight_enabled else '끔'} (관련성 낮음 {info.low_relevance_weight}, 낮음 페이지 {info.pages_low}개)"),	페이지 가중치 켬/끔, 낮음 가중치, 낮음 페이지 수.
+("목록 점수 기준", info.accept_score), ("점수 미달 보류", info.held_lines),	목록 점수 기준, 점수 미달 보류 수.
+("골드 정답 반영", f"{info.gold_lines}문장 (분류기 판정과 달랐던 것 {info.gold_changed}) / 읽은 골드: {info.gold_desc}" if info.gold_desc else "없음 (골드 파일이 없거나 use_gold=false)"),	골드 반영.
+("임베딩 시간(초)", round(info.embed_sec, 1)), ("분류 시간(초)", round(info.classify_sec, 2)),	임베딩·분류 시간.
+("시작", info.started_at), ("소요 시간(초)", round(info.elapsed_sec, 1)),	시작 시각, 소요 시간.
+("페이지 수", info.pages_total), ("판정 페이지", info.pages_labeled),	페이지 수·판정 페이지.
+("제외 페이지", info.pages_excluded), ("이미지 페이지", info.pages_image), ("임베딩 캐시 적중", info.cache_hits),	제외·이미지 페이지, 캐시 적중.
+("검토 목록", ", ".join(f"{g}: {list_counts.get(g, 0)}" for g in info.target_grades.split(",")) + f" (합 {sum(list_counts.values())})"),	검토 목록 등급별 수와 합.
+("등급 분포(판정 문장)", ", ".join(f"{g}: {grade_counts.get(g, 0)}" for g in ("A", "B", "C", "D", "X", "X?", "?"))),	등급 분포.
+("직전 실행 대비", ", ".join(f"{k}: {v}" for k, v in (info.changes or {}).items() if k != "total" and v) or ("변경 없음" if info.prev_run_id else "-")),	직전 실행 대비 변경 수 (0 인 항목은 생략). 직전 실행이 있는데 변경이 없으면 '변경 없음'.
+("달라진 설정", "; ".join(info.settings_diff) or "-"),	달라진 설정 (세미콜론으로 이음).
+("전처리로 제거된 줄", ", ".join(f"{k}: {v}" for k, v in (removed or {}).items() if k != "빈 줄") or "없음"),	전처리로 제거된 줄(빈 줄 제외).
+("경고", "; ".join(info.warnings) or "없음"),	경고 목록.
+("피드백 방법", f"검토 목록·보류·제외 시트의 '피드백' 열에 {FEEDBACK_HELP}. 저장 후 ip-finder feedback <이 파일>"),	피드백 방법.
+]	행 목록 끝.
+for r in rows_info:	행 추가 루프.
+ws.append(list(r))	추가.
+ws.append(["", ""])	빈 줄.
+ws.append(["스위치 표", "묶음 / 이름 / 상태 / 지금 일어나는 일"])	스위치 표 머리.
+if cfg is not None:	설정이 있으면
+for group, label, state, what in table_rows(cfg):	스위치마다
+ws.append([f"스위치 {label}", f"{state} — [{group}] {what}"])	'스위치 <이름>' 행: 상태와 설명.
+ws.append(["", ""])	빈 줄.
+ws.append(["설정 표", "결과에 영향을 주는 설정 (compare-runs 가 읽는다)"])	설정 표 머리.
+for k, v in cfg.fingerprint().items():	지문 항목마다
+ws.append([f"{SETTING_PREFIX}{k}", v if isinstance(v, (int, float, str)) else ", ".join(map(str, v))])	'설정 <키>' 행(목록은 쉼표로).
+_finish(ws, 2)	마무리 (피드백 열 없음).
+out.parent.mkdir(parents=True, exist_ok=True)	출력 폴더가 없으면 만든다.
+wb.save(str(out))	파일 저장.
+return out	경로를 돌려준다.

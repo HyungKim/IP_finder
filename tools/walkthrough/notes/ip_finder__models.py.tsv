@@ -1,0 +1,97 @@
+# ip_finder/models.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""공통 데이터 모델. 리더가 Document 를 만들고, 전처리·분류·후처리가 이를 채운다."""	파일 설명: 공통 데이터 모델.
+from __future__ import annotations	새 문법 호환 선언.
+from dataclasses import dataclass, field	dataclass 장식자와 field 도우미.
+from pathlib import Path	파일 경로 타입.
+GRADES = ("A", "B", "C", "D", "X")	등급 다섯 개의 순서 있는 묶음(튜플). 여러 모듈이 이 상수를 쓴다.
+@dataclass	@dataclass: 아래 클래스에 필드 목록만 적으면 생성자(__init__)를 자동으로 만들어 준다.
+class Line:	'줄' 하나를 나타내는 클래스. 리더가 만들고 전처리가 채운다.
+idx: int                        # 전처리 후 페이지 내 번호(1부터). 제거된 줄은 0	페이지 안 번호(정수). 전처리 뒤 활성 줄에만 1부터 붙고, 제거된 줄은 0 이다. 엑셀의 '줄' 열.
+text: str	줄의 글(문자열).
+level: int = 0                  # 불릿 계층. 0이 최상위	글머리 계층. 0 이 맨 바깥 항목, 1 이 한 단계 들여쓴 항목. 기본값 0.
+source: str = "body"            # body | table | diagram(도형·SmartArt·차트 제목 안의 글)	출처. 'body' 본문, 'table' 표 셀, 'diagram' 도형·SmartArt·차트 제목. 엑셀 비고의 '표', '도형' 이 여기서 나온다.
+removed_by: str | None = None   # 전처리 규칙 이름. None 이면 분류기에 보낸다	이 줄을 뺀 전처리 규칙 이름. None 이면 분류기에 보낸다.
+split_from: int | None = None   # 긴 줄을 나눈 경우 원래 줄의 순번	긴 줄을 나눈 조각이면 원래 줄의 순번. 아니면 None. 비고의 '분할' 표시용.
+@property	@property: 아래 함수를 값처럼 ln.active 로 쓰게 한다.
+def active(self) -> bool:	'판정 대상인가' 를 돌려주는 함수. bool 은 참/거짓.
+return self.removed_by is None and bool(self.text.strip())	제거 사유가 없고(None) 글이 비어 있지 않으면 참. strip() 은 양끝 공백 제거.
+@dataclass	다시 @dataclass. 이번엔 페이지.
+class Page:	페이지(슬라이드) 하나.
+no: int	페이지 번호 (1부터).
+title: str	제목. 리더가 고른다.
+lines: list[Line] = field(default_factory=list)	이 페이지의 줄 목록. field(default_factory=list) 는 '기본값은 새 빈 리스트' 라는 뜻.
+has_graphics: bool = False      # 그림·도형 등 텍스트가 아닌 요소 존재	그림·도형처럼 글이 아닌 요소가 있는지. 이미지 페이지 판정에 쓴다.
+excluded_reason: str | None = None	페이지를 제외했다면 그 이유(예: '표지'). None 이면 판정한다.
+section: str = ""	섹션 이름. 제목 접두어로 만든다 (엑셀 '섹션' 열).
+weight: float = 1.0             # 페이지 가중치 (제목 규칙). 0이면 판정하지 않음	페이지 가중치. 제목 규칙으로 1.0 또는 0.4 가 된다. 0 이면 판정하지 않는다.
+weight_reason: str = ""         # 가중치를 정한 규칙	가중치를 정한 규칙 설명 (엑셀 페이지 시트의 '근거' 열).
+relevance: str = "높음"          # 관련성: 높음 | 낮음 (제목 키워드)	관련성 '높음' 또는 '낮음'. 기본은 높음.
+title_source: str = ""          # 제목을 찾은 방법: placeholder | font | bold | first-line | raw | 없음	제목을 어떻게 찾았는지. raw 는 원시 읽기에서 첫 줄을 제목으로 쓴 경우.
+def active_lines(self) -> list[Line]:	살아 있는(제거되지 않은) 줄만 돌려주는 함수.
+return [ln for ln in self.lines if ln.active]	줄 목록에서 active 가 참인 것만 골라 새 리스트로. 대괄호 안의 for 는 컴프리헨션.
+@property	@property: p.has_body 로 쓴다.
+def has_body(self) -> bool:	본문이 하나라도 있는가.
+return any(ln.text.strip() for ln in self.lines)	any(...) 는 하나라도 참이면 참. 글이 빈 줄이 아닌 것이 하나라도 있으면 본문 있음.
+@dataclass	@dataclass.
+class Document:	문서 전체. 리더의 최종 출력이다.
+path: Path	입력 파일 경로.
+kind: str                       # pdf | pptx	'pdf' 또는 'pptx'.
+pages: list[Page]	페이지 목록.
+title: str = ""	문서 제목. 첫 페이지 제목을 넣는다.
+notes: list[str] = field(default_factory=list)   # 리더가 남기는 안내(다단 감지, 회전 문자, 표 개수 등). 실행 정보의 경고로 나간다	리더가 남기는 안내문 목록(다단 감지, 회전 문자, 표 개수). 실행 정보 시트의 경고로 나간다.
+reader: str = "layout"          # layout | raw  (레이아웃 분석 스위치)	이 문서를 읽은 방식: layout(레이아웃 분석) 또는 raw(원시).
+@dataclass	@dataclass.
+class LabeledLine:	판정 단계의 단위. 줄 하나에 라벨·점수·판정 경로를 붙인 것. 엑셀 문장 시트의 한 행이다.
+page_no: int	페이지 번호.
+page_title: str	페이지 제목. 제목 보정과 묶음 프롬프트가 쓴다.
+section: str	섹션 이름.
+line_idx: int	페이지 안 줄 번호.
+text: str	문장.
+label: str                      # A B C D X, 보류는 "X?", 판정 실패는 "?"	최종 등급. X? 는 안전망이 살린 보류, ? 는 판정 실패.
+raw_label: str                  # 후처리 전 라벨 (분류기 판정 그대로)	후처리 전 등급(분류기 판정 그대로). 채점의 '분류기 라벨'이 이것.
+notes: list[str] = field(default_factory=list)   # 보정(A→C), 분할, 표, 도형, 단서어: ..., 골드 반영	비고 목록: 보정, 분할, 표, 도형, 단서어, 골드 반영.
+source: str = "clf"             # clf | gold	판정 주체: clf(분류기) 또는 gold(골드 정답).
+clf_label: str = ""             # 분류기 라벨	분류기 라벨(최종 등급과 별도로 보존).
+clf_conf: float | None = None   # 분류기가 낸 신뢰도 0~1 (1위 라벨의 확률 추정)	분류기가 낸 신뢰도 0~1. 점수 계산의 재료.
+clf_margin: float | None = None # 1위 - 2위 점수 차이 (비고에 표시)	1위와 2위 점수 차이. 참고용.
+page_weight: float = 1.0        # 페이지 가중치	페이지 가중치 (Page.weight 를 복사).
+confidence: float = 1.0         # 판정 신뢰도 0~1 (post.scoring)	판정 신뢰도 0~1. post/scoring.py 가 채운다.
+score: float = 1.0              # 신뢰도 × 가중치	점수 = 신뢰도 × 가중치.
+hold_reason: str = ""           # 비어 있지 않으면 검토 목록 대신 보류	비어 있지 않으면 검토 목록 대신 보류 시트로 가고, 그 사유가 적힌다.
+stage_out: int = 0              # 0 통과 / 1 분류기에서 대상 등급 밖 / 2 후처리·골드가 대상 등급 밖으로 바꿈	단계 번호: 0 통과, 1 분류기가 대상 등급 밖, 2 후처리·골드가 대상 등급 밖으로 바꿈.
+@property	@property: ll.key 로 쓴다.
+def key(self) -> tuple[int, int]:	이 문장을 가리키는 열쇠.
+return (self.page_no, self.line_idx)	(페이지, 줄) 두 값 튜플. LLM 결과를 문장에 되돌려 붙일 때 이 열쇠로 찾는다.
+@dataclass	@dataclass.
+class RunInfo:	한 번의 실행에 대한 정보. 실행 정보 시트와 이력에 그대로 적힌다.
+source: str	입력 파일 경로.
+started_at: str	시작 시각 문자열.
+elapsed_sec: float = 0.0	소요 시간(초).
+version: str = ""	실행한 프로그램 버전.
+reader: str = "layout"          # layout | raw	읽기 방식(layout/raw).
+switches: dict = field(default_factory=dict)   # {스위치 이름: 켬 여부}	실행에 쓰인 스위치 상태 {이름: 켬}.
+pages_total: int = 0	전체 페이지 수.
+pages_labeled: int = 0	판정한 페이지 수.
+pages_excluded: int = 0	제외된 페이지 수 (이미지 페이지 제외).
+pages_image: int = 0	이미지 페이지 수.
+cache_hits: int = 0	캐시 적중 횟수.
+warnings: list[str] = field(default_factory=list)	경고 문장 목록.
+embed_model: str = ""	임베딩 모델 이름.
+classifier_name: str = ""       # 설정의 분류기 키 (proto, knn, ...)	설정의 분류기 키(proto, knn …).
+classifier: str = ""            # 사람이 읽는 분류기 설명 (학습 시각·문장 수 포함)	사람이 읽는 분류기 설명(학습 시각·문장 수).
+clf_lines: int = 0              # 분류기가 판정한 문장 수	분류기가 판정한 문장 수.
+target_grades: str = "A,B"	추출 대상 등급 문자열.
+embed_sec: float = 0.0	임베딩에 걸린 시간.
+classify_sec: float = 0.0	분류기 판정에 걸린 시간(초).
+accept_score: float = 0.5	검토 목록 점수 기준.
+page_weight_enabled: bool = False	페이지 가중치 스위치 상태.
+low_relevance_weight: float = 0.4	낮음 가중치 값.
+pages_low: int = 0              # 관련성 낮음으로 분류된 페이지 수	관련성 낮음 페이지 수.
+held_lines: int = 0             # 점수 미달로 보류된 A~D 문장 수	점수 미달 보류 수.
+gold_lines: int = 0             # 골드 정답을 그대로 쓴 문장 수	골드 정답을 쓴 문장 수.
+gold_changed: int = 0           # 그중 분류기 판정과 달랐던 문장 수	골드로 바뀐 문장 중 분류기 판정과 달랐던 수.
+gold_desc: str = ""             # 읽은 골드 요약 (파일 수, 문장 수)	읽은 골드 요약.
+run_id: str = ""                # 이력 저장 ID	실행 ID.
+prev_run_id: str = ""           # 같은 파일의 직전 실행 ID (변경 추적 기준)	직전 실행 ID.
+settings_diff: list[str] = field(default_factory=list)   # 직전 실행과 달라진 설정	달라진 설정 문장 목록.
+changes: dict = field(default_factory=dict)              # 직전 실행 대비 변경 요약	변경 수 요약 사전 (진입·이탈·등급 변경 …).

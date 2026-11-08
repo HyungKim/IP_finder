@@ -1,0 +1,527 @@
+# ip_finder/cli.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""ip-finder 명령.	파일 설명 첫 줄.
+일상 실행: extract / ui / check / switches / pages / layout	설명: 일상 명령.
+정확도 관리: gold-sheet / feedback / train / eval / history	설명: 정확도 관리 명령.
+실험(비교): compare-classifiers / run-all / ladder / compare-runs	설명: 실험 명령.
+모든 명령은 로컬에서만 동작한다 (Ollama 는 127.0.0.1 임베딩만)."""	설명: 로컬 전용.
+from __future__ import annotations	새 문법 호환.
+import argparse	명령줄 인자 해석 라이브러리.
+import sys	표준 출력·종료 코드.
+import time	시간.
+from pathlib import Path	경로.
+from . import STAGE, __version__	단계 이름과 버전.
+from .config import CLASSIFIER_NAMES, Config	분류기 이름표와 Config.
+from .switches import BY_NAME, SWITCHES, describe as describe_switches, set_all, set_switch, table_rows	스위치 도구들.
+def _common(p: argparse.ArgumentParser) -> None:	여러 명령이 공유하는 옵션들을 등록하는 함수. p 는 명령 하나의 파서.
+p.add_argument("--config", help="ip_finder.toml 경로 (기본: 현재 폴더 또는 설치 폴더의 ip_finder.toml)")	--config: 설정 파일 경로.
+p.add_argument("--classifier", choices=list(CLASSIFIER_NAMES), help="1차 분류기 (기본 proto). " + ", ".join(f"{k}={v}" for k, v in CLASSIFIER_NAMES.items()))	--classifier: 분류기 선택(선택지는 CLASSIFIER_NAMES).
+p.add_argument("--embed-model", help="Ollama 임베딩 모델 (기본 bge-m3. KURE-v1 은 tools/import_kure.bat 후 kure-v1)")	--embed-model: 임베딩 모델.
+p.add_argument("--host", help="Ollama 주소. 로컬(127.0.0.1)만 허용")	--host: Ollama 주소.
+p.add_argument("--grades", help="추출 대상 등급 (기본 A,B). 예: A,B,C,D")	--grades: 대상 등급.
+p.add_argument("--accept-score", type=float, help="신뢰도×가중치 가 이 값 이상이어야 검토 목록 (기본 0.5). 미만은 보류 시트")	--accept-score: 실수(type=float).
+p.add_argument("--on", action="append", default=[], metavar="SWITCH", help="켤 스위치 (반복 가능, all 이면 전부). 이름: " + ", ".join(BY_NAME))	--on: 켤 스위치(반복, all).
+p.add_argument("--off", action="append", default=[], metavar="SWITCH", help="끌 스위치 (반복 가능, all 이면 전부)")	--off: 끌 스위치.
+p.add_argument("--gold", action="append", help="골드 파일이나 폴더 (반복 가능). 기본: 설치 폴더의 data/gold")	--gold: 골드 경로(반복).
+p.add_argument("--no-gold", action="store_true", help="골드 정답 반영 끔 (분류기 판정만 보고 싶을 때)")	--no-gold: 골드 반영 끔.
+p.add_argument("--no-cache", action="store_true", help="임베딩 캐시 안 씀")	--no-cache: 캐시 끔.
+def _cfg(args) -> Config:	명령줄 인자(args)를 설정 객체로 바꾸는 함수.
+cfg = Config.load(args.config, classifier=getattr(args, "classifier", None), embed_model=getattr(args, "embed_model", None),	Config.load 에 CLI 값 넘기기(없으면 None → 기본값 유지): 분류기·임베딩,
+host=getattr(args, "host", None), target_grades=getattr(args, "grades", None),	호스트·등급,
+accept_score=getattr(args, "accept_score", None),	점수 기준.
+use_cache=False if getattr(args, "no_cache", False) else None,	--no-cache 면 캐시 끔.
+history_path="" if getattr(args, "no_history", False) else None,	--no-history 면 이력 경로를 빈 문자열로 두어 저장하지 않는다.
+gold_paths=getattr(args, "gold", None) or None,	--gold 를 여러 번 준 목록. 없으면 None 이라 설정 파일·기본값을 따른다.
+use_gold=False if getattr(args, "no_gold", False) else None)	--no-gold 면 골드 반영 끔. 닫는 괄호로 호출이 끝난다.
+for name in getattr(args, "on", []) or []:	--on 마다
+set_all(cfg, True) if name == "all" else set_switch(cfg, name, True)	all 이면 전부, 아니면 그 스위치를 켠다.
+for name in getattr(args, "off", []) or []:	--off 마다
+set_all(cfg, False) if name == "all" else set_switch(cfg, name, False)	끈다.
+return cfg	설정 반환.
+def _embedder_or_none(cfg: Config, cache=None, required: bool = True):	임베더를 만들거나 None 을 돌려주는 도우미.
+"""임베딩이 필요한 분류기면 임베더를 만들고 가용성을 확인한다. 아니면 None."""	설명 문자열.
+from .classify import needs_embedding	needs_embedding.
+from .pipeline import make_embedder	임베더 함수.
+if not needs_embedding(cfg.classifier) and not required:	임베딩이 필요 없고 필수도 아니면
+return None	None.
+emb = make_embedder(cfg, cache)	임베더.
+if needs_embedding(cfg.classifier) and not emb.available():	필요한데 모델이 없으면
+raise SystemExit(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 ({cfg.host}). Ollama 실행과 'ollama pull {cfg.embed_model}' 을 확인하세요.")	안내와 함께 종료.
+return emb	임베더 반환.
+# ------------------------------------------------------------------ 일상 실행	절 주석: 일상 실행.
+def cmd_check(args) -> int:	check 명령: 설치 상태 점검.
+from .classify import REGISTRY	분류기 등록부.
+from .ollama import assert_local, installed_models, server_available	Ollama 확인 함수들.
+cfg = _cfg(args)	설정.
+ok = True	전체 성공 여부.
+print(f"ip-finder {__version__} / {STAGE} / Python {sys.version.split()[0]}")	버전·단계·파이썬 출력.
+print(f"  설치 폴더: {cfg.base_dir}  (설정 파일: {cfg.config_path or '없음, 기본값'})")	설치 폴더와 설정 파일 경로.
+for mod, name in (("pymupdf", "PyMuPDF"), ("pptx", "python-pptx"), ("openpyxl", "openpyxl"), ("numpy", "numpy")):	필수 패키지 네 개를 (모듈 이름, 표시 이름) 으로
+try:	가져오기 오류 대비.
+m = __import__(mod)	이름으로 모듈을 가져온다.
+print(f"  [OK] {name} {getattr(m, '__version__', getattr(m, 'version', ''))}")	'[OK] PyMuPDF 1.24' 꼴로 버전 표시.
+except ImportError:	없으면
+print(f"  [X ] {name} 없음 → pip install -e .")	'[X ] 없음' 과 설치 안내.
+ok = False	실패 표시.
+try:	호스트 검사 대비.
+assert_local(cfg.host)	로컬 호스트인지.
+print(f"  [OK] 호스트 {cfg.host} (로컬)")	OK.
+except Exception as e:	아니면
+print(f"  [X ] {e}")	오류 문구를 찍고
+return 1	바로 실패 종료.
+if server_available(cfg.host):	서버가 응답하면
+models = installed_models(cfg.host)	설치 모델.
+has = cfg.embed_model in models or f"{cfg.embed_model}:latest" in models	임베딩 모델 유무.
+print(f"  [OK] Ollama 연결됨. 설치 모델: {', '.join(models) or '없음'}")	연결됨과 모델 목록 출력.
+print(f"  [{'OK' if has else 'X '}] 임베딩 모델 {cfg.embed_model} {'준비됨' if has else '없음 → ollama pull ' + cfg.embed_model}")	임베딩 모델 상태 출력.
+ok = ok and has	전체 성공 여부에 반영.
+else:	없으면
+print(f"  [X ] Ollama 에 연결할 수 없음 ({cfg.host}). 임베딩을 쓰는 분류기(proto·knn·centroid·softmax·ovr)는 동작하지 않습니다. cue·ngram 은 동작.")	연결 안 되면 어떤 분류기가 되는지 안내.
+ok = False	실패 표시.
+cls = REGISTRY[cfg.classifier]	설정의 분류기 클래스.
+if cls.trainable:	학습형이면
+f = cfg.classifier_file()	파일 경로.
+print(f"  분류기: {CLASSIFIER_NAMES[cfg.classifier]} — {'학습 파일 ' + str(f) if f.exists() else '학습 파일 없음 → ip-finder train --classifier ' + cfg.classifier}")	파일 유무와 학습 안내.
+else:	없으면
+print(f"  분류기: {CLASSIFIER_NAMES[cfg.classifier]} (학습 없음)")	학습 없는 분류기.
+print(f"  스위치: {describe_switches(cfg)}")	스위치 상태.
+print(f"  추출 등급 {','.join(cfg.targets())}, 목록 점수 기준 {cfg.accept_score}")	등급·점수 기준.
+print(f"  캐시: {cfg.cache_file()} (원문 미저장, 해시+벡터) / 이력: {cfg.history_dir() or '저장 안 함'}")	캐시·이력 경로.
+golds = cfg.gold_files()	골드 파일 목록.
+print(f"  골드: {cfg.gold_dir()} — 파일 {len(golds)}개" + (" (골드 문장은 정답을 그대로 씀)" if cfg.use_gold else " (반영 끔)"))	골드 폴더와 파일 수.
+if sys.platform == "win32":	윈도우면
+try:	가져오기 대비.
+import win32com.client  # noqa: F401	pywin32 가 있는지 (noqa 는 '안 쓰는 import' 경고 무시).
+print("  [OK] pywin32 (구형 .ppt 변환 가능)")	있으면 .ppt 변환 가능.
+except ImportError:	없으면
+print("  [- ] pywin32 없음. 구형 .ppt 는 PowerPoint 에서 .pptx 로 저장 후 입력")	pywin32 없음 안내.
+return 0 if ok else 1	전부 OK 면 0, 아니면 1.
+def cmd_switches(args) -> int:	switches 명령.
+cfg = _cfg(args)	위의 _cfg 로 설정을 만든다.
+print(f"스위치 (설정 파일: {cfg.config_path or '기본값'}) — {describe_switches(cfg)}\n")	제목 줄(설정 파일, 상태 요약).
+print(f"  {'묶음':<8} {'이름':<12} {'상태':<4} {'이름(영문)':<13} 지금 일어나는 일")	표 머리.
+for (group, label, state, what), s in zip(table_rows(cfg), SWITCHES):	표 행과 스위치 객체를 함께 돌며
+print(f"  {group:<8} {label:<12} {state:<4} {s.name:<13} {what}")	묶음·이름·상태·영문 이름·설명 출력.
+print("\n켜기: --on 이름 (여러 번), 전부: --on all. 끄기: --off 이름. 설정 파일에는 Config 필드 이름(예: rule_short_line = true)으로 적습니다.")	사용법 안내.
+return 0	성공.
+def _summary(res) -> str:	실행 결과 요약 한 줄을 만드는 함수 (CLI 와 UI 가 같이 쓴다).
+from .post import STATUS_CLF_OUT, STATUS_HOLD, STATUS_POST_OUT, STATUS_REVIEW, in_review_list, status_of	상태 상수와 함수.
+from collections import Counter	개수 세는 사전.
+info = res.info	실행 정보.
+grades = info.target_grades.split(",") if info.target_grades else ["A", "B"]	추출 등급 목록.
+listed = {g: sum(1 for ll in res.labeled if ll.label == g and in_review_list(ll)) for g in grades}	등급별 검토 목록 수.
+st = Counter(status_of(ll) for ll in res.labeled)	상태별 수.
+parts = ["검토 목록 " + ", ".join(f"{g} {c}" for g, c in listed.items()) + f" (합 {sum(listed.values())})",	검토 목록 등급별 수,
+f"{STATUS_HOLD} {st.get(STATUS_HOLD, 0)}, {STATUS_CLF_OUT} {st.get(STATUS_CLF_OUT, 0)}, {STATUS_POST_OUT} {st.get(STATUS_POST_OUT, 0)}",	보류·분류기 제외·후처리 제외 수,
+f"전처리 제외 줄 {sum(v for k, v in res.removed.items() if k != '빈 줄')}"]	전처리 제외 줄 수.
+if info.gold_lines:	골드 반영이 있으면
+parts.append(f"골드 반영 {info.gold_lines}문장(분류기와 달랐던 것 {info.gold_changed})")	골드 반영 요약.
+if info.prev_run_id:	직전 실행이 있으면
+ch = info.changes or {}	변경 수 사전.
+parts.append(f"직전 실행 대비 진입 {ch.get('entered', 0)}, 이탈 {ch.get('left', 0)}, 등급 변경 {ch.get('grade', 0)}")	진입·이탈·등급 변경 수.
+return " | ".join(parts)	' | ' 로 이어 한 줄.
+def _run_files(files: list[Path], cfg: Config, out_dir: Path | None, quiet: bool, use_gold: bool = True, with_ext: bool | None = None):	extract 와 run-all 이 함께 쓰는 실행 루프 함수.
+"""extract 와 run-all 이 함께 쓰는 실행 루프. 임베더·분류기는 한 번만 만든다."""	설명 문자열.
+from collections import Counter	개수 세는 사전.
+from .cache import LabelCache	캐시.
+from .classify import load_classifier	분류기 로더.
+from .pipeline import extract, output_path	extract 와 출력 경로.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시 (설정에 따라 파일 또는 메모리).
+results = []	결과 목록.
+try:	닫기를 보장.
+emb = _embedder_or_none(cfg, cache, required=False)	임베더(필요할 때만).
+clf = load_classifier(cfg, emb)	분류기 한 번 로드.
+taken = Counter(output_path(f, out_dir) for f in files)	파일마다 출력 경로를 세어 둔다. 같은 경로가 둘이면(같은 이름의 pdf 와 pptx) 뒤에서 확장자를 붙인다.
+t_all = time.time()	전체 시작 시각.
+for f in files:	파일마다 반복.
+print(f"\n== {f}")	구분선과 파일 이름 출력.
+t0 = time.time()	이 파일의 시작 시각.
+def status(msg, _t0=t0):	상태 콜백. '임베딩 120문장' 같은 문구를 받는다.
+if not quiet:	조용히 모드가 아니면
+print(f"  {msg}  {time.time() - _t0:6.1f}s", flush=True)	상태 메시지 출력.
+ext = with_ext if with_ext is not None else taken[output_path(f, out_dir)] > 1	같은 이름이 둘이면 확장자 포함.
+out, res = extract(f, cfg, out_dir, status=status, with_ext=ext, embedder=emb, classifier=clf, use_gold=use_gold)	실행(임베더·분류기 재사용).
+info = res.info	실행 정보.
+print(f"  → {out}")	출력 경로.
+print(f"  페이지 {info.pages_total} (판정 {info.pages_labeled}, 제외 {info.pages_excluded}, 이미지 {info.pages_image}) "	페이지 수 요약,
+f"| 분류기 {info.classifier} | 판정 {info.clf_lines}문장, 캐시 적중 {info.cache_hits} | {info.elapsed_sec:.1f}초")	분류기·판정 수·캐시·시간.
+print("  " + _summary(res))	요약 한 줄.
+for s in info.settings_diff:	달라진 설정마다
+print(f"  달라진 설정: {s}")	출력.
+for w in info.warnings:	경고마다
+print(f"  안내: {w}")	안내(리더 메모).
+results.append((out, res))	결과 보관.
+if len(files) > 1:	파일이 여럿이면
+print(f"\n총 {len(files)}개 파일, {time.time() - t_all:.0f}초")	총 수와 총 시간.
+finally:	finally:
+cache.close()	캐시 닫기.
+return results	결과 목록 반환.
+def cmd_extract(args) -> int:	extract 명령의 본체. 정수(0 성공, 1 실패)를 돌려준다.
+from .pipeline import find_inputs	입력 찾기.
+cfg = _cfg(args)	설정.
+files = find_inputs([Path(p) for p in args.paths])	입력 경로들(파일·폴더)에서 처리할 파일 목록을 만든다. 폴더면 안의 pdf·pptx·ppt 를 전부.
+if not files:	하나도 없으면
+print("처리할 파일이 없습니다 (.pdf, .pptx, .ppt)")	안내문을 찍고
+return 1	실패(1)로 끝낸다.
+print(f"ip-finder {__version__} | 분류기 {CLASSIFIER_NAMES[cfg.classifier]} | 스위치 {describe_switches(cfg)}")	버전·분류기·스위치 한 줄.
+_run_files(files, cfg, Path(args.out_dir) if args.out_dir else None, args.quiet)	실행 루프.
+return 0	성공.
+def cmd_pages(args) -> int:	pages 명령: 페이지 제목·관련성·가중치만.
+"""페이지 제목·관련성·가중치·제외 여부만 보여 준다 (분류기 없음). 키워드와 페이지 규칙 스위치를 손볼 때 쓴다."""	pages 설명 문자열.
+from .pipeline import prepare	전처리 함수.
+from .readers import load_document	읽기 함수.
+cfg = _cfg(args)	설정.
+for p in args.paths:	경로마다
+doc = load_document(Path(p), layout=cfg.layout_analysis)	레이아웃 스위치대로 읽기.
+prepare(doc, cfg)	전처리 (LLM 없음).
+print(f"\n== {p}  (읽기 {doc.reader}, 스위치 {describe_switches(cfg)})")	읽기 방식과 스위치 출력.
+print(f"  {'p':>3} {'관련성':<4} {'가중치':>5} {'근거':<18} {'상태':<22} 제목")	표 머리.
+for pg in doc.pages:	페이지마다
+print(f"  {pg.no:>3} {pg.relevance:<4} {pg.weight:>5.2f} {pg.weight_reason[:18]:<18} {(pg.excluded_reason or '판정 ' + str(len(pg.active_lines())) + '문장')[:22]:<22} {pg.title[:50]}  [{pg.title_source}]")	번호, 관련성, 가중치, 근거, 상태(제외 사유 또는 '판정 N문장'), 제목, 제목 출처.
+return 0	성공.
+def _page_set(spec: str) -> set[int]:	'3-5,8' 같은 문자열을 페이지 번호 집합으로 바꾸는 함수.
+""""3-5,8" → {3, 4, 5, 8}"""	설명.
+out: set[int] = set()	결과 집합.
+for part in spec.split(","):	쉼표로 나눠
+part = part.strip()	공백 제거.
+if not part:	비면
+continue	건너뛴다.
+if "-" in part:	'-' 가 있으면 범위.
+a, b = part.split("-", 1)	시작과 끝.
+out.update(range(int(a), int(b) + 1))	그 범위의 번호들 추가.
+else:	Ollama 에 못 닿으면
+out.add(int(part))	번호 하나.
+return out	집합.
+def cmd_layout(args) -> int:	layout 명령: 읽기 진단.
+"""읽기 진단: 레이아웃 분석이 고른 제목과 블록(종류·글씨 크기·굵기·위치)을 보여 준다."""	layout 설명 문자열.
+from .readers import layout_report	진단 함수.
+pages = _page_set(args.pages) if args.pages else None	--pages 가 있으면 집합으로, 없으면 전체.
+for p in args.paths:	경로마다
+print("\n".join(layout_report(Path(p), pages)))	진단 줄들을 출력.
+print("\n종류: heading=제목 크기 줄, list_item=목록 항목, paragraph=문단. 제목 출처: font=제목 크기, bold=굵은 글씨, first-line=위쪽 첫 줄.")	종류·제목 출처 안내.
+return 0	성공.
+# ------------------------------------------------------------------ 정확도 관리	절 주석: 정확도 관리.
+def cmd_gold_sheet(args) -> int:	gold-sheet 명령.
+from .cache import LabelCache	캐시.
+from .classify import load_classifier	분류기 로더.
+from .eval import make_gold_sheet	골드 시트 함수.
+cfg = _cfg(args)	설정.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시 (설정에 따라 파일 또는 메모리).
+try:	오류 대비.
+emb = _embedder_or_none(cfg, cache, required=False)	임베더.
+clf = load_classifier(cfg, emb)	분류기.
+out = make_gold_sheet(Path(args.file), cfg, Path(args.out) if args.out else None, embedder=emb, classifier=clf)	골드 시트 생성(임베더·분류기 전달).
+finally:	finally:
+cache.close()	캐시 닫기.
+print(f"골드 시트 생성: {out}\n'정답' 열에서 틀린 등급만 고친 뒤 'ip-finder eval {out}' 로 채점하고, 'ip-finder compare-classifiers' 로 분류기를 비교하세요.")	다음 단계 안내.
+return 0	성공.
+def cmd_feedback(args) -> int:	feedback 명령.
+from .eval import import_feedback	가져오기 함수.
+from .history import History	이력.
+cfg = _cfg(args)	설정.
+rec = import_feedback(Path(args.result), Path(args.out) if args.out else None, confirm_unmarked=args.confirm_unmarked,	결과 엑셀 → 골드 (저장 경로, 빈 행 확인 옵션,
+history=History(cfg.history_dir()), gold_dir=cfg.gold_dir())	이력 객체, 골드 폴더).
+print(f"피드백 {rec['feedback_rows']}행 → 골드 시트 {rec['gold']} (추가 {rec['added']}, 갱신 {rec['updated']}, 건너뜀 {rec['skipped']}, 골드 총 {rec['gold_rows']}행)")	결과 요약: 행 수, 추가·갱신·건너뜀, 총 행 수.
+if rec["corrections"]:	수정 종류가 있으면
+print("  내역: " + ", ".join(f"{k} {v}" for k, v in sorted(rec["corrections"].items())))	'A→B 3, B 확인 5' 꼴.
+if rec["feedback_rows"] == 0:	피드백이 없었으면
+print("  피드백 열이 비어 있습니다. 결과 Excel 의 검토 목록·보류·제외 시트 '피드백' 열에 O / X / A~D 를 적고 저장한 뒤 다시 실행하세요.")	피드백 열이 비었을 때 안내.
+return 0	성공.
+def _gold_rows(cfg: Config, paths: list[str] | None) -> list[dict]:	골드 행을 읽는 도우미(여러 명령이 쓴다).
+from .goldmap import find_gold_files, load_gold	골드 파일 찾기·읽기.
+files = find_gold_files(paths, None) if paths else cfg.gold_files()	지정 경로가 있으면 그것, 없으면 설정의 골드.
+rows: list[dict] = []	행 목록.
+for f in files:	파일마다 반복.
+rows.extend(load_gold(f))	파일마다 읽어 합친다.
+if not rows:	없으면
+raise SystemExit(f"골드 문장이 없습니다 (찾은 파일 {len(files)}개: {cfg.gold_dir() if not paths else paths}). 먼저 gold-sheet 또는 feedback 으로 골드를 만드세요.")	안내와 함께 종료.
+print(f"골드 {len(rows)}문장, 파일 {len(files)}개: " + ", ".join(f.name for f in files))	골드 요약 출력.
+return rows	행 반환.
+def cmd_train(args) -> int:	train 명령.
+from .cache import LabelCache	캐시.
+from .classify import REGISTRY	등록부.
+from .eval import train_classifier	학습 함수.
+from .pipeline import make_embedder	임베더 함수.
+cfg = _cfg(args)	설정.
+name = args.classifier or cfg.classifier	학습할 분류기 이름.
+if not REGISTRY[name].trainable:	학습형이 아니면
+print(f"{name} 은 학습하지 않는 분류기입니다. 학습형: " + ", ".join(k for k, c in REGISTRY.items() if c.trainable))	안내.
+return 1	실패로 끝낸다.
+from .goldmap import find_gold_files	골드 파일 찾기.
+golds = find_gold_files(args.gold, None) if args.gold else cfg.gold_files()	지정 또는 설정.
+if not golds:	없으면
+print("골드 파일이 없습니다.")	안내.
+return 1	실패.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시 (설정에 따라 파일 또는 메모리).
+try:	오류 대비.
+emb = None	임베더 없음.
+if REGISTRY[name].needs_embedding:	임베딩이 필요하면
+emb = make_embedder(cfg, cache)	임베더.
+if not emb.available():	임베딩 모델이 없으면
+print(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 → ollama pull {cfg.embed_model}")	안내,
+return 1	실패.
+stats = train_classifier(golds, cfg, Path(args.out) if args.out else None, emb, name=name)	학습 실행(name 전달).
+finally:	finally:
+cache.close()	캐시 닫기.
+print(f"분류기 {CLASSIFIER_NAMES[name]}: 학습 문장 {stats['n']}개 (등급별 {stats['counts']}), 임베딩 {stats['embed_model'] or '-'}")	결과 요약.
+print(f"5겹 교차검증 정확도 {stats['cv_accuracy']:.1%}, 학습 데이터 정확도 {stats['train_accuracy']:.1%}")	교차검증·학습 정확도.
+print(f"저장: {stats['out']}  → extract --classifier {name} 또는 설정 classifier = \"{name}\" 로 씁니다.")	저장 경로와 사용법.
+if stats["n"] < 100:	100문장 미만이면
+print("참고: 문장 100개 미만이면 교차검증 값이 크게 흔들립니다. 분류기 비교(compare-classifiers)의 표준편차를 함께 보세요.")	골드 적을 때 안내.
+return 0	성공.
+def cmd_eval(args) -> int:	eval 명령.
+from .cache import LabelCache	캐시.
+from .classify import load_classifier	분류기 로더.
+from .eval import evaluate, print_report	채점·출력 함수.
+cfg = _cfg(args)	설정.
+emb = clf = None	임베더·분류기 없음으로 시작.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시 (설정에 따라 파일 또는 메모리).
+try:	오류 대비.
+if not args.stored:	다시 돌리는 경우
+emb = _embedder_or_none(cfg, cache, required=False)	다시 판정하면 임베더.
+clf = load_classifier(cfg, emb)	분류기.
+report = evaluate(Path(args.gold), cfg, rerun=not args.stored, embedder=emb, classifier=clf)	채점(임베더·분류기 전달).
+finally:	finally:
+cache.close()	캐시 닫기.
+print_report(report)	결과 출력.
+return 0	성공 종료.
+def cmd_history(args) -> int:	history 명령.
+from .history import History	이력.
+cfg = _cfg(args)	설정.
+h = History(cfg.history_dir())	이력 객체.
+if not h.enabled:	꺼져 있으면
+print("이력 저장이 꺼져 있습니다 (history_path).")	안내,
+return 1	실패.
+runs = h.list_runs(limit=args.limit)	최근 실행 목록 (--limit 개).
+if not runs:	없으면
+print(f"저장된 실행이 없습니다 ({h.root}).")	안내,
+return 0	성공.
+print(f"실행 이력 ({h.root}), 최근 {len(runs)}건")	머리.
+for r in runs:	실행마다
+st, s = r.get("stats", {}), r.get("settings", {})	통계와 설정.
+ch = r.get("changes") or {}	변경 수.
+line = (f"  {r.get('run_id', '')}  {r.get('source_name', '')}  {s.get('classifier', '')}/{s.get('embed_model', '')}"	이력 한 줄: ID, 파일, 분류기/임베딩,
+f"  목록 {st.get('list', 0)} (A{st.get('A', 0)} B{st.get('B', 0)} C{st.get('C', 0)} D{st.get('D', 0)}) 보류 {st.get('held', 0)}")	목록 수(등급별), 보류 수.
+if r.get("prev_run_id"):	직전 실행이 있으면
+line += f"  | 이전 대비 진입 {ch.get('entered', 0)} 이탈 {ch.get('left', 0)} 등급 {ch.get('grade', 0)}"	진입·이탈·등급 변경 덧붙임.
+print(line)	출력.
+for d in r.get("settings_diff", []):	달라진 설정마다
+print(f"        달라진 설정: {d}")	출력.
+fb = h.feedback_log()	피드백 이력.
+if fb:	있으면
+print(f"\n피드백 이력 {len(fb)}건")	머리.
+for f in fb[-args.limit:]:	최근 limit 건.
+print(f"  {f.get('time', '')}  {Path(f.get('result', '')).name} → {Path(f.get('gold', '')).name}: {f.get('feedback_rows', 0)}행 "	시각, 결과 파일 → 골드 파일, 행 수,
++ ", ".join(f"{k} {v}" for k, v in sorted((f.get("corrections") or {}).items())))	수정 종류.
+tr = h.train_log()	학습 이력.
+if tr:	있으면
+print(f"\n학습 이력 {len(tr)}건")	머리.
+for t in tr[-args.limit:]:	최근 limit 건.
+print(f"  {t.get('time', '')}  {t.get('classifier', '')} {t.get('n', 0)}문장, 교차검증 {t.get('cv_accuracy', 0):.1%} → {t.get('out', '')}")	학습 이력 한 줄(분류기 이름 포함).
+return 0	성공.
+# ------------------------------------------------------------------ 실험 (비교)	절 주석: 실험.
+def _write_md(path: Path, text: str) -> None:	Markdown 저장 도우미.
+path.write_text(text, encoding="utf-8")	쓰기.
+def cmd_compare_classifiers(args) -> int:	compare-classifiers 명령.
+from .cache import LabelCache	캐시.
+from .classify import REGISTRY, needs_embedding	등록부와 needs_embedding.
+from .compare import classifiers_markdown, compare_classifiers, write_classifier_compare	비교 함수와 출력 함수.
+from .pipeline import make_embedder	임베더 함수.
+cfg = _cfg(args)	설정.
+names = [n.strip() for n in (args.names or ",".join(REGISTRY)).split(",") if n.strip()]	비교할 이름들(기본 전부).
+rows = _gold_rows(cfg, args.gold)	골드 행.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시 (설정에 따라 파일 또는 메모리).
+try:	오류 대비.
+emb = make_embedder(cfg, cache) if any(needs_embedding(n) for n in names) else None	임베딩이 필요한 분류기가 있으면 임베더.
+result = compare_classifiers(rows, cfg, emb, names, k=args.folds, repeats=args.repeats, seed=args.seed,	비교 실행.
+status=lambda m: print(f"  {m}", flush=True))	상태 메시지는 바로 출력.
+finally:	finally:
+cache.close()	캐시 닫기.
+out = Path(args.out) if args.out else Path.cwd() / "분류기_비교.xlsx"	출력 경로(기본 현재 폴더).
+write_classifier_compare(result, out)	Excel.
+md = classifiers_markdown(result)	Markdown.
+_write_md(out.with_suffix(".md"), md)	.md 저장.
+print("\n" + md)	화면 출력.
+print(f"→ {out}\n→ {out.with_suffix('.md')}")	경로 안내.
+return 0	성공.
+def cmd_run_all(args) -> int:	run-all 명령.
+import json	JSON.
+from .pipeline import find_inputs	입력 찾기.
+cfg = _cfg(args)	설정.
+files = find_inputs([Path(p) for p in args.paths])	입력 경로들(파일·폴더)에서 처리할 파일 목록을 만든다. 폴더면 안의 pdf·pptx·ppt 를 전부.
+if not files:	하나도 없으면
+print("처리할 파일이 없습니다 (.pdf, .pptx, .ppt)")	안내문을 찍고
+return 1	실패.
+out_dir = Path(args.out)	결과 폴더.
+out_dir.mkdir(parents=True, exist_ok=True)	만들기.
+cfg = cfg.copy(use_gold=False if args.no_gold or True else cfg.use_gold, history_path="")   # 실험: 골드 반영·이력 끔	실험 설정: 골드 반영·이력 끔.
+print(f"run-all → {out_dir} | 분류기 {CLASSIFIER_NAMES[cfg.classifier]} | 스위치 {describe_switches(cfg)} | 골드 반영 끔")	머리 줄.
+t0 = time.time()	이 파일의 시작 시각.
+results = _run_files(files, cfg, out_dir, args.quiet, use_gold=False, with_ext=True)	실행 루프(골드 반영 끔, 확장자 포함 이름).
+manifest = {"version": __version__, "name": out_dir.name, "settings": cfg.fingerprint(), "files": [str(f) for f in files],	실행 목록 파일: 버전·이름·설정·입력,
+"outputs": [str(o) for o, _ in results], "elapsed_sec": round(time.time() - t0, 1),	출력·시간,
+"created": time.strftime("%Y-%m-%dT%H:%M:%S")}	생성 시각.
+(out_dir / "run_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")	JSON 저장.
+print(f"\n설정·파일 목록 저장: {out_dir / 'run_manifest.json'}  — 다른 결과 폴더와 비교: ip-finder compare-runs <폴더A> {out_dir}")	비교 명령 안내.
+return 0	성공.
+def cmd_compare_runs(args) -> int:	compare-runs 명령.
+from .compare import compare_records, gold_metrics, load_records, pair_records, runs_markdown, write_runs_compare	비교 도구.
+a = load_records(Path(args.a))	A 읽기.
+b = load_records(Path(args.b))	B 읽기.
+if not a or not b:	비었으면
+print(f"결과 파일이 없습니다 (A {len(a)}개, B {len(b)}개). *_검토후보.xlsx 파일이나 그 폴더를 주세요.")	안내.
+return 1	종료 코드 1.
+pairs = pair_records(a, b)	짝짓기.
+if not pairs:	짝이 없으면
+print("이름이 같은 보고서가 없어 짝지을 수 없습니다: A=" + ", ".join(r.name for r in a) + " / B=" + ", ".join(r.name for r in b))	안내.
+return 1	종료 코드 1.
+title_a = args.label_a or Path(args.a).name	A 표시 이름.
+title_b = args.label_b or Path(args.b).name	B 표시 이름.
+diffs = [compare_records(x, y) for x, y in pairs]	비교.
+gold = None	골드 없음으로 시작.
+if args.gold:	--gold 가 있으면
+cfg = _cfg(args)	설정.
+rows = _gold_rows(cfg, args.gold)	골드 행.
+tg = tuple(cfg.targets())	대상 등급.
+gold = [(gold_metrics(x, rows, tg), gold_metrics(y, rows, tg)) for x, y in pairs]	A·B 골드 지표.
+out = Path(args.out) if args.out else Path(args.b).with_name(f"비교_{Path(args.a).stem}_vs_{Path(args.b).stem}.xlsx") if Path(args.b).is_file() else Path(args.b) / f"비교_{Path(args.a).name}_vs_{Path(args.b).name}.xlsx"	출력 경로: 지정, 아니면 B 옆에 '비교_A_vs_B.xlsx'.
+write_runs_compare(diffs, out, title_a, title_b, gold)	Excel.
+md = runs_markdown(diffs, title_a, title_b, gold)	Markdown.
+_write_md(out.with_suffix(".md"), md)	.md.
+print(md)	출력.
+print(f"→ {out}\n→ {out.with_suffix('.md')}")	경로 안내.
+return 0	성공.
+def cmd_ladder(args) -> int:	ladder 명령.
+from .compare import default_ladder, ladder_markdown, load_ladder, run_ladder, write_ladder	사다리 도구.
+from .pipeline import find_inputs	입력 찾기.
+cfg = _cfg(args)	설정.
+files = find_inputs([Path(p) for p in args.paths])	입력 경로들(파일·폴더)에서 처리할 파일 목록을 만든다. 폴더면 안의 pdf·pptx·ppt 를 전부.
+if not files:	하나도 없으면
+print("처리할 파일이 없습니다 (.pdf, .pptx, .ppt)")	안내문을 찍고
+return 1	종료 코드 1.
+if args.ladder:	--ladder 가 있으면
+ladder = load_ladder(Path(args.ladder))	TOML 읽기.
+else:	아니면
+names = [n.strip() for n in args.steps.split(",")] if args.steps else None	--steps 로 스위치 이름 목록.
+ladder = default_ladder(names)	기본 사다리.
+if args.mode:	--mode 가 있으면
+ladder.mode = args.mode	덮어쓴다.
+gold_rows = None	골드 없음.
+if not args.no_gold_metrics:	골드 지표를 생략하지 않으면
+try:	오류 대비.
+gold_rows = _gold_rows(cfg, args.gold)	골드 행 읽기.
+except SystemExit as e:	골드가 없으면
+print(f"골드 없이 진행 (골드 지표 생략): {e}")	안내하고 계속.
+out_dir = Path(args.out) if args.out else Path.cwd() / f"ladder_{ladder.name}"	결과 폴더.
+print(f"사다리 {ladder.name} ({'누적' if ladder.mode == 'cumulative' else '단독'}), 칸 {len(ladder.steps)}개, 파일 {len(files)}개 → {out_dir}")	머리 줄.
+print("  칸 순서: 기준선 → " + " → ".join(s.label for s in ladder.steps))	칸 순서 출력.
+result = run_ladder(files, cfg, ladder, out_dir, gold_rows, status=lambda m: print(f"  {m}", flush=True))	사다리 실행.
+out = write_ladder(result, out_dir / f"사다리_{ladder.name}.xlsx")	Excel.
+md = ladder_markdown(result)	Markdown.
+_write_md(out.with_suffix(".md"), md)	.md.
+print("\n" + md)	출력.
+print(f"→ {out}\n→ {out.with_suffix('.md')}\n칸별 결과 파일은 {out_dir}/step-XX-… 폴더에 있습니다. 두 칸을 직접 비교: ip-finder compare-runs <칸 폴더A> <칸 폴더B>")	경로와 다음 단계 안내.
+return 0	성공.
+# ------------------------------------------------------------------ main	절 주석: main.
+def main(argv: list[str] | None = None) -> int:	진입 함수. argv 가 None 이면 실제 명령줄 인자.
+for stream in (sys.stdout, sys.stderr):	표준 출력과 오류 출력을
+try:	오류 대비.
+stream.reconfigure(encoding="utf-8", errors="replace")	UTF-8 로 (윈도우 콘솔의 한글 깨짐 방지, 못 쓰는 글자는 대체).
+except Exception:	지원하지 않는 환경이면
+pass	무시.
+ap = argparse.ArgumentParser(prog="ip-finder", description=f"보고자료에서 특허 검토 후보 문장을 추출해 등급을 붙인 Excel 을 만든다 (온디바이스). {STAGE}")	최상위 파서(설명에 단계 포함).
+sub = ap.add_subparsers(dest="cmd", required=True)	하위 명령 묶음. 명령은 필수.
+p = sub.add_parser("extract", help="PDF/PPTX(/.ppt) 또는 폴더를 처리해 <이름>_검토후보.xlsx 생성",	extract 명령 등록.
+epilog="윈도우에서는 파일이나 폴더를 extract.bat 위로 끌어다 놓아도 됩니다. 결과는 원본 옆에 <이름>_검토후보.xlsx 로 생깁니다.")	도움말 꼬리: 배치 파일에 끌어다 놓기 안내.
+p.add_argument("paths", nargs="+")	경로 인자 하나 이상.
+p.add_argument("--out-dir", help="결과를 모을 폴더 (기본: 원본 옆)")	--out-dir.
+p.add_argument("--no-history", action="store_true", help="실행 이력(변경 추적)을 남기지 않음")	--no-history.
+p.add_argument("-q", "--quiet", action="store_true")	-q / --quiet.
+_common(p)	공통 옵션 추가.
+p.set_defaults(func=cmd_extract)	이 명령의 처리 함수.
+p = sub.add_parser("switches", help="스위치 목록과 현재 상태 (무엇을 켜고 끌 수 있는지)")	switches 하위 명령.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_switches)	실행 함수.
+p = sub.add_parser("pages", help="페이지 제목·관련성·가중치·제외 여부만 표시 (분류기 없음)")	pages 하위 명령.
+p.add_argument("paths", nargs="+")	경로들.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_pages)	처리 함수.
+p = sub.add_parser("layout", help="읽기 진단: 레이아웃 분석이 고른 제목과 블록(종류·글씨 크기·굵기·위치) 표시")	layout 하위 명령.
+p.add_argument("paths", nargs="+")	경로들.
+p.add_argument("--pages", help='보여 줄 페이지 (예: "3-5,8"). 기본 전체')	--pages.
+p.set_defaults(func=cmd_layout)	처리 함수.
+p = sub.add_parser("ui", help="데스크톱 UI 실행 (Tkinter)")	ui 명령.
+p.set_defaults(func=lambda a: __import__("ip_finder.ui", fromlist=["main"]).main([]))	처리 함수: ui 모듈을 그때 가져와 main 실행 (Tk 가 없는 환경에서도 다른 명령은 동작하게).
+p = sub.add_parser("check", help="의존성, Ollama 연결, 임베딩 모델, 분류기 파일, 스위치 상태 확인")	check 하위 명령.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_check)	처리 함수.
+p = sub.add_parser("gold-sheet", help="골드 세트 라벨링용 엑셀 생성 (분류기 초안 라벨 포함, 기본 저장 위치 data/gold)")	gold-sheet 하위 명령.
+p.add_argument("file")	입력 파일.
+p.add_argument("--out", help="저장 경로 (기본: 골드 폴더 data/gold/<이름>_gold.xlsx)")	--out.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_gold_sheet)	처리 함수.
+p = sub.add_parser("feedback", help="결과 Excel 의 '피드백' 열(O/X/A~D)을 골드 시트로 가져오기")	feedback 하위 명령.
+p.add_argument("result", help="<이름>_검토후보.xlsx")	결과 엑셀.
+p.add_argument("--out", help="골드 시트 경로 (기본: 골드 폴더 data/gold/<이름>_gold.xlsx, 있으면 합침)")	--out.
+p.add_argument("--confirm-unmarked", action="store_true", help="검토 목록에서 피드백이 빈 행도 '맞음'으로 간주")	--confirm-unmarked.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_feedback)	처리 함수.
+p = sub.add_parser("train", help="골드로 학습형 분류기(knn, centroid, softmax, ovr, ngram) 학습 → data/classifiers/<이름>.npz")	train 하위 명령.
+p.add_argument("--out", help="분류기 저장 경로 (기본: classifier_dir/<이름>.npz)")	--out.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_train)	처리 함수.
+p = sub.add_parser("eval", help="골드 시트 하나를 현재 설정으로 다시 판정해 채점 (정확도·재현율·정밀도)")	eval 하위 명령.
+p.add_argument("gold")	골드 파일.
+p.add_argument("--stored", action="store_true", help="다시 돌리지 않고 시트에 저장된 라벨을 채점")	--stored.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_eval)	처리 함수.
+p = sub.add_parser("history", help="실행·피드백·학습 이력과 직전 실행 대비 변경 요약")	history 명령.
+p.add_argument("--limit", type=int, default=20)	--limit (기본 20).
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_history)	처리 함수.
+p = sub.add_parser("compare-classifiers", help="[실험] 골드 교차 검증으로 1차 분류기 후보 전부 비교 → 분류기_비교.xlsx + .md")	compare-classifiers 하위 명령.
+p.add_argument("--names", help="비교할 분류기 (쉼표). 기본 전부: " + ",".join(CLASSIFIER_NAMES))	--names.
+p.add_argument("--folds", type=int, default=5, help="교차 검증 겹 수 (기본 5)")	--folds.
+p.add_argument("--repeats", type=int, default=2, help="겹 나누기 반복 횟수 (기본 2, 표준편차 계산용)")	--repeats.
+p.add_argument("--seed", type=int, default=0)	--seed.
+p.add_argument("--out", help="결과 Excel 경로 (기본: 현재 폴더/분류기_비교.xlsx)")	--out.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_compare_classifiers)	실행 함수.
+p = sub.add_parser("run-all", help="[실험] 보고서 전부를 한 설정으로 돌려 이름 붙인 결과 폴더에 저장 (골드 반영·이력 끔)")	run-all 하위 명령.
+p.add_argument("paths", nargs="+")	경로들.
+p.add_argument("--out", required=True, help="결과 폴더 (예: results/s1-proto)")	--out(필수).
+p.add_argument("-q", "--quiet", action="store_true")	-q / --quiet.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_run_all)	실행 함수.
+p = sub.add_parser("compare-runs", help="[실험] 결과 Excel(또는 결과 폴더) 둘을 문장 단위로 비교 → 비교_*.xlsx + .md")	compare-runs 하위 명령.
+p.add_argument("a", help="이전·기준 결과 (파일 또는 폴더)")	a.
+p.add_argument("b", help="이후·비교 결과 (파일 또는 폴더)")	b.
+p.add_argument("--label-a", help="A 의 표시 이름 (기본: 경로 이름)")	--label-a.
+p.add_argument("--label-b", help="B 의 표시 이름")	--label-b.
+p.add_argument("--out", help="비교 Excel 경로")	--out.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_compare_runs)	실행 함수.
+p = sub.add_parser("ladder", help="[실험] 스위치를 한 칸씩 켜며 반복 실행하고 칸마다 변화를 비교 → 사다리_*.xlsx + .md")	ladder 하위 명령.
+p.add_argument("paths", nargs="+")	경로들.
+p.add_argument("--ladder", help="사다리 설정 TOML (기본: 스위치 전부를 순서대로)")	--ladder.
+p.add_argument("--steps", help="기본 사다리에서 쓸 스위치와 순서 (쉼표). 예: layout,short_line,korean")	--steps.
+p.add_argument("--mode", choices=["cumulative", "single"], help="cumulative: 누적(기본) / single: 기준선에 한 칸만")	--mode.
+p.add_argument("--out", help="결과 폴더 (기본: 현재 폴더/ladder_<이름>)")	--out.
+p.add_argument("--no-gold-metrics", action="store_true", help="골드 지표 계산 생략")	--no-gold-metrics.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_ladder)	실행 함수.
+args = ap.parse_args(argv)	인자를 해석한다.
+try:	오류 대비.
+return args.func(args)	해당 명령의 함수를 실행해 종료 코드를 돌려준다.
+except KeyboardInterrupt:	Ctrl+C 면
+print("\n중단됨 (임베딩 캐시는 다음 실행에서 재사용됩니다)")	Ctrl+C 안내.
+return 130	종료 코드 130 (관례).
+except SystemExit as e:	SystemExit 를 잡아
+if isinstance(e.code, str):	메시지 문자열이면
+print(e.code, file=sys.stderr)	표준 오류에 출력하고
+return 1	종료 코드 1.
+raise	그 밖은 그대로 던진다.
+except Exception as e:	그 밖의 오류면
+print(f"오류: {e}", file=sys.stderr)	오류 출력에 메시지.
+return 1	종료 코드 1.
+if __name__ == "__main__":	이 파일을 직접 실행했을 때만
+sys.exit(main())	main 의 종료 코드로 끝낸다.

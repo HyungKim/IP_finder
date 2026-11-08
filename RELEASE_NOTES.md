@@ -1,3 +1,27 @@
+# IP Finder 1.0.0.dev1 (rebuild 브랜치, 사전 릴리스) — 0단계: 1차 분류기만
+
+**이전 버전(0.6.x)이 설치된 PC 에서 올리기**: Source code (zip) 안의 내용물을 설치 폴더(`ui.bat` 가 있는 곳) 위에 덮어씁니다. `.venv`, `data\`, `ip_finder.toml` 은 그대로 남고 **새 패키지는 없습니다**(`install.bat` 재실행 불필요, wheel 번들은 0.5.x/0.6.x 와 같음). LLM 모델(qwen3)은 이 단계에서 쓰지 않으며 임베딩 모델 `bge-m3` 만 필요합니다.
+옛 설정 파일의 `mode`·`model` 등은 무시되고 `require_korean` 은 `rule_require_korean` 으로 읽힙니다. 0.6.x 의 학습 분류기 `data\classifier.npz` 는 형식이 달라 쓰지 않습니다(`ip-finder train --classifier softmax` 로 다시 학습). **기본값이 '스위치 전부 끔'이라 0.6.2 와 같은 결과를 보려면 `--on all` 또는 UI 의 '전부 켬'을 누르세요.**
+
+**무엇이 바뀌었나** — 판정 파이프라인을 처음부터 단계별로 다시 쌓기 시작했습니다. 이번 판은 0단계(기준선)와 1·2단계의 측정 도구입니다.
+
+- **LLM 2차 판정 제거**: 판정은 1차 분류기 하나입니다. `label/`·`llm/` 패키지와 프롬프트가 빠졌습니다(3단계에서 스위치로 다시 붙입니다).
+- **모든 규칙이 스위치**(기본 끔): 레이아웃 분석, 짧은 줄·한글 없음·긴 줄 분할·반복 문구·패턴 줄 제외, 페이지 제외·표지·페이지 가중치, 제목 보정·안전망. `ip-finder switches` 로 목록, `--on 이름`/`--off 이름`/`--on all` 로 조작, UI 추출 탭에 체크박스.
+- **원시 읽기 모드**(레이아웃 분석 끔): PDF 는 PyMuPDF 기본 추출 줄 그대로, PPTX 는 도형 순서대로 문단 그대로.
+- **1차 분류기 7종**을 설정 `classifier` 로 고릅니다: proto(원형 문장 코사인), knn, centroid, softmax, ovr, cue(단서어 규칙), ngram(글자 n-gram). 학습형은 `ip-finder train --classifier 이름` → `data\classifiers\이름.npz`.
+- **비교 도구** (모두 Excel + 보고서용 Markdown 요약):
+  - `compare-classifiers` / `compare_classifiers.bat`: 골드 층화 5겹 교차 검증 × 2회로 7종 비교 (정확도·표준편차·거시 F1·A·B 재현율·정밀도·문장별 판정·불일치).
+  - `run-all` / `run_all.bat`: 보고서 전부를 한 설정으로 결과 폴더에 저장 (골드 반영·이력 끔).
+  - `compare-runs` / `compare_runs.bat`: 결과 Excel(또는 폴더) 둘을 문장 단위로 맞춰 진입·이탈·등급 변경·합쳐짐·나뉨·새 문장·사라진 문장을 나란히 보여 줍니다. 결과 파일만으로 설정 차이도 읽습니다.
+  - `ladder` / `ladder.bat`: 스위치(또는 어떤 설정이든)를 한 칸씩 켜며 반복 실행하고 칸마다 변화를 비교합니다. 누적(직전 칸과 비교)·단독(기준선과 비교) 두 방식. 설정 예: `ladders\switches.toml`, `ladders\classifiers.toml`.
+- 결과 Excel: '전처리 제외' 시트(규칙에 걸린 줄과 사유), 문장 시트의 '확신' 열(분류기 신뢰도), '실행 정보'의 스위치 표와 '설정 …' 행. '2차 제외'·'1차 분류기/2차 LLM' 열은 없어졌습니다.
+- UI: 스위치 체크박스, 분류기 선택, '실험' 탭(사다리 실행, 결과 비교), 정확도 관리 탭에 '분류기 7종 비교'.
+- 문서: `docs/stages/` 에 단계별 가설·측정 방법·결과표(회사 PC 에서 채움).
+
+테스트 84건 통과 (가짜 샘플·가짜 임베더, Ollama 없이).
+
+---
+
 # IP Finder v0.6.2
 
 **이전 버전이 설치된 PC 에서 올리기**: Source code (zip) 안의 내용물을 설치 폴더(`ui.bat` 가 있는 곳) 위에 덮어쓰기만 하면 됩니다. `.venv`, `data\`, `ip_finder.toml` 은 그대로 남고 **새 패키지·모델은 없습니다**(`install.bat` 재실행 불필요). 첨부한 wheel 번들은 v0.5.x/v0.6.x 와 같습니다.

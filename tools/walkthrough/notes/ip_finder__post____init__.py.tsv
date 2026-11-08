@@ -1,0 +1,11 @@
+# ip_finder/post/__init__.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""후처리: 제목 기반 보정, 안전망, 섹션 묶기, 논의 포인트 템플릿, 점수(검토 목록/보류)."""	파일 설명.
+from .title_fix import apply_title_fix	제목 보정 함수.
+from .safety_net import apply_safety_net	안전장치 함수.
+from .sections import assign_sections, section_name	섹션 함수들.
+from .templates import discussion_point	논의 포인트 함수.
+from .scoring import (apply_scores, in_hold_list, in_review_list, is_stage1_out, is_stage2_out, status_of, REVIEW_GRADES,	점수 모듈에서 함수와 상태 상수를 가져온다(첫 줄).
+STATUS_REVIEW, STATUS_HOLD, STATUS_CLF_OUT, STATUS_POST_OUT, STATUS_PREP_OUT, STATUS_PAGE_OUT, STATUSES)	상태 상수 이어짐.
+__all__ = ["apply_title_fix", "apply_safety_net", "assign_sections", "section_name", "discussion_point",	공개 이름 목록.
+"apply_scores", "in_hold_list", "in_review_list", "is_stage1_out", "is_stage2_out", "status_of", "REVIEW_GRADES",	공개 이름 목록 이어짐.
+"STATUS_REVIEW", "STATUS_HOLD", "STATUS_CLF_OUT", "STATUS_POST_OUT", "STATUS_PREP_OUT", "STATUS_PAGE_OUT", "STATUSES"]	상태 상수들.

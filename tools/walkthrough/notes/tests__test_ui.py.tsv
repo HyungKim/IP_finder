@@ -1,0 +1,66 @@
+# tests/test_ui.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+import pytest	pytest.
+tk = pytest.importorskip("tkinter")	tkinter 없으면 건너뜀.
+from ip_finder.config import Config	설정.
+from ip_finder.models import LabeledLine	모델.
+from ip_finder.switches import SWITCHES	스위치.
+from ip_finder.ui import parse_patterns, patterns_text	UI 도우미 함수.
+def _ll(label, source="clf", stage_out=0):	LabeledLine 도우미.
+return LabeledLine(page_no=5, page_title="개선안 1", section="개선안", line_idx=1, text="문장", label=label, raw_label=label, source=source,	생성(첫 줄).
+clf_label=label, clf_conf=0.8, stage_out=stage_out)	이어짐.
+def test_ui_builds_and_fills(tmp_path):	UI 구성·채우기 테스트.
+try:	try.
+from ip_finder.ui import App	App.
+app = App(Config(use_cache=False, classifier_dir=str(tmp_path / "clf"), history_path=str(tmp_path / "hist"), gold_paths=[str(tmp_path / "gold")]))	임시 폴더 설정으로 창 생성.
+except tk.TclError as e:	디스플레이가 없으면
+pytest.skip(f"디스플레이 없음: {e}")	건너뜀.
+try:	try.
+assert app.nb.index("end") == 5	탭 다섯.
+app.add_files([str(tmp_path / "a.pptx"), str(tmp_path / "b.txt"), str(tmp_path / "a.pptx")])	파일 추가.
+assert list(app.files_list.get(0, "end")) == [str(tmp_path / "a.pptx")]	지원 형식만, 중복 없음.
+app.last_labeled = [_ll("A"), _ll("B", "gold"), _ll("X", stage_out=1), _ll("X?", stage_out=1), _ll("C", stage_out=2)]	가짜 결과 다섯.
+app.fill_results()	채우기.
+rows = app.tree.get_children()	행.
+assert len(rows) == 2 and app.tree.item(rows[1])["values"][8] == "골드"	검토 목록 2, 판정 골드.
+app.filter_var.set("보류")	보류 보기.
+app.fill_results()	채우기.
+assert len(app.tree.get_children()) == 1	1.
+app.filter_var.set("분류기 제외")	분류기 제외.
+app.fill_results()	채우기.
+assert len(app.tree.get_children()) == 1	1.
+app.filter_var.set("후처리 제외")	후처리 제외.
+app.fill_results()	채우기.
+assert len(app.tree.get_children()) == 1	1.
+app.filter_var.set("A")	A 보기.
+app.fill_results()	채우기.
+assert len(app.tree.get_children()) == 1	1.
+c = app.build_cfg()	설정 만들기.
+assert c.classifier == "proto" and all(getattr(c, s.field) is False for s in SWITCHES)	proto, 스위치 전부 끔.
+app.set_switches(True)	전부 켬.
+app.switch_vars["korean"].set(False)	한글만 끔.
+c = app.build_cfg()	설정.
+assert c.layout_analysis is True and c.rule_require_korean is False and c.page_weight_enabled is True	반영.
+assert app.pw_var is app.switch_vars["page_weight"]	가중치 변수 공유.
+app.clf_var.set(next(d for k, d in __import__("ip_finder.ui", fromlist=["CLASSIFIER_CHOICES"]).CLASSIFIER_CHOICES if k == "knn"))	분류기 콤보를 knn 으로.
+assert app.build_cfg().classifier == "knn"	반영.
+app.accept_var.set("0.7")	점수.
+app.low_var.set("0.2")	낮음 가중치.
+app.low_text.delete("1.0", "end")	키워드 지움.
+app.low_text.insert("1.0", "# 주석\n현황\n(고객|클레임)")	키워드 입력.
+app.grades_var.set("A·B·C·D  —  과제·계획까지")	등급 넷.
+c = app.build_cfg()	설정.
+assert c.accept_score == 0.7 and c.low_relevance_weight == 0.2 and c.targets() == ["A", "B", "C", "D"] and c.low_relevance_patterns == ["현황", "(고객|클레임)"]	값들.
+app.short_var.set("x")	잘못된 짧은 줄 기준.
+with pytest.raises(ValueError):	오류 기대.
+app.build_cfg()	만들기.
+app.short_var.set("10")	복구.
+app.low_text.insert("end", "\n(잘못된")	잘못된 정규식.
+with pytest.raises(ValueError):	오류 기대.
+app.build_cfg()	만들기.
+finally:	끝나면
+app.destroy()	창 닫기.
+def test_parse_patterns_roundtrip():	정규식 도우미 테스트.
+pats = ["(현황|실적)", "Action\\s*Plan"]	패턴.
+assert parse_patterns(patterns_text(pats)) == pats and parse_patterns("# 주석만\n") == []	왕복과 주석.
+with pytest.raises(ValueError):	오류 기대.
+parse_patterns("(열린 괄호")	잘못된 정규식.

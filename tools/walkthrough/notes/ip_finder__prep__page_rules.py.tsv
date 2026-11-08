@@ -1,0 +1,22 @@
+# ip_finder/prep/page_rules.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+from __future__ import annotations	새 문법 호환.
+import re	정규식.
+from ..config import Config	설정.
+from ..models import Document	문서 모델.
+IMAGE_PAGE = "이미지 페이지"	'이미지 페이지' 사유 문자열 (다른 모듈도 이 상수로 비교한다).
+def apply_page_rules(doc: Document, cfg: Config) -> None:	페이지 제외 규칙 함수.
+"""쪽 단위 제외. 글이 전혀 없는 쪽(이미지 페이지·본문 없음)은 스위치와 무관하게 판정할 것이 없어 늘 제외한다.	설명 첫 줄: 글 없는 쪽은 늘 제외.
+rule_page_exclude: 제목이 page_exclude_patterns 에 걸리는 쪽. rule_cover: 1쪽에 남은 줄이 cover_max_lines 이하이면 표지."""	설명: 두 스위치.
+patterns = [re.compile(p, re.IGNORECASE) for p in cfg.page_exclude_patterns] if cfg.rule_page_exclude else []	페이지 제외 스위치가 켜져 있을 때만 정규식을 준비한다.
+for page in doc.pages:	페이지마다
+page.excluded_reason = None	제외 사유를 비우고 시작.
+if not page.has_body and (page.has_graphics or not page.title.strip()):	본문이 없는데 그림이 있거나 제목도 없으면
+page.excluded_reason = IMAGE_PAGE	'이미지 페이지'.
+continue	그 페이지는 끝.
+hit = next((m.group(0) for p in patterns if (m := p.search(page.title))), None)	제목에 걸리는 첫 패턴의 매치 글자. (m := …) 는 '대입하면서 검사' 하는 바다코끼리 연산자. 없으면 None.
+if hit:	걸렸으면
+page.excluded_reason = f"제목 규칙: '{hit.strip()}'"	'제목 규칙: 목차' 처럼 사유 기록.
+elif cfg.rule_cover and page.no == 1 and len(page.active_lines()) <= cfg.cover_max_lines:	표지 스위치가 켜져 있고 1쪽이 짧으면 표지.
+page.excluded_reason = "표지"         # 줄 규칙이 거른 뒤(반복 문구·날짜·짧은 조각 제외) 남은 줄 수로 판단	'표지'.
+elif not page.has_body:	본문이 아예 없으면
+page.excluded_reason = "본문 없음"	'본문 없음'.

@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 
 from ..cache import LabelCache
-from ..llm.ollama_client import AbortableHTTP, CancelledError, LLMError, assert_local
+from ..ollama import AbortableHTTP, CancelledError, OllamaError, assert_local
 
 BATCH = 32
 
@@ -47,13 +47,13 @@ class OllamaEmbedder:
             res = self.http.post("/api/embed", body)
         except CancelledError:
             raise
-        except LLMError as e:
-            raise LLMError(f"임베딩 호출 실패: {e}") from e
+        except OllamaError as e:
+            raise OllamaError(f"임베딩 호출 실패: {e}") from e
         self.calls += 1
         self.seconds += time.time() - t0
         vecs = res.get("embeddings") or []
         if len(vecs) != len(inputs):
-            raise LLMError(f"임베딩 수 불일치: 기대 {len(inputs)}, 수신 {len(vecs)}")
+            raise OllamaError(f"임베딩 수 불일치: 기대 {len(inputs)}, 수신 {len(vecs)}")
         return vecs
 
     def embed(self, texts: list[str]) -> list[list[float]]:

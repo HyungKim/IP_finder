@@ -1,0 +1,29 @@
+# pyproject.toml — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+[build-system]	[build-system] 표: 패키지를 만들 때 쓰는 도구.
+requires = ["setuptools>=68"]	setuptools 68 이상이 필요하다.
+build-backend = "setuptools.build_meta"	빌드 뒷단 모듈 이름.
+[project]	[project] 표: 패키지 자체의 정보 시작.
+name = "ip-finder"	패키지 이름(pip 가 아는 이름).
+version = "1.0.0.dev1"	버전. ip_finder/__init__.py 의 __version__ 과 같게 유지한다.
+description = "보고자료(PDF/PPTX)에서 특허 검토 후보 문장을 온디바이스 분류기로 추출해 등급을 붙인 Excel 목록을 만든다 (rebuild: 단계별 재구성)"	한 줄 설명.
+readme = "README.md"	패키지 설명서로 README.md 를 쓴다는 표시.
+requires-python = ">=3.11"	파이썬 3.11 이상이 필요하다 (tomllib 가 3.11부터 표준 라이브러리에 있다).
+dependencies = [	설치할 때 함께 깔리는 외부 패키지 목록 시작.
+"pymupdf>=1.24,<2",	PyMuPDF: PDF 를 열어 글자 좌표를 읽는다. 2.x 는 아직 안 쓴다는 상한.
+"python-pptx>=0.6.23",	python-pptx: PPTX 슬라이드의 도형·글을 읽는다.
+"openpyxl>=3.1",	openpyxl: 엑셀 파일을 만들고 읽는다.
+"numpy>=1.26",	numpy: 임베딩 벡터와 분류기 행렬 계산.
+]	의존성 목록 끝.
+[project.optional-dependencies]	선택 의존성 묶음 시작.
+windows = ["pywin32>=306"]	windows 묶음: 구형 .ppt 변환용 pywin32.
+dev = ["pytest>=8"]	dev 묶음: 테스트용 pytest.
+[project.scripts]	명령줄 실행 파일 정의 시작.
+ip-finder = "ip_finder.cli:main"	ip-finder 명령 → ip_finder.cli 의 main 함수.
+ip-finder-ui = "ip_finder.ui:main"	ip-finder-ui 명령 → ip_finder.ui 의 main 함수.
+[tool.setuptools.packages.find]	패키지 찾기 설정.
+include = ["ip_finder*"]	ip_finder 로 시작하는 패키지만 포함(tests, tools 제외).
+[tool.setuptools.package-data]	코드 외 파일을 패키지에 넣는 설정.
+"ip_finder.eval" = ["rubric.md"]	eval 폴더의 rubric.md(등급 기준 문서)를 함께 설치한다.
+"ip_finder.classify" = ["*.json"]	classify 폴더의 JSON(원형 문장)을 함께 설치한다.
+[tool.pytest.ini_options]	pytest 설정.
+testpaths = ["tests"]	테스트는 tests 폴더에서 찾는다.

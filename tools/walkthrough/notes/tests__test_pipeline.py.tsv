@@ -1,0 +1,79 @@
+# tests/test_pipeline.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+from openpyxl import load_workbook	Excel 읽기.
+from ip_finder.config import Config	설정.
+from ip_finder.pipeline import extract, find_inputs, output_path, run_file	파이프라인 함수들.
+from ip_finder.post import STATUS_CLF_OUT, STATUS_REVIEW, in_review_list, status_of	상태 상수·함수.
+from ip_finder.report.xlsx import LINE_HEADERS, SETTING_PREFIX	열 이름과 설정 접두어.
+from ip_finder.switches import SWITCHES	스위치 목록.
+from tests.conftest import FakeEmbedder	가짜 임베더.
+def test_baseline_runs_classifier_on_every_line(sample_dir, cfg, fake_embedder, tmp_path):	기준선 실행 테스트.
+out, res = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, embedder=fake_embedder)	실행.
+assert out.exists() and res.info.reader == "raw" and res.info.classifier_name == "proto"	파일이 생기고 읽기 방식 raw, 분류기 proto.
+assert res.removed == {} and res.info.pages_excluded == 0                   # 기준선: 아무 규칙도 없음	아무 규칙도 없음: 제거 0, 제외 쪽 0.
+assert all(ll.source == "clf" and ll.clf_conf is not None for ll in res.labeled)	모두 분류기 판정, 신뢰도 있음.
+assert {status_of(ll) for ll in res.labeled} <= {STATUS_REVIEW, STATUS_CLF_OUT}	상태는 검토 목록 또는 분류기 제외뿐.
+assert any(in_review_list(ll) for ll in res.labeled)	검토 목록이 비지 않음.
+wb = load_workbook(str(out))	엑셀을 연다.
+assert wb.sheetnames == ["검토 목록", "보류", "분류기 제외 (참고)", "후처리 제외", "전처리 제외", "페이지", "변경 사항", "제외 페이지", "이미지 페이지", "실행 정보"]	시트 이름 열 개 순서.
+assert [c.value for c in wb["검토 목록"][1]] == LINE_HEADERS	열 이름.
+info = {r[0]: r[1] for r in wb["실행 정보"].iter_rows(min_row=2, values_only=True) if r and r[0]}	실행 정보 사전.
+assert info["읽기 방식"].startswith("원시") and "기준선" in info["스위치"]	읽기 방식·스위치 문구.
+assert all(f"{SETTING_PREFIX}{s.field}" in info for s in SWITCHES)       # compare-runs 가 읽는 설정 행	모든 스위치의 설정 행이 있다.
+assert all(info[f"{SETTING_PREFIX}{s.field}"] in (False, "False", 0) for s in SWITCHES)	값은 모두 끔.
+def test_all_switches_change_output(sample_dir, cfg_all, fake_embedder, tmp_path):	전부 켠 실행 테스트.
+out, res = extract(sample_dir / "sample_report.pptx", cfg_all, tmp_path, embedder=fake_embedder)	실행.
+assert res.info.reader == "layout" and res.removed["반복 문구"] >= 12 and res.info.pages_excluded >= 3	레이아웃, 반복 문구 12 이상, 제외 쪽 3 이상.
+wb = load_workbook(str(out))	엑셀을 연다.
+prep = [r for r in wb["전처리 제외"].iter_rows(min_row=2, values_only=True) if r[0] not in (None, "")]	전처리 제외 시트 행.
+assert prep and {r[1] for r in prep} <= {"전처리 제외", "페이지 제외"} and any(r[2] == "반복 문구" for r in prep)	상태 두 가지, 반복 문구 사유 존재.
+titles = [r[1] for r in wb["페이지"].iter_rows(min_row=2, values_only=True)]	페이지 시트 제목.
+assert any("개선안" in str(t) for t in titles)	개선안 제목이 있다.
+def test_each_switch_alone_is_harmless(sample_dir, cfg, fake_embedder):	스위치 하나씩 테스트.
+"""스위치를 하나씩만 켜도 실행이 끝나고, 켠 스위치가 실행 정보에 기록된다."""	설명 문자열.
+for s in SWITCHES:	스위치마다
+c = Config(**{**cfg.__dict__, s.field: True})	그 스위치만 켠 설정.
+res = run_file(sample_dir / "sample_report.pdf", c, embedder=fake_embedder)	실행.
+assert res.info.switches[s.name] is True and sum(res.info.switches.values()) == 1	실행 정보에 그 스위치만 켬.
+def test_classifier_without_embedding(sample_dir, cfg, tmp_path):	임베딩 없는 분류기 테스트.
+cfg.classifier = "cue"	cue.
+out, res = extract(sample_dir / "sample_report.pptx", cfg, tmp_path)         # 임베더 없이 동작	임베더 없이 실행.
+assert res.info.embed_model == "" and res.info.classifier.startswith("단서어 규칙")	임베딩 모델 빈 값, 분류기 설명.
+assert any(in_review_list(ll) for ll in res.labeled)	검토 목록 있음.
+def test_trained_classifier_file_required(sample_dir, cfg, fake_embedder):	학습 파일 없으면 오류 테스트.
+import pytest	pytest.
+cfg.classifier = "knn"	knn.
+with pytest.raises(FileNotFoundError):	FileNotFoundError 기대.
+run_file(sample_dir / "sample_report.pptx", cfg, embedder=fake_embedder)	실행.
+def test_cache_reuses_vectors(sample_dir, fake_embedder, tmp_path):	캐시 테스트.
+cfg = Config(use_cache=True, cache_path=str(tmp_path / "c.sqlite"), history_path="", embed_model="fake-embed", gold_paths=[str(tmp_path / "gold")])	캐시 켠 설정.
+from ip_finder.cache import LabelCache	캐시.
+from ip_finder.classify import OllamaEmbedder	임베더 클래스(존재 확인용).
+cache = LabelCache(cfg.cache_file())	캐시 열기.
+key = LabelCache.key("fake-embed", "embed", "접착제 변경")	열쇠.
+assert cache.get_vec(key) is None	처음엔 없음.
+cache.set_vec(key, [0.1, 0.2])	저장.
+assert cache.get_vec(key) == [0.1, 0.2] if False else abs(cache.get_vec(key)[1] - 0.2) < 1e-6	다시 읽으면 같은 값(float32 오차 허용).
+cache.close()	닫기.
+assert OllamaEmbedder is not None	클래스가 import 된다.
+def test_find_inputs(sample_dir):	입력 찾기 테스트.
+files = find_inputs([sample_dir])	폴더에서.
+assert [f.suffix for f in files] == [".pdf", ".pptx"]	pdf, pptx 순.
+assert output_path(files[0], with_ext=True).name == "sample_report_pdf_검토후보.xlsx"	확장자 포함 출력 이름.
+def test_page_weight_moves_low_pages_to_hold(sample_dir, cfg, fake_embedder, tmp_path):	페이지 가중치 테스트.
+cfg.page_weight_enabled = True	가중치 켬.
+cfg.low_relevance_patterns = ["개선안"]            # 샘플의 개선안 페이지를 일부러 낮음으로	개선안 쪽을 낮음으로.
+_, res = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, embedder=fake_embedder)	실행.
+low = [ll for ll in res.labeled if ll.page_weight < 1.0]	가중치 낮은 문장.
+assert low and all(ll.hold_reason.startswith("점수") for ll in low if ll.label in ("A", "B") and ll.stage_out == 0)	A·B 통과 문장은 점수 미달 보류.
+assert res.info.pages_low >= 1	낮음 쪽 수.
+def test_history_diff_between_runs(sample_dir, cfg, fake_embedder, tmp_path):	이력 비교 테스트.
+_, r1 = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, embedder=fake_embedder)	첫 실행.
+assert r1.info.run_id and not r1.info.prev_run_id	ID 있고 이전 없음.
+cfg.rule_short_line = True	짧은 줄 켬.
+out2, r2 = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, embedder=fake_embedder)	둘째 실행.
+assert r2.info.prev_run_id == r1.info.run_id	이전 ID 연결.
+assert any("짧은 줄 제외" in s for s in r2.info.settings_diff)	설정 차이에 스위치.
+assert r2.info.changes.get("gone", 0) > 0                                   # 짧은 줄이 사라짐	사라진 문장 있음.
+wb = load_workbook(str(out2))	Excel.
+rows = [r for r in wb["변경 사항"].iter_rows(min_row=2, values_only=True)]	변경 사항 행.
+assert rows[0][0] == "기준" and any(r[0] == "설정" and "짧은 줄" in str(r[3]) for r in rows)	기준 행과 설정 행.

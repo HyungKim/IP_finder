@@ -1,0 +1,140 @@
+# ip_finder/label/labeler.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""LLM 라벨링. 두 가지 호출 형태가 있다.	파일 설명: 두 호출 형태.
+- label_page: 페이지 하나를 한 번에. 입력은 제목 + 페이지 유형 힌트 + 번호 줄.	페이지 단위.
+- label_grouped: 분류기 1차를 통과한 후보 문장들을 페이지 유형별로 묶어 호출 (cascade 모드의 2차 판정).	묶음 단위 (cascade 2차).
+출력은 언제나 줄 수와 같은 길이의 라벨 배열. 캐시 키는 모델 + 프롬프트 버전 + 입력 텍스트의 해시."""	출력 형태와 캐시 키.
+from __future__ import annotations	새 문법 호환.
+from pathlib import Path	경로.
+from typing import Protocol	Protocol: '이런 메서드를 가진 것이면 된다' 는 타입 (가짜 클라이언트도 맞는다).
+from .. import PROMPT_VERSION	프롬프트 버전.
+from ..cache import LabelCache	캐시.
+from ..config import Config	설정.
+from ..models import GRADES, Document, LabeledLine, Line, Page, RunInfo	모델들.
+from ..prep.page_type import HINT_BY_KEY, page_type	유형 힌트 사전과 유형 함수.
+_PROMPTS = Path(__file__).parent / "prompts"	프롬프트 폴더 경로.
+def load_system_prompt(variant: str = "compact") -> str:	시스템 프롬프트 파일을 읽는 함수. 기본은 compact.
+name = "system_full.md" if variant == "full" else "system.md"	'full' 이면 system_full.md, 아니면 system.md.
+return (_PROMPTS / name).read_text(encoding="utf-8").strip()	prompts 폴더에서 읽어 양끝 공백 제거.
+SYSTEM_PROMPT = load_system_prompt()	모듈을 읽을 때 compact 판을 한 번 읽어 둔 상수 (테스트용).
+class LabelClient(Protocol):	클라이언트가 갖춰야 할 모양.
+model: str	모델 이름 속성.
+def chat_labels(self, system: str, user: str, n: int) -> list[str]: ...	chat_labels 메서드. '...' 은 내용 없음 (형태만 선언).
+def build_user_prompt(title: str, lines: list[Line], page_no: int | None = None, hint: str | None = None) -> str:	페이지 묶음의 사용자 메시지를 만드는 함수. 제목, 줄들, 페이지 번호, 힌트.
+head = f"[슬라이드 {page_no}] 제목: {title}" if page_no is not None else f"제목: {title}"	머리글: 페이지 번호가 있으면 '[슬라이드 N] 제목: …', 없으면 '제목: …'.
+if hint:	힌트가 있으면
+head += f"\n(페이지 유형: {hint})"	둘째 줄에 '(페이지 유형: …)'.
+body = [f"[{i}] {'  ' * ln.level}{ln.text}" for i, ln in enumerate(lines, 1)]	줄마다 '[i] 문장'. 번호는 1부터 다시, 계층만큼 공백 두 칸씩 들여쓰기.
+return "\n".join([head, *body])	머리글과 본문을 줄바꿈으로 이어 돌려준다.
+def build_group_prompt(hint: str | None, entries: list[tuple[str, str]]) -> str:	유형 묶음의 사용자 메시지. entries 는 (제목, 문장) 쌍들.
+"""entries = [(페이지 제목, 문장)]. 서로 다른 슬라이드의 문장을 한 유형으로 묶어 보낼 때."""	설명.
+head = f"(페이지 유형: {hint or '일반 페이지'}) 아래 문장들은 서로 다른 슬라이드에서 왔으며, 각 문장 앞 괄호는 그 슬라이드의 제목이다."	머리글: 유형 힌트와 '서로 다른 슬라이드에서 왔다' 는 설명.
+body = [f"[{i}] ({title[:20]}) {text}" for i, (title, text) in enumerate(entries, 1)]	줄마다 '[i] (제목 앞 20자) 문장'.
+return "\n".join([head, *body])	이어 돌려준다.
+def _chunks_by_chars(items: list, max_chars: int, text_of) -> list[list]:	항목들을 글자 수 기준으로 묶음으로 나누는 함수. text_of 는 항목에서 글을 꺼내는 함수.
+out: list[list] = []	묶음들의 목록.
+cur: list = []	현재 묶음.
+size = 0	현재 묶음의 글자 수.
+for it in items:	항목마다
+n = len(text_of(it))	이 항목의 글자 수.
+if cur and size + n > max_chars:	현재 묶음이 비어 있지 않고, 더하면 한도를 넘으면
+out.append(cur)	현재 묶음을 확정하고
+cur, size = [], 0	새 묶음 시작.
+cur.append(it)	항목을 현재 묶음에 넣고
+size += n	글자 수 누적.
+if cur:	마지막 묶음이 남아 있으면
+out.append(cur)	확정.
+return out	돌려준다.
+def _call(client: LabelClient, system: str, user: str, n: int, cache: LabelCache, info: RunInfo | None, where: str,	LLM 호출 하나를 캐시와 함께 처리하는 함수. where 는 경고에 적을 위치('p5'),
+cancel=None) -> list[str]:	cancel 은 중지 확인 함수.
+key = LabelCache.key(client.model, PROMPT_VERSION, system[:40] + user)	캐시 키: 모델, 프롬프트 버전, 시스템 앞 40자 + 사용자 메시지.
+labels = cache.get(key)	캐시에서 찾는다.
+if labels is None:	없으면
+if cancel is not None:	중지 확인 함수가 있으면
+cancel()                      # 중지 요청이면 여기서 Cancelled 예외	부른다 (중지 요청이면 여기서 예외로 빠져나감).
+try:	호출 오류를 잡기 위해 try.
+labels = client.chat_labels(system, user, n)	실제 LLM 호출. n 은 기대하는 라벨 수.
+cache.set(key, labels)	성공하면 캐시에 저장.
+except Exception as e:	어떤 오류든
+if type(e).__name__ == "CancelledError":	중지로 끊긴 것이면
+raise	그대로 위로.
+labels = ["?"] * n	아니면 전부 '?' 로 채우고
+if info is not None:	실행 정보가 있으면
+info.warnings.append(f"{where}: {e}")	경고에 위치와 오류 내용을 남긴다.
+if info is not None:	실행 정보가 있으면
+info.llm_calls += 1	LLM 호출 수 +1.
+elif info is not None:	캐시에 있었으면
+info.cache_hits += 1	캐시 적중 +1.
+return [lab if lab in GRADES else "?" for lab in labels]	라벨이 A~X 가 아니면 '?' 로 바꿔 돌려준다 (방어).
+def label_page(client: LabelClient, page: Page, cfg: Config, cache: LabelCache, info: RunInfo | None = None,	페이지 하나를 LLM 에 보내는 함수.
+system: str | None = None, cancel=None) -> dict[int, str]:	시스템 프롬프트와 중지 함수는 선택.
+"""{줄 번호: 라벨}. 판정 실패는 '?'."""	설명.
+system = system or load_system_prompt(cfg.prompt_variant)	시스템 프롬프트가 없으면 설정 판으로 읽는다.
+result: dict[int, str] = {}	결과 {줄 번호: 라벨}.
+active = page.active_lines()	활성 줄.
+if not active:	없으면
+return result	빈 결과.
+_, hint = page_type(page.title)	제목으로 유형 힌트 (키는 버림).
+for chunk in _chunks_by_chars(active, cfg.max_chars_per_call, lambda ln: ln.text):	1,400자 한도로 묶음을 나눠
+user = build_user_prompt(page.title, chunk, page.no, hint)	사용자 메시지 조립.
+labels = _call(client, system, user, len(chunk), cache, info, f"p{page.no}", cancel)	호출.
+for ln, lab in zip(chunk, labels):	줄과 라벨을 짝지어
+result[ln.idx] = lab	결과에 넣는다.
+return result	돌려준다.
+def label_grouped(client: LabelClient, entries: list[tuple[Page, Line]], cfg: Config, cache: LabelCache,	후보 문장들을 묶어 LLM 에 보내는 함수. entries 는 (페이지, 줄) 쌍들.
+info: RunInfo | None = None, system: str | None = None, cancel=None,	시스템 프롬프트·중지 함수·
+progress=None) -> dict[tuple[int, int], str]:	진행 콜백은 선택. {(페이지 번호, 줄 번호): 라벨} 을 돌려준다.
+"""후보 문장들을 묶어 호출. {(페이지, 줄): 라벨}	설명.
+cfg.group_by == "page" (기본): 페이지별로 묶어 제목·힌트를 머리에 한 번 쓴다 (페이지 문맥 유지, 호출 수 = 후보가 있는 페이지 수).	페이지별 묶음 설명.
+cfg.group_by == "type": 페이지 유형별로 묶고 문장마다 슬라이드 제목을 붙인다 (호출 수 적음)."""	유형별 묶음 설명.
+system = system or load_system_prompt(cfg.prompt_variant)	시스템 프롬프트가 안 넘어왔으면 설정 판으로 읽는다.
+result: dict[tuple[int, int], str] = {}	결과 사전.
+if getattr(cfg, "group_by", "page") != "type":	묶음 기준이 type 이 아니면 (기본 page)
+by_page: dict[int, list[tuple[Page, Line]]] = {}	페이지 번호 → 그 페이지의 (페이지, 줄) 목록.
+for page, ln in entries:	항목마다
+by_page.setdefault(page.no, []).append((page, ln))	페이지 번호 키에 넣는다 (setdefault 는 없으면 빈 리스트를 먼저 만든다).
+chunks = [(items[0][0], chunk) for _, items in sorted(by_page.items())	페이지 순서대로, 각 페이지를 1,400자 한도로 나눈 묶음들을 (페이지, 묶음) 쌍으로 나열.
+for chunk in _chunks_by_chars(items, cfg.max_chars_per_call, lambda e: e[1].text)]	묶음 나누기는 문장 글자 수 기준.
+for k, (page, chunk) in enumerate(chunks, 1):	묶음마다 번호를 붙여
+if progress is not None:	진행 콜백이 있으면
+progress(k, len(chunks), len(chunk))	(k번째, 전체, 문장 수) 알림.
+_, hint = page_type(page.title)	페이지 유형 힌트.
+user = build_user_prompt(page.title, [ln for _, ln in chunk], page.no, hint)	사용자 메시지 조립.
+labels = _call(client, system, user, len(chunk), cache, info, f"p{page.no}", cancel)	호출 (캐시 포함). 결과는 라벨 리스트.
+for (p, ln), lab in zip(chunk, labels):	(페이지, 줄) 과 라벨을 짝지어
+result[(p.no, ln.idx)] = lab	결과 사전에 넣는다.
+return result	돌려준다. (아래는 type 묶음 분기, 발췌 밖.)
+by_type: dict[str, list[tuple[Page, Line]]] = {}	(묶음 기준 type 분기) 유형 키 → (페이지, 줄) 목록.
+for page, ln in entries:	항목마다
+by_type.setdefault(page_type(page.title)[0], []).append((page, ln))	페이지 제목의 유형 키 아래에 넣는다.
+chunks = [(key, chunk) for key, items in by_type.items()	유형마다 1,200자(group_max_chars) 한도로 나눈 묶음들을 (유형, 묶음) 쌍으로.
+for chunk in _chunks_by_chars(items, cfg.group_max_chars, lambda e: e[1].text)]	묶음 나누기.
+for k, (key, chunk) in enumerate(chunks, 1):	묶음마다 번호를 붙여
+hint = HINT_BY_KEY.get(key)	유형 힌트.
+if progress is not None:	진행 콜백이 있으면
+progress(k, len(chunks), len(chunk))	알림.
+user = build_group_prompt(hint, [(p.title, ln.text) for p, ln in chunk])	유형 묶음 메시지 조립 (문장마다 슬라이드 제목).
+labels = _call(client, system, user, len(chunk), cache, info, f"묶음({key})", cancel)	호출. 경고 위치는 '묶음(유형)'.
+for (p, ln), lab in zip(chunk, labels):	(페이지, 줄) 과 라벨을 짝지어
+result[(p.no, ln.idx)] = lab	결과에.
+return result	돌려준다.
+def label_document(client: LabelClient, doc: Document, cfg: Config, cache: LabelCache, info: RunInfo,	llm 모드용 옛 함수 (현재 pipeline 은 label_pages 안에서 직접 처리한다).
+progress=None) -> list[LabeledLine]:	진행 콜백 선택.
+"""llm 모드: 모든 대상 페이지를 페이지별로 라벨링."""	설명.
+system = load_system_prompt(cfg.prompt_variant)	시스템 프롬프트.
+out: list[LabeledLine] = []	결과.
+targets = [p for p in doc.pages if p.excluded_reason is None and p.active_lines()]	대상 페이지.
+for k, page in enumerate(targets, 1):	페이지마다
+if progress:	진행 콜백이 있으면
+progress(k, len(targets), page)	알림.
+labels = label_page(client, page, cfg, cache, info, system)	페이지 호출.
+info.pages_labeled += 1	판정 페이지 수 +1.
+for ln in page.active_lines():	활성 줄마다
+lab = labels.get(ln.idx, "?")	라벨.
+notes = ["분할"] if ln.split_from else []	비고: 분할.
+if ln.source == "table":	표면
+notes.append("표")	'표'.
+elif ln.source == "diagram":	도형이면
+notes.append("도형")	'도형'.
+out.append(LabeledLine(page_no=page.no, page_title=page.title, section=page.section, line_idx=ln.idx,	LabeledLine 생성.
+text=ln.text, label=lab, raw_label=lab, notes=notes, source="llm"))	글·라벨·비고·출처.
+return out	돌려준다.

@@ -1,0 +1,9 @@
+# ip_finder/prep/__init__.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""전처리: 페이지 제외 규칙 → 줄 제거 규칙 → 번호 부여·분할 → 페이지 가중치. LLM을 쓰지 않는다."""	패키지 설명: 전처리 순서.
+from .page_rules import apply_page_rules	페이지 규칙 함수.
+from .line_rules import apply_line_rules	줄 규칙 함수.
+from .splitter import number_lines	번호 부여·분할 함수.
+from .page_type import page_type, TYPE_KEYS, HINT_BY_KEY	페이지 유형 함수와 상수.
+from .page_weight import apply_page_weights, page_weight, HIGH, LOW	가중치 함수와 상수.
+__all__ = ["apply_page_rules", "apply_line_rules", "number_lines", "page_type", "TYPE_KEYS", "HINT_BY_KEY",	밖에 공개하는 이름 목록.
+"apply_page_weights", "page_weight", "HIGH", "LOW"]	계속.

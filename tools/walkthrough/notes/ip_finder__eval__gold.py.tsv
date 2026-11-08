@@ -1,0 +1,62 @@
+# ip_finder/eval/gold.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""골드 세트 라벨링 시트. 모델 초안 라벨을 '정답' 열에 미리 채워 두고, 사용자는 틀린 것만 고친다.	파일 설명: 초안 라벨을 채운 골드 시트.
+이 파일은 실제 보고서 문장을 담으므로 회사 PC의 프로젝트 바깥 폴더에만 둔다."""	실제 문장이 담기므로 프로젝트 밖에 둔다는 주의.
+from __future__ import annotations	새 문법 호환.
+from pathlib import Path	경로.
+from openpyxl import Workbook	엑셀 통합 문서.
+from openpyxl.styles import Alignment, Font, PatternFill	엑셀 서식 (정렬, 글꼴, 채우기).
+from .. import __version__	프로그램 버전(메타 시트에 적는다).
+from ..config import Config	설정.
+from ..pipeline import run_file	파이프라인.
+from ..goldmap import GOLD_HEADERS, GOLD_SUFFIX	골드 열 제목과 파일 꼬리.
+RUBRIC_PATH = Path(__file__).parent / "rubric.md"	등급 기준 문서 경로(eval 폴더로 옮겨짐).
+GOLD_WIDTHS = (6, 18, 8, 24, 5, 70, 10, 10, 11, 8, 7, 7, 8, 30)	골드 시트 열 너비 14개.
+SOURCE_NAME = {"clf": "분류기", "gold": "골드"}	판정 주체 이름.
+GUIDE = [	안내 시트 문구 시작.
+"정답 열에 A / B / C / D / X 중 하나를 적습니다. 모델 라벨이 미리 채워져 있으니 틀린 것만 고치세요.",	정답 적는 법.
+"X는 기술 내용이 없거나 특허팀과 논의할 가치가 없는 문장입니다. 정밀도 우선이므로 판정이 어려우면 X로 두고 메모에 이유를 적으세요.",	X 의 뜻과 정밀도 우선.
+"채점: ip-finder eval <이 파일>   (현재 설정으로 다시 판정해 채점)   /   --stored (저장된 라벨을 채점)",	채점 명령.
+"학습: ip-finder train --classifier knn <이 파일> [다른 골드 ...]   → data/classifiers/knn.npz 저장. 비교: ip-finder compare-classifiers",	안내문: 학습·비교 명령.
+"결과 Excel의 '피드백' 열에 적은 내용은 ip-finder feedback <결과.xlsx> 로 이 형식의 골드 시트에 합쳐집니다.",	피드백 명령.
+]	끝.
+def write_gold_workbook(out: Path, rows: list[list], meta: list[tuple[str, str]]) -> Path:	골드 통합 문서를 쓰는 함수. 행들과 메타 (항목, 값) 목록.
+wb = Workbook()	새 통합 문서.
+ws = wb.active	첫 시트.
+ws.title = "라벨링"	이름 '라벨링'.
+ws.append(GOLD_HEADERS)	열 제목 행.
+for c in range(1, len(GOLD_HEADERS) + 1):	열마다
+ws.cell(row=1, column=c).font = Font(bold=True)	굵게,
+ws.cell(row=1, column=c).fill = PatternFill("solid", fgColor="CFD8DC")	회색 배경.
+for r in rows:	행마다
+ws.append(list(r))	추가.
+for i, w in enumerate(GOLD_WIDTHS, 1):	열 너비 설정.
+ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = w	열 글자를 셀에서 얻어 너비 지정.
+for row in ws.iter_rows(min_row=2):	둘째 행부터
+for cell in row:	모든 셀
+cell.alignment = Alignment(wrap_text=True, vertical="top")	줄바꿈·위쪽 정렬.
+ws.freeze_panes = "A2"	첫 행 고정.
+ws2 = wb.create_sheet("안내")	'안내' 시트.
+for line in [*GUIDE, "", *RUBRIC_PATH.read_text(encoding="utf-8").splitlines()]:	안내 문구 + 빈 줄 + 루브릭 파일의 줄들을
+ws2.append([line])	한 줄씩 A 열에.
+ws2.column_dimensions["A"].width = 120	A 열 너비 120.
+ws3 = wb.create_sheet("메타")	'메타' 시트.
+for k, v in meta:	(항목, 값) 마다
+ws3.append([k, v])	한 행.
+out.parent.mkdir(parents=True, exist_ok=True)	폴더가 없으면 만든다.
+wb.save(str(out))	저장.
+return out	경로를 돌려준다.
+def make_gold_sheet(path: Path, cfg: Config, out: Path | None = None, embedder=None, classifier=None) -> Path:	골드 시트 생성 함수. 임베더·분류기를 받아 재사용한다.
+"""초안 라벨은 분류기 판정 그대로(골드 반영 없음). 기본 저장 위치는 설정의 골드 폴더(data/gold)."""	설명 문자열.
+res = run_file(path, cfg, embedder=embedder, classifier=classifier, use_gold=False)	골드 반영 없이 한 번 실행.
+out = out or cfg.gold_dir() / f"{path.stem}{GOLD_SUFFIX}"	저장 경로가 없으면 골드 폴더/<이름>_gold.xlsx.
+rows = []	행 목록.
+for n, ll in enumerate(res.labeled, 1):	문장마다 번호를 붙여
+answer = "X" if ll.raw_label in ("X", "X?") else ("" if ll.raw_label == "?" else ll.raw_label)	정답 초안: X·X? 는 X, ? 는 빈칸, 나머지는 원시 라벨.
+rows.append([n, path.name, ll.page_no, ll.page_title, ll.line_idx, ll.text, ll.raw_label, ll.label,	행: 번호, 파일 이름, 페이지, 제목, 줄, 문장, 모델 라벨, 후처리 라벨,
+SOURCE_NAME.get(ll.source, ll.source),	판정 주체 열.
+round(ll.clf_conf, 3) if ll.clf_conf is not None else "",	확신 (있으면 소수 셋째 자리),
+float(ll.score), float(ll.page_weight), answer, ""])	점수, 가중치, 정답 초안, 메모 빈칸.
+meta = [("파일", str(path)), ("프로그램 버전", __version__), ("1차 분류기", res.info.classifier or "-"),	메타 시트: 파일, 버전, 분류기,
+("임베딩 모델", res.info.embed_model or "-"), ("읽기 방식", res.info.reader),	임베딩 모델, 읽기 방식,
+("스위치", ", ".join(f"{k}={'켬' if v else '끔'}" for k, v in res.info.switches.items())), ("생성", res.info.started_at)]	스위치 상태, 생성 시각.
+return write_gold_workbook(out, rows, meta)	통합 문서로 저장 (라벨링·안내·메타 세 시트).

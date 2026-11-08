@@ -1,0 +1,69 @@
+# ip_finder/switches.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""켜고 끄는 스위치 목록. 읽기·전처리·후처리의 규칙 하나하나가 스위치이고, 기본값은 전부 끔(기준선)이다.	파일 설명: 스위치 목록.
+사다리 실행(ladder)은 이 목록의 순서대로 한 칸씩 켜 가며 결과가 어떻게 달라지는지 비교한다.	설명: 사다리와의 관계.
+스위치를 추가하려면 Config 에 bool 필드를 만들고 여기 SWITCHES 에 한 줄을 넣으면 CLI·UI·사다리·실행 정보에 모두 나타난다."""	설명: 스위치 추가 방법.
+from __future__ import annotations	새 문법 호환 선언.
+from dataclasses import dataclass	dataclass 장식자.
+@dataclass(frozen=True)	frozen=True: 만든 뒤 바꿀 수 없는 값 객체.
+class Switch:	스위치 하나를 나타내는 클래스.
+name: str        # 짧은 영문 키. 사다리 설정 파일과 CLI(--on/--off)에서 쓴다	영문 키(CLI·사다리 설정에서 쓰는 이름).
+field: str       # Config 의 필드 이름	Config 의 필드 이름.
+label: str       # 한글 이름 (Excel·UI)	한글 이름.
+group: str       # 읽기 | 줄 규칙 | 페이지 규칙 | 후처리	묶음 이름.
+off: str         # 껐을 때 무엇이 일어나는가	껐을 때의 설명.
+on: str          # 켰을 때 무엇이 일어나는가	켰을 때의 설명.
+SWITCHES: list[Switch] = [	스위치 11개의 목록. 이 순서가 기본 사다리 순서다.
+Switch("layout", "layout_analysis", "레이아웃 분석", "읽기",	레이아웃 분석 스위치.
+"PDF 는 PyMuPDF 가 주는 줄을 순서대로, PPTX 는 도형 순서대로 문단을 그대로 읽는다",	껐을 때: 원시 읽기.
+"다단 읽기 순서, 문단 묶기, 제목·표·도형 구분, ▪·| 로 나열된 항목 나누기"),	켰을 때: 레이아웃 분석.
+Switch("short_line", "rule_short_line", "짧은 줄 제외", "줄 규칙",	짧은 줄 제외.
+"모든 줄을 판정한다", "공백 제외 글자수가 short_line_chars(기본 10) 이하인 줄은 후보에서 뺀다"),	끔/켬 설명.
+Switch("korean", "rule_require_korean", "한글 없음 제외", "줄 규칙",	한글 없음 제외.
+"영어·숫자·기호만 있는 줄도 판정한다", "한글이 한 글자도 없는 줄은 후보에서 뺀다"),	끔/켬 설명.
+Switch("split_long", "rule_split_long", "긴 줄 분할", "줄 규칙",	긴 줄 분할.
+"줄을 그대로 둔다", "split_len(기본 80자)을 넘는 줄은 문장 부호에서 나눈다"),	끔/켬 설명.
+Switch("repeated", "rule_repeated_line", "반복·고정 문구 제외", "줄 규칙",	반복·고정 문구 제외.
+"반복되는 줄도 판정한다", "repeated_line_min_pages(기본 3)쪽 이상 같은 줄과 stoplist 의 문구는 후보에서 뺀다"),	끔/켬 설명.
+Switch("pattern", "rule_pattern_lines", "패턴 줄 제외", "줄 규칙",	패턴 줄 제외.
+"숫자만·담당자·짧은 일정/금액 줄도 판정한다", "숫자만, '담당:' 으로 시작, 30자 이하의 일정·금액 줄은 후보에서 뺀다"),	끔/켬 설명.
+Switch("page_exclude", "rule_page_exclude", "페이지 제외", "페이지 규칙",	페이지 제외.
+"모든 쪽을 판정한다", "제목이 page_exclude_patterns(목차·일정·비용·감사 등)에 걸리는 쪽은 통째로 뺀다"),	끔/켬 설명.
+Switch("cover", "rule_cover", "표지 제외", "페이지 규칙",	표지 제외.
+"1쪽도 판정한다", "1쪽에 남은 줄이 cover_max_lines(기본 4) 이하이면 표지로 보고 뺀다"),	끔/켬 설명.
+Switch("page_weight", "page_weight_enabled", "페이지 가중치", "페이지 규칙",	페이지 가중치.
+"모든 쪽의 가중치 1.0", "제목이 관련성 낮음 키워드에 걸리는 쪽은 가중치 low_relevance_weight(기본 0.4)"),	끔/켬 설명.
+Switch("title_fix", "title_fix", "제목 기반 보정", "후처리",	제목 기반 보정.
+"분류기 등급 그대로", "원인·문제 유형 쪽에서 변경 동사 없는 A 는 C 로 내린다"),	끔/켬 설명.
+Switch("safety_net", "safety_net", "안전망", "후처리",	안전망.
+"X 는 그대로 제외", "X 인데 기술 단서어가 있으면 X? 로 보류 시트에 남긴다"),	끔/켬 설명.
+]	목록 끝.
+BY_NAME = {s.name: s for s in SWITCHES}	이름으로 찾는 사전.
+BY_FIELD = {s.field: s for s in SWITCHES}	Config 필드 이름으로 찾는 사전.
+GROUPS = ["읽기", "줄 규칙", "페이지 규칙", "후처리"]	묶음 이름 순서(UI 체크박스 열 순서).
+def switch_state(cfg) -> dict[str, bool]:	설정 객체에서 {이름: 켬 여부} 를 뽑는다.
+"""{스위치 이름: 켬 여부} (SWITCHES 순서)."""	설명 문자열.
+return {s.name: bool(getattr(cfg, s.field)) for s in SWITCHES}	스위치마다 getattr 로 필드 값을 읽어 bool 로.
+def set_switch(cfg, name: str, on: bool) -> None:	이름으로 스위치 하나를 켜거나 끈다.
+if name not in BY_NAME:	모르는 이름이면
+raise ValueError(f"모르는 스위치: {name} (가능: {', '.join(BY_NAME)})")	가능한 이름을 보여 주며 오류.
+setattr(cfg, BY_NAME[name].field, bool(on))	해당 필드에 값을 쓴다.
+def set_all(cfg, on: bool) -> None:	전부 켜거나 끈다.
+for s in SWITCHES:	모든 스위치를 돌며
+setattr(cfg, s.field, bool(on))	필드에 값을 쓴다.
+def describe(cfg) -> str:	현재 상태를 한 줄 글로.
+"""실행 정보·로그용 한 줄. 예: '켬: 레이아웃 분석, 짧은 줄 제외 / 끔: 나머지 9개'"""	설명 문자열.
+state = switch_state(cfg)	상태 사전.
+on = [BY_NAME[n].label for n, v in state.items() if v]	켠 것의 한글 이름 목록.
+off = [BY_NAME[n].label for n, v in state.items() if not v]	끈 것의 한글 이름 목록.
+if not on:	하나도 안 켰으면
+return "전부 끔 (기준선)"	기준선이라고 적는다.
+if not off:	모두 켰으면
+return "전부 켬"	전부 켬.
+return f"켬: {', '.join(on)} / 끔: {', '.join(off)}"	아니면 켠 것과 끈 것을 나란히.
+def table_rows(cfg) -> list[tuple[str, str, str, str]]:	표 행(묶음, 이름, 상태, 지금 일어나는 일) 목록.
+"""(묶음, 이름, 켬/끔, 지금 일어나는 일) — Excel 실행 정보와 CLI switches 명령이 쓴다."""	설명 문자열.
+rows = []	빈 목록.
+for s in SWITCHES:	스위치마다
+on = bool(getattr(cfg, s.field))	켬 여부를 읽고
+rows.append((s.group, s.label, "켬" if on else "끔", s.on if on else s.off))	켜졌으면 on 설명, 꺼졌으면 off 설명을 넣는다.
+return rows	행 목록을 돌려준다.

@@ -1,0 +1,109 @@
+# ip_finder/classify/linear.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""선형 분류기 두 종류. 둘 다 경사하강법으로 학습하고 numpy 만 쓴다.	파일 설명 첫 줄.
+- SoftmaxClassifier: 소프트맥스 회귀(다항 로지스틱). 등급 전체에 걸친 확률 분포 하나를 낸다. 입력 = 임베딩 + 단서 특성, 표준화.	설명: 소프트맥스.
+- OneVsRestClassifier: 일대다 로지스틱. 등급마다 '이 등급이냐 아니냐' 시그모이드를 따로 두어 어느 등급에도 확신이 없으면 전부 낮게 나온다.	설명: 일대다.
+- NgramClassifier: 임베딩 없이 글자 n-gram 특성으로 소프트맥스 회귀. 임베딩이 꼭 필요한지 보는 비교 기준."""	설명: n-gram.
+from __future__ import annotations	새 문법 호환 선언.
+import numpy as np	numpy.
+from .base import Batch, Classifier, Prediction, label_indices, predictions_from_scores, present_labels, softmax	공통 틀.
+from .features import ngram_matrix, with_cues	특성 함수.
+def _standardize_fit(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:	표준화 통계(평균·표준편차) 계산.
+mu = X.mean(axis=0)	열 평균.
+sigma = X.std(axis=0) + 1e-6	열 표준편차(0 방지).
+return mu.astype(np.float32), sigma.astype(np.float32)	float32 로 반환.
+def train_softmax(Z: np.ndarray, y_idx: np.ndarray, k: int, *, l2: float, epochs: int, lr: float) -> tuple[np.ndarray, np.ndarray]:	소프트맥스 회귀 학습 함수.
+"""교차 엔트로피 + L2 를 경사하강법으로. Z 는 이미 표준화(또는 정규화)된 입력."""	설명 문자열.
+n, d = Z.shape	표본 수·차원.
+Y = np.zeros((n, k), dtype=np.float32)	정답 원핫 행렬.
+Y[np.arange(n), y_idx] = 1.0	정답 자리에 1.
+W = np.zeros((k, d), dtype=np.float32)	가중치 0 으로 시작.
+b = np.zeros(k, dtype=np.float32)	편향 0.
+for _ in range(epochs):	정해진 횟수 반복.
+P = softmax(Z @ W.T + b)	현재 확률.
+G = P - Y	오차(확률 − 정답).
+W -= lr * (G.T @ Z / n + l2 * W)	가중치 갱신(기울기 + L2).
+b -= lr * G.mean(axis=0)	편향 갱신.
+return W, b	결과.
+def train_logistic_ovr(Z: np.ndarray, y_idx: np.ndarray, k: int, *, l2: float, epochs: int, lr: float) -> tuple[np.ndarray, np.ndarray]:	일대다 로지스틱 학습 함수.
+"""등급마다 독립된 이진 로지스틱 회귀. 출력은 등급별 시그모이드(합이 1 이 아님)."""	설명 문자열.
+n, d = Z.shape	표본 수·차원.
+Y = np.zeros((n, k), dtype=np.float32)	원핫.
+Y[np.arange(n), y_idx] = 1.0	정답 자리 1.
+W = np.zeros((k, d), dtype=np.float32)	가중치.
+b = np.zeros(k, dtype=np.float32)	편향.
+for _ in range(epochs):	반복.
+P = 1.0 / (1.0 + np.exp(-(Z @ W.T + b)))	등급별 시그모이드.
+G = P - Y	오차.
+W -= lr * (G.T @ Z / n + l2 * W)	가중치 갱신.
+b -= lr * G.mean(axis=0)	편향 갱신.
+return W, b	결과.
+class _LinearBase(Classifier):	선형 분류기 공통 부모.
+trainable = True	학습형.
+l2 = 1e-3	L2 세기.
+epochs = 600	반복 횟수.
+lr = 0.2	학습률.
+standardize = True	표준화 여부.
+def __init__(self, cfg=None):	생성자.
+super().__init__(cfg)	부모 생성자.
+self.W = self.b = self.mu = self.sigma = None	가중치·편향·평균·표준편차는 학습 후 채움.
+def features(self, batch: Batch) -> np.ndarray:	특성 만들기(하위 클래스).
+raise NotImplementedError	미구현.
+def _trainer(self):	학습 함수 고르기(하위 클래스).
+raise NotImplementedError	미구현.
+def _z(self, X: np.ndarray) -> np.ndarray:	표준화 적용.
+return (X - self.mu) / self.sigma if self.standardize else X	표준화하면 (X−μ)/σ, 아니면 그대로.
+def fit(self, batch: Batch, y: list[str]) -> None:	학습.
+X = self.features(batch)	특성 행렬.
+self.labels = present_labels(y)	골드에 있는 등급.
+if self.standardize:	표준화하면
+self.mu, self.sigma = _standardize_fit(X)	통계 계산.
+else:	아니면
+self.mu, self.sigma = np.zeros(X.shape[1], np.float32), np.ones(X.shape[1], np.float32)	평균 0·표준편차 1 로 두어 식이 같게.
+self.W, self.b = self._trainer()(self._z(X), label_indices(y, self.labels), len(self.labels),	학습 함수 호출(표준화 입력, 등급 번호, 등급 수,
+l2=self.l2, epochs=self.epochs, lr=self.lr)	초매개변수).
+def _scores(self, batch: Batch) -> np.ndarray:	점수 행렬(하위 클래스).
+raise NotImplementedError	미구현.
+def predict(self, batch: Batch) -> list[Prediction]:	판정.
+if len(batch) == 0:	빈 배치면
+return []	빈 목록.
+if self.W is None:	학습 안 됐으면
+raise RuntimeError(f"{self.name}: 학습되지 않은 분류기 (ip-finder train --classifier {self.name})")	오류.
+return predictions_from_scores(self._scores(batch), self.labels)	점수 → Prediction(신뢰도 = 1위 점수).
+def _arrays(self):	저장할 배열.
+return {"W": self.W, "b": self.b, "mu": self.mu, "sigma": self.sigma}	네 가지.
+def _restore(self, a):	복원.
+self.W, self.b, self.mu, self.sigma = a["W"], a["b"], a["mu"], a["sigma"]	되돌리기.
+class SoftmaxClassifier(_LinearBase):	소프트맥스 회귀 클래스.
+name = "softmax"	이름.
+label = "소프트맥스 회귀"	한글 이름.
+needs_embedding = True	임베딩 필요.
+def features(self, batch: Batch) -> np.ndarray:	특성 = 임베딩 + 단서.
+return with_cues(batch.vectors, batch.texts, batch.page_types)	with_cues.
+def _trainer(self):	학습 함수.
+return train_softmax	소프트맥스.
+def _scores(self, batch: Batch) -> np.ndarray:	점수.
+return softmax(self._z(self.features(batch)) @ self.W.T + self.b)      # 확률 → 신뢰도 = 1위 확률	확률 분포.
+class OneVsRestClassifier(_LinearBase):	일대다 클래스.
+name = "ovr"	이름.
+label = "일대다 로지스틱"	한글 이름.
+needs_embedding = True	임베딩 필요.
+def features(self, batch: Batch) -> np.ndarray:	특성.
+return with_cues(batch.vectors, batch.texts, batch.page_types)	with_cues.
+def _trainer(self):	학습 함수.
+return train_logistic_ovr	일대다.
+def _scores(self, batch: Batch) -> np.ndarray:	점수.
+return 1.0 / (1.0 + np.exp(-(self._z(self.features(batch)) @ self.W.T + self.b)))   # 등급별 시그모이드. 모두 낮으면 '모름'에 가깝다	등급별 시그모이드(합 1 아님).
+class NgramClassifier(_LinearBase):	n-gram 클래스.
+name = "ngram"	이름.
+label = "글자 n-gram + 소프트맥스"	한글 이름.
+needs_embedding = False	임베딩 없음.
+standardize = False          # 희소한 n-gram 수치를 표준화하면 드문 n-gram 이 과대해진다. 길이 1 정규화만 쓴다	표준화 끔(희소 특성).
+lr = 0.5	학습률 더 크게.
+epochs = 400	반복 수.
+l2 = 1e-4	L2 더 약하게.
+def features(self, batch: Batch) -> np.ndarray:	특성.
+return ngram_matrix(batch.texts)	n-gram 행렬.
+def _trainer(self):	학습 함수.
+return train_softmax	소프트맥스.
+def _scores(self, batch: Batch) -> np.ndarray:	점수.
+return softmax(self.features(batch) @ self.W.T + self.b)	확률.

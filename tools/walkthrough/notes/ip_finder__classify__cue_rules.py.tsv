@@ -1,0 +1,35 @@
+# ip_finder/classify/cue_rules.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""단서어 규칙 분류기(기준선). 임베딩도 학습도 없이 정규식만으로 등급을 매긴다.	파일 설명 첫 줄.
+'기계학습이 정말 필요한가'를 숫자로 보이기 위한 비교 기준이지 실제로 쓰려는 분류기가 아니다.	설명: 비교 기준 용도.
+순서: 비기술 단어 → X, 계획 단어 → D, 변경 동사 → A, 단위·효과 단어 → B, 문제 단어 → C, 나머지 X.	설명: 규칙 순서.
+규칙이 걸리면 신뢰도 0.7, 아무 규칙도 안 걸려 X 가 된 경우 0.55."""	설명: 신뢰도.
+from __future__ import annotations	새 문법 호환 선언.
+from ..cues import CHANGE_VERBS, EFFECT_RE, NONTECH_RE, PLAN_RE, PROBLEM_RE, UNIT_RE	정규식들.
+from .base import Batch, Classifier, LABELS, Prediction	공통 틀.
+class CueRuleClassifier(Classifier):	규칙 분류기 클래스.
+name = "cue"	이름.
+label = "단서어 규칙 (기준선)"	한글 이름.
+needs_embedding = False	임베딩 없음.
+trainable = False	학습 없음.
+@staticmethod	정적 메서드.
+def rule(text: str) -> tuple[str, str]:	문장 하나에 규칙 적용.
+"""(등급, 걸린 규칙 이름)"""	설명 문자열.
+if NONTECH_RE.search(text):	비기술 단어가 있으면
+return "X", "비기술 단어"	X.
+if PLAN_RE.search(text):	계획 단어면
+return "D", "계획 단어"	D.
+if CHANGE_VERBS.search(text):	변경 동사면
+return "A", "변경 동사"	A.
+if UNIT_RE.search(text) or EFFECT_RE.search(text):	단위나 효과 단어면
+return "B", "단위·효과 단어"	B.
+if PROBLEM_RE.search(text):	문제 단어면
+return "C", "문제 단어"	C.
+return "X", ""	아무것도 아니면 X.
+def predict(self, batch: Batch) -> list[Prediction]:	판정.
+out = []	결과 목록.
+for t in batch.texts:	문장마다
+label, why = self.rule(t)	규칙 적용.
+conf = 0.7 if why else 0.55	걸렸으면 0.7, 아니면 0.55.
+scores = {g: (conf if g == label else (1 - conf) / (len(LABELS) - 1)) for g in LABELS}	등급별 점수: 1위에 신뢰도, 나머지에 균등.
+out.append(Prediction(label, conf, scores, conf, conf - (1 - conf) / (len(LABELS) - 1)))	Prediction.
+return out	목록 반환.

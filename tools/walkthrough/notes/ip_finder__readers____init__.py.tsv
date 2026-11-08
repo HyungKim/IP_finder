@@ -1,0 +1,50 @@
+# ip_finder/readers/__init__.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""입력 파일을 공통 Document 모델로 읽는다. 원본은 절대 수정하지 않는다.	파일 설명 첫 줄.
+layout=True(레이아웃 분석 스위치 켬): 다단 읽기 순서·문단 묶기·제목·표·도형 구분·▪| 항목 나누기.	설명: layout=True 의 뜻.
+layout=False(끔, 기준선): PDF 는 PyMuPDF 가 주는 줄을 그대로, PPTX 는 도형 순서대로 문단을 그대로. 첫 줄(또는 제목 자리)이 제목."""	설명: layout=False 의 뜻.
+from __future__ import annotations	새 문법 호환.
+from dataclasses import replace	dataclass 복사 도우미 (일부 필드만 바꾼 복사본).
+from pathlib import Path	경로.
+from ..models import Document	문서 모델.
+from ._text import split_items	항목 나누기 함수.
+SUPPORTED = {".pdf", ".pptx", ".ppt"}	지원 확장자 집합.
+def load_document(path: str | Path, layout: bool = True) -> Document:	파일을 Document 로 읽는 진입 함수. layout 인자가 레이아웃 분석 스위치.
+p = Path(path)	Path 객체로 통일.
+suffix = p.suffix.lower()	확장자를 소문자로 ('.PDF' 도 '.pdf' 로).
+if suffix == ".pdf":	PDF 면
+from .pdf_reader import read_pdf	PDF 리더를 가져와
+doc = read_pdf(p, layout=layout)	PDF: layout 을 넘겨 읽는다.
+elif suffix == ".pptx":	PPTX 면
+from .pptx_reader import read_pptx	PPTX 리더를 가져와
+doc = read_pptx(p, layout=layout)	PPTX: layout 을 넘겨 읽는다.
+elif suffix == ".ppt":	구형 PPT 면
+from .ppt_convert import convert_ppt_to_pptx	변환 함수와
+from .pptx_reader import read_pptx	PPTX 리더를 가져와
+converted = convert_ppt_to_pptx(p)	먼저 .pptx 로 바꾸고 (윈도우 PowerPoint 필요)
+doc = read_pptx(converted, layout=layout)	변환된 .pptx 도 layout 을 넘겨 읽는다.
+doc.path = p	문서의 경로는 원래 .ppt 로 되돌려 둔다 (출력 이름이 원본 기준이 되게).
+else:	그 밖의 확장자면
+raise ValueError(f"지원하지 않는 형식: {p.name} (지원: {', '.join(sorted(SUPPORTED))})")	지원하지 않는다는 오류를 낸다.
+doc.reader = "layout" if layout else "raw"	읽은 방식을 문서에 적는다(실행 정보·비교가 본다).
+return split_listed_items(doc) if layout else doc	레이아웃 모드에서만 ▪| 항목 나누기를 한다. 원시 모드는 줄 그대로.
+def split_listed_items(doc: Document) -> Document:	한 줄에 나열된 항목을 각각 한 줄로 나누는 함수.
+"""한 줄에 ▪·|(전각 ｜ 포함)로 나열된 항목은 각각 한 줄로 나눈다 (글머리 기호를 이어 쓴 항목, 셀을 세로줄로 구분한 글).	설명: ▪ 나 | 로 이어 쓴 항목, 셀을 세로줄로 구분한 글.
+계층·출처(본문/표/도형)는 그대로 물려받는다. 제목은 나누지 않는다."""	설명: 계층·출처는 그대로, 제목은 나누지 않는다.
+for page in doc.pages:	페이지마다
+new = []	새 줄 목록.
+for ln in page.lines:	줄마다
+parts = split_items(ln.text)	나눌 수 있으면 조각 목록, 아니면 원문 하나짜리 목록.
+new.extend([ln] if len(parts) == 1 else [replace(ln, idx=0, text=part) for part in parts])	조각이 하나면 원래 줄 그대로, 둘 이상이면 같은 속성(replace 로 복사)에 글만 바꾼 새 줄들을 넣는다. idx=0 은 번호를 아직 안 매겼다는 뜻.
+page.lines = new	페이지의 줄 목록을 새 것으로 바꾼다.
+return doc	문서를 돌려준다.
+def layout_report(path: str | Path, pages: set[int] | None = None) -> list[str]:	읽기 진단 입구. 페이지 집합을 주면 그 페이지만.
+"""읽기 진단: 페이지마다 고른 제목과 블록(종류·글씨 크기·굵기·위치)을 줄 목록으로. LLM 없음."""	설명.
+p = Path(path)	경로.
+suffix = p.suffix.lower()	소문자 확장자.
+if suffix == ".pdf":	PDF 면
+from .pdf_reader import layout_report as _pdf	PDF 리더의 진단 함수를
+return _pdf(p, pages)	부른다.
+if suffix == ".pptx":	PPTX 면
+from .pptx_reader import layout_report as _pptx	PPTX 리더의 진단 함수를
+return _pptx(p, pages)	부른다.
+raise ValueError(f"진단은 .pdf 와 .pptx 만 지원합니다: {p.name}")	그 밖은 오류.

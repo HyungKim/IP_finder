@@ -1,0 +1,27 @@
+# 사다리 설정: 스위치를 한 칸씩 켜며 비교. 칸 순서를 바꾸거나 빼려면 [[step]] 을 편집한다.
+# 실행: ip-finder ladder 보고서폴더 --ladder ladders\switches.toml --out results\ladder_switches
+name = "switches"
+mode = "cumulative"        # cumulative: 누적(직전 칸과 비교) | single: 기준선에 한 칸만 켜고 기준선과 비교
+
+[[step]]
+name = "layout"            # 레이아웃 분석
+[[step]]
+name = "short_line"        # 짧은 줄 제외
+[[step]]
+name = "korean"            # 한글 없음 제외
+[[step]]
+name = "split_long"        # 긴 줄 분할
+[[step]]
+name = "repeated"          # 반복·고정 문구 제외
+[[step]]
+name = "pattern"           # 패턴 줄 제외 (숫자만·담당자·일정/금액)
+[[step]]
+name = "page_exclude"      # 페이지 제외
+[[step]]
+name = "cover"             # 표지 제외
+[[step]]
+name = "page_weight"       # 페이지 가중치
+[[step]]
+name = "title_fix"         # 제목 기반 보정
+[[step]]
+name = "safety_net"        # 안전망

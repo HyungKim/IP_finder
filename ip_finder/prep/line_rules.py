@@ -1,4 +1,9 @@
-"""줄 단위 제거. 반복 문구, 수동 목록, 숫자만, 한글 없음(영어·숫자·기호만), 담당자, 짧은 일정·금액 줄, 그리고 글자수가 short_line_chars 이하인 짧은 조각."""
+"""줄 단위 제거 규칙. 모두 스위치로 켜고 끈다(기본 끔).
+- rule_repeated_line: 여러 쪽에 반복되는 줄(머리말·꼬리말·쪽 번호)과 stoplist 의 고정 문구
+- rule_pattern_lines: 숫자만, '담당:' 으로 시작, 30자 이하의 일정·금액 줄(기술 단서어가 없을 때)
+- rule_require_korean: 한글이 한 글자도 없는 줄(영어·숫자·기호만)
+- rule_short_line: 공백 제외 글자수가 short_line_chars 이하인 짧은 조각
+빈 줄은 스위치와 무관하게 늘 뺀다. 앞의 규칙이 먼저 사유가 된다(더 구체적인 사유가 우선)."""
 from __future__ import annotations
 
 import re
@@ -47,19 +52,19 @@ def apply_line_rules(doc: Document, cfg: Config) -> Counter:
             reason = None
             if not text:
                 reason = "빈 줄"
-            elif n in stop:
+            elif cfg.rule_repeated_line and n in stop:
                 reason = "수동 목록"
-            elif counts[n] >= cfg.repeated_line_min_pages:
+            elif cfg.rule_repeated_line and counts[n] >= cfg.repeated_line_min_pages:
                 reason = "반복 문구"
-            elif NUMERIC_ONLY.match(text):
+            elif cfg.rule_pattern_lines and NUMERIC_ONLY.match(text):
                 reason = "숫자만"
-            elif cfg.require_korean and not has_korean(text):
+            elif cfg.rule_require_korean and not has_korean(text):
                 reason = "한글 없음"       # 영어·숫자·기호만 있는 줄 (모델명, 영문 항목명, 수식)은 한국어 보고서에서 본문이 아니다
-            elif OWNER_RE.search(text):
+            elif cfg.rule_pattern_lines and OWNER_RE.search(text):
                 reason = "담당자"
-            elif len(text) <= SHORT_RULE_LEN and (DATE_RE.search(text) or MONEY_RE.search(text)) and not has_tech_word(text):
+            elif cfg.rule_pattern_lines and len(text) <= SHORT_RULE_LEN and (DATE_RE.search(text) or MONEY_RE.search(text)) and not has_tech_word(text):
                 reason = "일정/금액"
-            elif char_count(text) <= cfg.short_line_chars:
+            elif cfg.rule_short_line and char_count(text) <= cfg.short_line_chars:
                 reason = "짧은 조각"       # 제목 조각·표 셀·항목명 같은 짧은 줄은 문맥 없이 판정할 수 없어 후보에서 뺀다
             ln.removed_by = reason
             if reason:

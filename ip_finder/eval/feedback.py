@@ -10,14 +10,14 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from .. import PROMPT_VERSION
+from .. import __version__
 from ..history import History
 from ..goldmap import GOLD_HEADERS, GOLD_SUFFIX, load_gold
 from .gold import write_gold_workbook
 
 _OK = {"O", "o", "0", "ㅇ", "맞음", "✓", "V", "v", "Y", "y"}
 _NO = {"X", "x", "ㅌ", "틀림", "제외", "N", "n"}
-FEEDBACK_SHEETS = ("검토 목록", "보류", "2차 제외", "1차 제외 (참고)", "제외 문장")   # 마지막은 v0.4 결과 파일 호환
+FEEDBACK_SHEETS = ("검토 목록", "보류", "분류기 제외 (참고)", "후처리 제외", "2차 제외", "1차 제외 (참고)", "제외 문장")   # 뒤 셋은 0.x 결과 파일 호환
 
 
 def _read_sheet(ws) -> list[dict]:
@@ -95,7 +95,7 @@ def read_feedback(result_xlsx: Path, confirm_unmarked: bool = False) -> tuple[li
                          "확신": "", "점수": r.get("점수") if r.get("점수") not in (None, "") else "", "가중치": r.get("가중치") or "",
                          "정답": gold, "메모": str(r.get("메모") or "")})
     return rows, {"source_name": source_name, "skipped": skipped, "corrections": dict(corrections),
-                  "run_id": str(info.get("실행 ID") or ""), "model": str(info.get("LLM 모델") or "")}
+                  "run_id": str(info.get("실행 ID") or ""), "classifier": str(info.get("1차 분류기") or "")}
 
 
 def _read_sheet_simple(ws) -> list[dict]:
@@ -133,7 +133,7 @@ def import_feedback(result_xlsx: Path, gold_out: Path | None = None, confirm_unm
     rows = []
     for n, r in enumerate(by_key.values(), 1):
         rows.append([n] + [r.get(h, "") if r.get(h, "") is not None else "" for h in GOLD_HEADERS[1:]])
-    meta_rows = [("파일", meta["source_name"]), ("피드백 원본", str(result_xlsx)), ("프롬프트 버전", PROMPT_VERSION),
+    meta_rows = [("파일", meta["source_name"]), ("피드백 원본", str(result_xlsx)), ("프로그램 버전", __version__),
                  ("갱신", datetime.now().isoformat(timespec="seconds")), ("행 수", str(len(rows)))]
     write_gold_workbook(gold_out, rows, meta_rows)
     record = {"result": str(result_xlsx), "gold": str(gold_out), "source_name": meta["source_name"], "run_id": meta["run_id"],

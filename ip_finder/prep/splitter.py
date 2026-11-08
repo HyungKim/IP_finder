@@ -1,4 +1,4 @@
-"""활성 줄에 번호를 붙이고, 긴 줄은 문장 단위로 나눈다."""
+"""활성 줄에 번호를 붙이고, rule_split_long 스위치가 켜져 있으면 긴 줄을 문장 단위로 나눈다."""
 from __future__ import annotations
 
 import re
@@ -41,7 +41,10 @@ def number_lines(doc: Document, cfg: Config) -> None:
                 new.append(ln)
                 continue
             orig += 1
-            parts = [ln.text] if len(ln.text) <= cfg.split_len else split_sentences(ln.text, cfg.short_line_chars + 1, cfg.require_korean)
+            if cfg.rule_split_long and len(ln.text) > cfg.split_len:       # 긴 줄 분할 스위치
+                parts = split_sentences(ln.text, cfg.short_line_chars + 1, cfg.rule_require_korean)
+            else:
+                parts = [ln.text]
             for part in parts:
                 idx += 1
                 new.append(Line(idx=idx, text=part, level=ln.level, source=ln.source,

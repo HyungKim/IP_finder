@@ -1,0 +1,97 @@
+# ip_finder/samples.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""설명용 가짜 보고서 생성기. demo/sample.json → PPTX, PDF. 실제 사내 자료는 포함하지 않는다.	파일 설명: 가짜 보고서 생성기. 실제 자료 없음.
+사용: python -m ip_finder.samples [출력폴더]   (기본 demo/)"""	사용법.
+from __future__ import annotations	새 문법 호환.
+import json	JSON.
+import sys	명령줄 인자.
+from pathlib import Path	경로.
+FOOTER = "PS-200 개선 보고 | 대외비 | 품질혁신팀"	모든 페이지에 넣을 꼬리말 (반복 문구 규칙 시험용).
+TABLE_PAGE = 8	표를 넣을 페이지 번호.
+TABLE = [["항목", "개선 전", "개선 후"], ["오프셋 드리프트", "0.35 %FS", "0.10 %FS"], ["조립 수율", "92.1 %", "97.8 %"]]	표 내용 (항목, 개선 전, 개선 후).
+def load_sample(path: Path | None = None) -> dict:	demo/sample.json 을 읽는 함수.
+path = path or Path(__file__).resolve().parent.parent / "demo" / "sample.json"	기본 경로: 저장소의 demo/sample.json.
+return json.loads(path.read_text(encoding="utf-8"))	JSON 을 사전으로.
+def make_pptx(sample: dict, out: Path) -> Path:	PPTX 를 만드는 함수.
+from pptx import Presentation	python-pptx.
+from pptx.util import Inches, Pt	길이 단위.
+prs = Presentation()	빈 프레젠테이션.
+for pg in sample["pages"]:	페이지마다
+if pg["no"] == 1:	1페이지면
+slide = prs.slides.add_slide(prs.slide_layouts[0])	제목 슬라이드 레이아웃.
+slide.shapes.title.text = pg["title"]	제목.
+slide.placeholders[1].text = "\n".join(pg["lines"])	부제목에 줄들.
+elif not pg["lines"]:	줄이 없는 페이지면 (그림만)
+slide = prs.slides.add_slide(prs.slide_layouts[5])	제목만 있는 레이아웃.
+slide.shapes.title.text = pg["title"]	제목.
+slide.shapes.add_shape(1, Inches(1), Inches(2), Inches(3.5), Inches(3))   # 도면 대신 사각형	도면 대신 사각형 도형.
+slide.shapes.add_shape(1, Inches(5.5), Inches(2), Inches(3.5), Inches(3))	하나 더.
+else:	그 밖은
+slide = prs.slides.add_slide(prs.slide_layouts[1])	제목+본문 레이아웃.
+slide.shapes.title.text = pg["title"]	제목.
+tf = slide.placeholders[1].text_frame	본문 글 상자.
+tf.text = pg["lines"][0]	첫 줄.
+for line in pg["lines"][1:]:	나머지 줄마다
+p = tf.add_paragraph()	문단 추가.
+p.text = line	글.
+if pg["no"] == TABLE_PAGE:	표 페이지면
+rows, cols = len(TABLE), len(TABLE[0])	행·열 수.
+table = slide.shapes.add_table(rows, cols, Inches(1), Inches(5.2), Inches(8), Inches(1.2)).table	표 도형 추가.
+for r in range(rows):	행마다
+for c in range(cols):	열마다
+table.cell(r, c).text = TABLE[r][c]	셀 글.
+for note in pg.get("notes", []):	노트가 있으면
+slide.notes_slide.notes_text_frame.text = note	발표자 노트에 (리더가 읽지 않는지 시험용).
+box = slide.shapes.add_textbox(Inches(0.3), Inches(7.0), Inches(6), Inches(0.3))	꼬리말 글 상자.
+box.text_frame.text = FOOTER	글.
+box.text_frame.paragraphs[0].runs[0].font.size = Pt(9)	9pt.
+out.parent.mkdir(parents=True, exist_ok=True)	폴더 생성.
+prs.save(str(out))	저장.
+return out	경로.
+def _font():	한글 글꼴을 찾는 함수.
+import pymupdf	PyMuPDF.
+for name in ("cjk",):	내장 CJK 글꼴 이름.
+try:	시도.
+return pymupdf.Font(name)	되면 그것.
+except Exception:	안 되면
+pass	다음.
+for path in ("/System/Library/Fonts/Supplemental/AppleGothic.ttf", "/System/Library/Fonts/AppleSDGothicNeo.ttc",	시스템 글꼴 경로들 (맥 AppleGothic·SD Gothic,
+"C:/Windows/Fonts/malgun.ttf", "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",	윈도우 맑은 고딕, 리눅스 나눔,
+"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"):	노토 CJK).
+if Path(path).exists():	있으면
+return pymupdf.Font(fontfile=path)	그 파일로 글꼴.
+raise RuntimeError("한글 폰트를 찾지 못했습니다")	없으면 오류.
+def make_pdf(sample: dict, out: Path) -> Path:	PDF 를 만드는 함수.
+import pymupdf	PyMuPDF.
+font = _font()	글꼴.
+doc = pymupdf.open()	빈 문서.
+for pg in sample["pages"]:	페이지마다
+page = doc.new_page(width=842, height=595)   # 가로 A4	가로 A4 페이지.
+tw = pymupdf.TextWriter(page.rect)	글 쓰기 도구.
+tw.append((50, 70), pg["title"], font=font, fontsize=22)	제목 22pt.
+y = 130	본문 시작 y.
+for line in pg["lines"]:	줄마다
+tw.append((70, y), f"• {line}", font=font, fontsize=13)	글머리 기호와 함께 13pt.
+y += 34	아래로.
+if pg["no"] == TABLE_PAGE:	표 페이지면
+for r in TABLE:	행마다
+tw.append((70, y), "   ".join(f"{c:<14}" for c in r), font=font, fontsize=12)	공백으로 칸을 맞춘 한 줄 (선 없는 표 시험용).
+y += 26	아래로.
+tw.append((50, 570), FOOTER, font=font, fontsize=8)	꼬리말 8pt.
+tw.write_text(page)	페이지에 쓴다.
+if not pg["lines"]:	줄이 없는 페이지면
+for x in (100, 460):	두 곳에
+page.draw_rect(pymupdf.Rect(x, 150, x + 280, 420), color=(0, 0, 0), width=1.5)	사각형,
+page.draw_line((x, 285), (x + 280, 285), color=(0.3, 0.3, 0.3))	가로선,
+page.draw_circle((x + 140, 285), 40, color=(0, 0, 1))	원을 그린다 (도면 흉내).
+out.parent.mkdir(parents=True, exist_ok=True)	폴더 생성.
+doc.subset_fonts()	글꼴 부분 집합화 (파일 크기 줄임).
+doc.save(str(out), garbage=4, deflate=True)	저장 (정리·압축).
+doc.close()	닫기.
+return out	경로.
+def make_all(out_dir: Path, sample: dict | None = None) -> tuple[Path, Path]:	PPTX 와 PDF 를 둘 다 만드는 함수.
+sample = sample or load_sample()	샘플 데이터 (없으면 기본 파일).
+return make_pptx(sample, out_dir / "sample_report.pptx"), make_pdf(sample, out_dir / "sample_report.pdf")	두 경로를 돌려준다.
+if __name__ == "__main__":	직접 실행했을 때
+target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("demo")	출력 폴더 (기본 demo).
+for p in make_all(target):	만들고
+print(p)	경로를 찍는다.

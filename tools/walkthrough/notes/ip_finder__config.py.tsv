@@ -1,0 +1,179 @@
+# ip_finder/config.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""실행 설정. TOML 파일(ip_finder.toml)과 CLI 인자로 덮어쓴다.	파일 설명 첫 줄.
+규칙은 모두 스위치(bool)이고 **기본값은 전부 끔**이다. 아무 스위치도 켜지 않은 실행이 기준선이며, 사다리 실행이 한 칸씩 켜며 비교한다.	설명: 스위치 기본 끔 = 기준선.
+상태 파일(캐시, 학습 분류기, 실행 이력, 골드)은 설치 폴더의 data/ 아래에 둔다. 설치본마다 완전히 따로 관리되고 사용자 홈에는 아무것도 만들지 않는다.	설명: 상태 파일 위치.
+상대 경로는 설정 파일이 있으면 그 파일의 폴더, 없으면 설치 폴더(app_root) 기준이다."""	설명: 상대 경로 기준.
+from __future__ import annotations	새 문법 호환.
+import os	현재 폴더 얻기용.
+import tomllib	TOML 읽기 (파이썬 3.11 표준).
+from dataclasses import dataclass, field, fields	dataclass 도구. fields 는 필드 목록을 꺼낸다.
+from pathlib import Path	경로 타입.
+from . import READER_VERSION, __version__	버전 상수 둘을 가져온다(설정 지문에 넣는다).
+CONFIG_NAME = "ip_finder.toml"	설정 파일 이름.
+def app_root() -> Path:	설치 폴더를 찾는 함수.
+"""설치 폴더. 소스 폴더에서 실행하면(ip_finder/ 옆에 pyproject.toml 또는 install.bat) 그 폴더, 아니면 현재 폴더."""	설명.
+root = Path(__file__).resolve().parent.parent	이 파일(config.py)의 두 단계 위 폴더 = ip_finder/ 의 부모.
+if (root / "pyproject.toml").exists() or (root / "install.bat").exists():	거기에 pyproject.toml 이나 install.bat 이 있으면 소스·설치 폴더다.
+return root	그 폴더.
+return Path(os.getcwd())	아니면(패키지로만 설치된 경우) 현재 작업 폴더.
+DEFAULT_PAGE_EXCLUDE = [	제목에 걸리면 페이지를 제외하는 기본 정규식 목록.
+r"목\s*차", r"차례", r"contents", r"agenda",	목차·차례·contents·agenda.
+r"일정", r"스케줄", r"schedule",	일정·스케줄.
+r"비용", r"예산", r"투자비", r"cost", r"budget",	비용·예산·투자비·cost·budget.
+r"조직", r"인력", r"담당자", r"체계도",	조직·인력·담당자·체계도.
+r"감사합니다", r"thank", r"q\s*&\s*a", r"질의",	감사합니다·thank·Q&A·질의.
+r"참고\s*문헌", r"references",	참고 문헌·references.
+r"부록", r"appendix",	부록·appendix.
+]	목록 끝.
+# 제목에 이 키워드가 있으면 '관련성 낮음' 페이지 (page_weight 스위치를 켰을 때만 쓰인다).	관련성 낮음 키워드 주석.
+DEFAULT_LOW_RELEVANCE = [	기본 낮음 키워드 목록.
+r"(고객|클레임|영업|매출|수주|회의|교육|인사|채용|복지)",	고객·클레임·영업·매출·수주·회의·교육·인사·채용·복지.
+r"(현황|실적|진행\s*상황|동향|추진\s*경과|경과)",	현황·실적·진행 상황·동향·추진 경과·경과.
+]	목록 끝.
+# 1차 분류기 이름 → 한글 이름. 구현은 classify/ 에 있다 (registry).	분류기 이름표 주석.
+CLASSIFIER_NAMES = {	분류기 키 → 한글 이름. CLI 도움말·UI 콤보·Excel 이 쓴다.
+"proto": "원형 문장 코사인 (제로샷)",	proto: 원형 문장 코사인(제로샷).
+"knn": "최근접 이웃 k-NN",	knn: 최근접 이웃.
+"centroid": "등급 평균 벡터",	centroid: 등급 평균 벡터.
+"softmax": "소프트맥스 회귀",	softmax: 소프트맥스 회귀.
+"ovr": "일대다 로지스틱",	ovr: 일대다 로지스틱.
+"cue": "단서어 규칙 (기준선)",	cue: 단서어 규칙.
+"ngram": "글자 n-gram + 소프트맥스",	ngram: 글자 n-gram.
+}	사전 끝.
+# 옛 설정 파일(0.x) 의 키를 새 필드로 옮긴다. 값이 없는 키는 그냥 무시된다.	옛 설정 키 이름 바꾸기 주석.
+_RENAMED = {"require_korean": "rule_require_korean"}	require_korean(0.x) → rule_require_korean(1.0).
+@dataclass	@dataclass: 아래 항목이 곧 설정 필드이고 '= 값' 이 기본값이다.
+class Config:	설정 클래스.
+# ---- 연결 (임베딩용 Ollama) ----	연결 설정 묶음 주석.
+host: str = "http://127.0.0.1:11434"      # 로컬 주소만 허용	Ollama 주소. 로컬만 허용된다(ollama.assert_local).
+timeout_sec: int = 300	HTTP 시간 제한(초).
+keep_alive: str = "30m"	호출 뒤 모델을 메모리에 유지하는 시간. 묶음 사이에 다시 적재되지 않게.
+# ---- 1차 분류기 ----	1차 분류기 설정 묶음 주석.
+classifier: str = "proto"                 # CLASSIFIER_NAMES 의 키. proto·cue 는 학습 없이 동작, 나머지는 train 으로 만든 파일이 필요	쓸 분류기 키. 기본 proto.
+embed_model: str = "bge-m3"               # Ollama 임베딩 모델. KURE-v1 은 tools/import_kure.bat 로 들여온 뒤 "kure-v1"	임베딩 모델 이름.
+classifier_dir: str = "data/classifiers"  # 학습한 분류기 파일 <이름>.npz 가 놓이는 폴더 (설치 폴더 기준)	학습 분류기 파일이 놓이는 폴더.
+knn_k: int = 5                            # knn 분류기의 이웃 수	knn 의 이웃 수.
+target_grades: str = "A,B"                # 추출 대상 등급. 이 등급으로 판정된 문장만 검토 목록 후보	추출 대상 등급(검토 목록에 들 수 있는 등급).
+accept_score: float = 0.5                 # 신뢰도 × 가중치 가 이 값 이상이어야 검토 목록. 미만은 보류 시트	검토 목록 점수 기준. 미만은 보류.
+# ---- 스위치 (switches.py 와 짝). 기본 전부 끔 = 기준선 ----	스위치 묶음 주석. switches.py 의 field 이름과 일치해야 한다.
+layout_analysis: bool = False             # 읽기: 레이아웃 분석 (다단·문단·제목·표·항목 나누기)	읽기: 레이아웃 분석 스위치.
+rule_short_line: bool = False             # 줄: 짧은 조각 제외	줄: 짧은 조각 제외 스위치.
+rule_require_korean: bool = False         # 줄: 한글 없음 제외	줄: 한글 없음 제외 스위치.
+rule_split_long: bool = False             # 줄: 긴 줄 문장 분할	줄: 긴 줄 분할 스위치.
+rule_repeated_line: bool = False          # 줄: 반복 문구·stoplist 제외	줄: 반복 문구 제외 스위치.
+rule_pattern_lines: bool = False          # 줄: 숫자만·담당자·일정/금액 제외	줄: 패턴 줄 제외 스위치.
+rule_page_exclude: bool = False           # 페이지: 제목 패턴으로 쪽 제외	쪽: 제목 패턴 제외 스위치.
+rule_cover: bool = False                  # 페이지: 표지 제외	쪽: 표지 제외 스위치.
+page_weight_enabled: bool = False         # 페이지: 관련성 낮음 가중치	쪽: 페이지 가중치 스위치.
+title_fix: bool = False                   # 후처리: 원인 쪽의 A → C	후처리: 제목 보정 스위치.
+safety_net: bool = False                  # 후처리: 단서어 있는 X → X?	후처리: 안전망 스위치.
+# ---- 규칙 매개변수 (해당 스위치를 켰을 때만 쓰인다) ----	규칙 매개변수 묶음 주석.
+short_line_chars: int = 10	짧은 줄 기준 글자수.
+split_len: int = 80	긴 줄 분할 길이.
+repeated_line_min_pages: int = 3	반복 문구로 볼 최소 쪽 수.
+stoplist: list[str] = field(default_factory=list)	수동 제거 문구 목록(기본 비어 있음).
+page_exclude_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_PAGE_EXCLUDE))	제목에 걸리면 페이지를 제외하는 정규식 목록 (목차, 일정, 비용…).
+cover_max_lines: int = 4	표지로 볼 1쪽 최대 줄 수.
+low_relevance_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_LOW_RELEVANCE))	관련성 낮음 제목 정규식 목록(기본값 복사).
+high_relevance_patterns: list[str] = field(default_factory=list)	관련성 높음으로 강제할 정규식(기본 없음).
+low_relevance_weight: float = 0.4	관련성 낮음 쪽의 가중치.
+# ---- 캐시·이력·골드 ----	캐시·이력·골드 묶음 주석.
+use_cache: bool = True	캐시 사용 여부.
+cache_path: str = "data/cache.sqlite"     # 임베딩 캐시 (원문 미저장, 해시 → 벡터)	임베딩 캐시 파일(원문 미저장).
+history_path: str = "data/history"        # 실행 스냅샷(원문 미저장). 비우면 저장하지 않음	실행 이력 폴더. 빈 문자열이면 저장 안 함.
+gold_paths: list[str] = field(default_factory=lambda: ["data/gold"])   # 골드 파일 또는 폴더(*_gold.xlsx)	골드 파일·폴더 목록.
+use_gold: bool = True                     # 골드에 있는 문장은 새 실행에서 분류기 판정 대신 골드 정답을 쓴다 (실험 명령은 끈다)	골드 정답 반영 여부. 실험 명령은 False 로 돌린다.
+config_path: str = ""                     # 실제로 읽은 설정 파일 (정보용). 상대 경로의 기준 폴더가 된다	실제로 읽은 설정 파일 경로(정보용).
+@classmethod	@classmethod: 객체 없이 Config.load(...) 로 부른다. cls 는 Config 자신.
+def load(cls, path: str | Path | None = None, **overrides) -> "Config":	설정 파일 경로(없어도 됨)와 덮어쓸 항목들(**overrides 는 이름=값 쌍을 사전으로 받음).
+data: dict = {}	파일에서 읽은 내용을 담을 빈 사전.
+if path is None:	경로를 안 줬으면
+for cand in (Path(CONFIG_NAME), app_root() / CONFIG_NAME):	현재 폴더의 ip_finder.toml, 그다음 설치 폴더의 ip_finder.toml 순으로
+if cand.exists():	있는지 보고
+path = cand	있으면 그것을 쓰고
+break	찾기를 멈춘다.
+if path:	경로가 정해졌으면
+data = tomllib.loads(Path(path).read_text(encoding="utf-8"))	TOML 파일을 읽어 사전으로 바꾼다.
+data["config_path"] = str(Path(path).resolve())	어떤 파일을 읽었는지 절대 경로로 기록.
+for old, new in _RENAMED.items():	옛 키 이름을 새 이름으로 옮긴다.
+if old in data and new not in data:	옛 키가 있고 새 키가 없을 때만.
+data[new] = data.pop(old)	값을 새 키로 옮기고 옛 키는 지운다.
+known = {f.name for f in fields(cls)}	Config 가 아는 필드 이름 집합. fields(cls) 는 dataclass 의 필드 목록.
+merged = {k: v for k, v in data.items() if k in known}	파일 내용 중 아는 이름만 남긴다 (오타나 옛 항목은 버림).
+merged.update({k: v for k, v in overrides.items() if v is not None and k in known})	명령줄 덮어쓰기. None 이 아닌 것만, 아는 이름만 반영한다.
+cfg = cls(**merged)	Config 객체 생성.
+if cfg.classifier not in CLASSIFIER_NAMES:	분류기 키가 모르는 이름이면
+raise ValueError(f"모르는 분류기: {cfg.classifier!r} (가능: {', '.join(CLASSIFIER_NAMES)})")	바로 오류(오타를 실행 중간이 아니라 시작에서 잡는다).
+return cfg	완성된 설정을 돌려준다.
+def copy(self, **changes) -> "Config":	값 몇 개만 바꾼 복사본을 만드는 메서드. 사다리가 칸마다 쓴다.
+"""값을 바꾼 복사본. 사다리 실행이 칸마다 쓴다."""	설명 문자열.
+from dataclasses import replace	dataclass 의 replace 도우미.
+return replace(self, **changes)	복사본 생성.
+@property	@property: cfg.base_dir 로 쓴다.
+def base_dir(self) -> Path:	상대 경로의 기준 폴더.
+"""상대 경로의 기준: 설정 파일이 있으면 그 폴더, 없으면 설치 폴더."""	설명: 설정 파일이 있으면 그 폴더, 없으면 설치 폴더.
+return Path(self.config_path).resolve().parent if self.config_path else app_root()	config_path 가 있으면 그 파일의 폴더(.parent), 없으면 app_root().
+def resolve(self, p: str | Path) -> Path:	경로 문자열을 실제 경로로 바꾸는 함수.
+p = Path(p).expanduser()	Path 객체로 만들고 '~' 를 홈 폴더로 푼다.
+return p if p.is_absolute() else self.base_dir / p	절대 경로면 그대로, 아니면 기준 폴더 아래로 붙인다.
+def cache_file(self) -> Path:	캐시 파일 경로.
+return self.resolve(self.cache_path)	설정값을 resolve 로 푼다.
+def classifier_file(self, name: str | None = None) -> Path:	학습 분류기 파일 경로. 이름을 주지 않으면 설정의 분류기.
+"""학습 분류기 파일: <classifier_dir>/<이름>.npz"""	설명 문자열.
+return self.resolve(self.classifier_dir) / f"{name or self.classifier}.npz"	classifier_dir/<이름>.npz 를 절대 경로로.
+def history_dir(self) -> Path | None:	이력 폴더 경로. 없을 수 있어 Path | None.
+return self.resolve(self.history_path) if self.history_path else None	history_path 가 비어 있으면 None.
+def targets(self) -> list[str]:	추출 등급 목록을 만드는 함수.
+out = [g.strip().upper() for g in self.target_grades.replace(";", ",").split(",") if g.strip()]	'A,B' 를 쉼표(세미콜론도)로 나누고, 공백을 떼고, 대문자로.
+return [g for g in ("A", "B", "C", "D") if g in out] or ["A", "B"]	A B C D 순서를 고정해 들어 있는 것만 남긴다. 아무것도 안 남으면 ['A','B'].
+def gold_dir(self) -> Path:	골드 저장 폴더를 돌려주는 메서드.
+"""feedback / gold-sheet 가 골드를 저장하는 폴더: gold_paths 의 첫 폴더 항목, 없으면 data/gold."""	설명.
+for p in self.gold_paths:	골드 경로 목록에서
+if not str(p).lower().endswith(".xlsx"):	.xlsx 로 끝나지 않는(폴더인) 첫 항목을
+return self.resolve(p)	실제 경로로 풀어 돌려준다.
+return self.resolve("data/gold")	폴더 항목이 없으면 data/gold.
+def gold_files(self) -> list[Path]:	골드 파일 목록을 돌려주는 메서드.
+from .goldmap import find_gold_files	순환 참조를 피하려고 함수 안에서 가져온다.
+return find_gold_files(self.gold_paths, self.base_dir)	경로 목록과 기준 폴더로 *_gold.xlsx 를 찾는다.
+def save(self, path: str | Path) -> Path:	설정을 TOML 파일로 저장하는 메서드.
+"""설정을 TOML 로 저장한다 (표준 라이브러리에 TOML 기록이 없어 직접 쓴다). UI '설정 저장'이 쓴다."""	save 의 설명 문자열.
+path = Path(path).expanduser()	경로 객체 ('~' 풀기).
+path.parent.mkdir(parents=True, exist_ok=True)	폴더가 없으면 만든다.
+path.write_text(to_toml(self), encoding="utf-8")	to_toml 로 문자열을 만들어 UTF-8 로 쓴다.
+return path	저장한 경로.
+def fingerprint(self) -> dict:	설정 지문을 만드는 함수. 사전을 돌려준다.
+"""결과에 영향을 주는 설정만. 실행 이력과 비교 명령의 '무엇이 달라졌나'에 쓴다. 스위치는 전부 들어간다."""	fingerprint 의 설명 문자열.
+from .switches import SWITCHES	스위치 목록을 여기서 가져온다(순환 import 피하려고 함수 안에서).
+d = {"version": __version__, "reader_version": READER_VERSION,	지문의 기본 항목: 버전, 리더 판,
+"classifier": self.classifier, "embed_model": self.embed_model, "knn_k": self.knn_k,	분류기, 임베딩 모델, knn 이웃 수,
+"target_grades": ",".join(self.targets()), "accept_score": self.accept_score}	대상 등급, 점수 기준.
+for s in SWITCHES:	모든 스위치를 돌며
+d[s.field] = bool(getattr(self, s.field))	스위치 필드 값을 지문에 넣는다(비교 명령이 '스위치 … 끔 → 켬' 으로 보여 준다).
+d.update({"short_line_chars": self.short_line_chars, "split_len": self.split_len,	규칙 매개변수도 넣는다: 짧은 줄 기준, 분할 길이,
+"repeated_line_min_pages": self.repeated_line_min_pages, "stoplist": self.stoplist,	반복 기준, 수동 제거 목록.
+"page_exclude_patterns": self.page_exclude_patterns, "cover_max_lines": self.cover_max_lines,	페이지 제외 패턴, 표지 기준.
+"low_relevance_patterns": self.low_relevance_patterns, "high_relevance_patterns": self.high_relevance_patterns,	관련성 키워드 두 목록,
+"low_relevance_weight": self.low_relevance_weight, "use_gold": self.use_gold})	낮음 가중치, 골드 반영 여부.
+return d	지문 딕셔너리를 돌려준다.
+def _toml_value(v) -> str:	값 하나를 TOML 표기로 바꾸는 함수.
+if isinstance(v, bool):	참/거짓이면 (int 보다 먼저 검사해야 한다. 파이썬에서 bool 은 int 의 일종이다)
+return "true" if v else "false"	true / false.
+if isinstance(v, (int, float)):	정수·실수면
+return repr(v)	그대로 (repr 은 '0.4' 같은 표기).
+if isinstance(v, str):	문자열이면
+return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'	역슬래시와 따옴표를 이스케이프하고 큰따옴표로 감싼다.
+if isinstance(v, (list, tuple)):	리스트·튜플이면
+return "[" + ", ".join(_toml_value(x) for x in v) + "]"	원소를 각각 바꿔 대괄호 안에 쉼표로.
+raise TypeError(f"TOML로 쓸 수 없는 값: {v!r}")	그 밖의 타입은 오류.
+def to_toml(cfg: Config) -> str:	설정 전체를 TOML 문자열로 만드는 함수.
+lines = ["# IP Finder 설정. UI '설정 저장'이 만든 파일. 직접 고쳐도 된다.",	TOML 머리 주석 첫 줄.
+"# 상대 경로(data/...)는 이 파일이 있는 폴더 기준이다. 스위치(true/false)는 switches.py 의 설명을 본다.", ""]	TOML 머리 주석 둘째 줄과 빈 줄.
+for f in fields(cfg):	모든 필드마다
+if f.name == "config_path":	config_path 는 정보용이라
+continue	건너뛴다.
+v = getattr(cfg, f.name)	값.
+if v is None:	None 이면
+lines.append(f"# {f.name} = (기본값)")	'# 이름 = (기본값)' 주석으로.
+continue	적지 않는다.
+lines.append(f"{f.name} = {_toml_value(v)}")	'이름 = 값' 한 줄.
+return "\n".join(lines) + "\n"	줄바꿈으로 이어 돌려준다.

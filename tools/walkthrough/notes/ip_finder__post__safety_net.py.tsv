@@ -1,0 +1,16 @@
+# ip_finder/post/safety_net.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""재현율 안전장치: 모델이 X라 해도 기술 단서어가 있으면 'X?'로 보류 시트에 남긴다."""	파일 설명: 단서어가 있는 X 를 X? 로.
+from __future__ import annotations	새 문법 호환.
+from ..cues import HARD_EXCLUDE, tech_cues	강제 제외 정규식과 단서어 함수.
+from ..models import LabeledLine	모델.
+def apply_safety_net(labeled: list[LabeledLine]) -> int:	재현율 안전장치 함수. 살린 수를 돌려준다.
+rescued = 0	살린 수.
+for ll in labeled:	문장마다
+if ll.label != "X":	X 가 아니면
+continue	건너뛴다 (X 에만 적용).
+cues = tech_cues(ll.text)	기술 단서어와 단위를 찾는다.
+if cues and not HARD_EXCLUDE.search(ll.text):	단서어가 있고 강제 제외어(비용·일정·담당…)가 없으면
+ll.label = "X?"	X? 로 바꿔 보류 시트에 남긴다.
+ll.notes.append("단서어: " + ", ".join(cues[:4]))	비고에 '단서어: …' (앞 4개까지).
+rescued += 1	수 +1.
+return rescued	돌려준다.

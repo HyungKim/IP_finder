@@ -1,0 +1,32 @@
+# ip_finder/classify/features.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""분류기 입력 특성.	파일 설명 첫 줄.
+- cue_matrix: 정규식 단서 13개(cues.cue_features)를 0/1 행렬로. 임베딩 뒤에 이어 붙인다(softmax, ovr).	설명: cue_matrix.
+- ngram_matrix: 글자 2·3-gram 을 해시로 고정 길이 벡터에 담는다(ngram 분류기). 임베딩 모델이 전혀 없어도 동작하는 비교 기준."""	설명: ngram_matrix.
+from __future__ import annotations	새 문법 호환 선언.
+import re	정규식.
+import zlib	crc32 해시.
+import numpy as np	numpy.
+from ..cues import FEATURE_NAMES, cue_features	단서 특성 함수와 이름.
+NGRAM_DIM = 4096	n-gram 벡터 길이(4096 버킷).
+_SPACE = re.compile(r"\s+")	공백 묶음 정규식.
+def cue_matrix(texts: list[str], page_types: list[str]) -> np.ndarray:	문장마다 단서 13개 → 0/1 행렬.
+return np.asarray([cue_features(t, pt) for t, pt in zip(texts, page_types)], dtype=np.float32)	cue_features 를 행마다 호출.
+def with_cues(vectors: np.ndarray, texts: list[str], page_types: list[str]) -> np.ndarray:	임베딩과 단서를 이어 붙이는 함수.
+"""임베딩 + 단서 특성 (열 이어 붙이기)."""	설명 문자열.
+V = np.asarray(vectors, dtype=np.float32)	float32 로.
+return np.hstack([V, cue_matrix(texts, page_types)])	열 방향으로 붙인다.
+def ngram_matrix(texts: list[str], dim: int = NGRAM_DIM) -> np.ndarray:	글자 n-gram 행렬 함수.
+"""문장마다 글자 2-gram·3-gram 을 세어 해시 버킷에 더한 뒤 길이 1 로 정규화한다. 공백은 하나로 줄이고 소문자로 맞춘다."""	설명 문자열.
+M = np.zeros((len(texts), dim), dtype=np.float32)	0 으로 채운 행렬.
+for r, t in enumerate(texts):	문장마다
+s = _SPACE.sub(" ", str(t)).strip().lower()	공백 정리·소문자.
+if not s:	비었으면
+continue	건너뜀.
+for n in (2, 3):	2-gram 과 3-gram.
+for i in range(len(s) - n + 1):	모든 위치에서
+M[r, zlib.crc32(s[i:i + n].encode("utf-8")) % dim] += 1.0	글자 조각의 crc32 를 버킷 번호로 바꿔 1 더한다.
+norm = np.linalg.norm(M[r])	행 길이.
+if norm > 0:	0 이 아니면
+M[r] /= norm	길이 1 로.
+return M	행렬 반환.
+__all__ = ["FEATURE_NAMES", "cue_matrix", "with_cues", "ngram_matrix", "NGRAM_DIM"]	공개 이름.

@@ -1,0 +1,106 @@
+# ip_finder/history/store.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""실행 스냅샷 저장소 (기본: 설치 폴더의 data/history). 파일: runs/<run_id>.json, feedback.jsonl, train.jsonl.	파일 설명: 저장 위치와 파일들.
+스냅샷에는 문장 해시·라벨·점수·목록 여부만 들어가고 원문과 제목은 들어가지 않는다."""	스냅샷에 원문·제목 없음.
+from __future__ import annotations	새 문법 호환.
+import hashlib	해시.
+import json	JSON.
+from datetime import datetime	현재 시각.
+from pathlib import Path	경로.
+def text_hash(text: str) -> str:	문장 해시 함수.
+return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:16]	양끝 공백을 뗀 글의 sha256 앞 16자. 같은 문장이면 같은 값, 원문 복원은 불가.
+def file_hash(path: Path) -> str:	파일 해시 함수.
+h = hashlib.sha256()	해시 객체.
+try:	읽기 실패 대비 try.
+with open(path, "rb") as f:	파일을 이진으로 열어
+for chunk in iter(lambda: f.read(1 << 20), b""):	1MB 씩 읽으며 (iter 와 lambda 로 '빈 바이트가 나올 때까지')
+h.update(chunk)	해시에 넣는다.
+except OSError:	읽을 수 없으면
+return ""	빈 문자열 (이름으로만 비교하게 됨).
+return h.hexdigest()[:16]	앞 16자.
+def make_run_id(started_at: str, source: Path) -> str:	실행 ID 를 만드는 함수. 시작 시각과 입력 경로.
+stamp = started_at.replace("-", "").replace(":", "").replace("T", "-")[:15]	'2026-11-07T10:30:00' 에서 -, :, 을 빼고 T 를 - 로 바꾼 앞 15자 → '20261107-103000'.
+stem = "".join(ch for ch in source.stem if ch.isalnum())[:12] or "run"	파일 이름에서 글자·숫자만 남긴 앞 12자. 비면 'run'.
+return f"{stamp}-{stem}"	'20261107-103000-보고서이름' 꼴로 잇는다.
+class History:	이력 저장소 클래스.
+def __init__(self, root: Path | None):	생성자. root 가 None 이면 꺼진 상태.
+self.root = root	루트 폴더 기억.
+if root is not None:	폴더가 주어졌으면
+(root / "runs").mkdir(parents=True, exist_ok=True)	runs/ 하위 폴더를 만든다 (이미 있으면 그대로).
+@property	@property: history.enabled 로 쓴다.
+def enabled(self) -> bool:	켜져 있는지.
+return self.root is not None	루트가 있으면 참.
+# ---- 실행 ----	절 주석: 실행.
+def unique_run_id(self, run_id: str) -> str:	같은 ID 가 이미 있으면 뒤에 번호를 붙이는 메서드.
+"""같은 초에 두 번 실행해도 ID가 겹치지 않게 한다."""	설명.
+if not self.enabled or not (self.root / "runs" / f"{run_id}.json").exists():	꺼져 있거나 같은 이름의 파일이 없으면
+return run_id	그대로.
+n = 2	2부터
+while (self.root / "runs" / f"{run_id}-{n}.json").exists():	'ID-2', 'ID-3' … 중 없는 번호까지
+n += 1	올린다.
+return f"{run_id}-{n}"	번호 붙은 ID.
+def save_run(self, snapshot: dict) -> None:	스냅샷을 파일로 저장하는 메서드.
+if not self.enabled:	꺼져 있으면
+return	아무것도 안 한다.
+path = self.root / "runs" / f"{snapshot['run_id']}.json"	runs/<ID>.json 경로.
+path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=0), encoding="utf-8")	JSON 으로 쓴다 (한글 그대로, 들여쓰기 0 = 줄은 나누되 공백 없음).
+def load_run(self, run_id: str) -> dict | None:	ID 로 스냅샷을 읽는 메서드. 없으면 None.
+if not self.enabled:	꺼져 있으면
+return None	None.
+path = self.root / "runs" / f"{run_id}.json"	경로.
+if not path.exists():	없으면
+return None	None.
+try:	읽기 오류 대비.
+return json.loads(path.read_text(encoding="utf-8"))	JSON 을 사전으로.
+except (OSError, ValueError):	파일·형식 오류면
+return None	None.
+def list_runs(self, limit: int = 200, full: bool = False) -> list[dict]:	실행 목록을 최근 것부터 돌려주는 메서드. full 이 거짓이면 문장 목록은 뺀다.
+"""최근 실행부터. full=False 면 문장 목록을 뺀 요약만."""	설명.
+if not self.enabled:	꺼져 있으면
+return []	빈 목록.
+out = []	결과.
+for path in sorted((self.root / "runs").glob("*.json"), reverse=True)[:limit]:	runs/ 의 json 파일을 이름 역순(최근 먼저)으로 limit 개까지.
+try:	오류 대비.
+d = json.loads(path.read_text(encoding="utf-8"))	읽는다.
+except (OSError, ValueError):	오류면
+continue	건너뛴다.
+if not full:	요약만 원하면
+d = {k: v for k, v in d.items() if k != "lines"}	'lines' 키를 뺀 사전으로.
+out.append(d)	모은다.
+return out	돌려준다.
+def previous_run(self, source_hash: str, source_name: str, before_run_id: str) -> dict | None:	같은 파일의 직전 실행을 찾는 메서드. 내용 해시, 파일 이름, 현재 실행 ID.
+"""같은 파일(내용 해시가 같거나, 없으면 이름이 같은)의 직전 실행."""	설명.
+if not self.enabled:	이력이 꺼져 있으면
+return None	None.
+by_name = None	이름만 같은 실행을 기억할 자리.
+for d in self.list_runs(full=True):	최근 실행부터 (문장 목록 포함) 하나씩
+if d.get("run_id", "") >= before_run_id:	현재 실행 이후(또는 자기 자신)면
+continue	건너뛴다 (ID 가 시각으로 시작해 문자열 비교로 순서가 맞다).
+if source_hash and d.get("source_hash") == source_hash:	내용 해시가 같으면
+return d	그것이 직전 실행.
+if by_name is None and d.get("source_name") == source_name:	이름만 같은 첫 실행은
+by_name = d	기억해 둔다.
+return by_name	해시가 같은 것이 없으면 이름이 같은 것 (없으면 None).
+# ---- 피드백 / 학습 이력 ----	절 주석: 피드백·학습 이력.
+def _append(self, name: str, record: dict) -> None:	jsonl 파일에 한 줄을 덧붙이는 메서드.
+if not self.enabled:	꺼져 있으면
+return	아무것도 안 한다.
+with open(self.root / name, "a", encoding="utf-8") as f:	추가 모드('a')로 열어
+f.write(json.dumps(record, ensure_ascii=False) + "\n")	JSON 한 줄을 쓴다.
+def _read(self, name: str) -> list[dict]:	jsonl 파일을 읽어 사전 목록으로.
+if not self.enabled or not (self.root / name).exists():	꺼져 있거나 파일이 없으면
+return []	빈 목록.
+out = []	결과.
+for line in (self.root / name).read_text(encoding="utf-8").splitlines():	줄마다
+try:	오류 대비.
+out.append(json.loads(line))	JSON 으로 풀어 넣는다.
+except ValueError:	깨진 줄은
+continue	건너뛴다.
+return out	돌려준다.
+def log_feedback(self, record: dict) -> None:	피드백 기록 메서드.
+self._append("feedback.jsonl", {"time": datetime.now().isoformat(timespec="seconds"), **record})	지금 시각을 앞에 붙여 feedback.jsonl 에. **record 는 사전을 풀어 합치기.
+def log_train(self, record: dict) -> None:	학습 기록 메서드.
+self._append("train.jsonl", {"time": datetime.now().isoformat(timespec="seconds"), **record})	train.jsonl 에.
+def feedback_log(self) -> list[dict]:	피드백 이력 읽기.
+return self._read("feedback.jsonl")	feedback.jsonl.
+def train_log(self) -> list[dict]:	학습 이력 읽기.
+return self._read("train.jsonl")	train.jsonl.

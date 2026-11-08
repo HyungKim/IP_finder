@@ -1,0 +1,259 @@
+# ip_finder/compare/xlsx.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""비교 결과 Excel 세 가지: 실행 비교(compare-runs), 분류기 비교(compare-classifiers), 사다리(ladder).	파일 설명 첫 줄.
+사람이 보고서에 옮겨 적을 수 있게 요약 시트를 맨 앞에 두고, 문장 단위 근거는 뒤 시트에 둔다."""	설명: 요약 먼저, 근거 뒤.
+from __future__ import annotations	새 문법 호환 선언.
+from collections import Counter	Counter.
+from pathlib import Path	경로.
+from openpyxl import Workbook	Excel 만들기.
+from openpyxl.styles import Alignment, Font, PatternFill	서식.
+from openpyxl.utils import get_column_letter	열 글자.
+from .. import __version__	버전.
+from ..config import CLASSIFIER_NAMES	분류기 이름표.
+from ..goldmap import LABELS	등급 목록.
+from ..post import STATUSES	상태 목록.
+from .records import KIND_ORDER, RunDiff	변경 종류 순서와 RunDiff.
+HEAD_FILL = PatternFill("solid", fgColor="37474F")	머리 배경.
+HEAD_FONT = Font(bold=True, color="FFFFFF")	머리 글꼴.
+WRAP = Alignment(wrap_text=True, vertical="top")	줄바꿈 정렬.
+UP = PatternFill("solid", fgColor="DCEDC8")	좋아짐 색(초록).
+DOWN = PatternFill("solid", fgColor="FFCDD2")	나빠짐 색(빨강).
+def _sheet(wb: Workbook, title: str, headers: list[str], widths: list[int], first: bool = False):	시트 만들기 도우미.
+ws = wb.active if first else wb.create_sheet()	첫 시트는 active, 아니면 새로.
+ws.title = title[:31]	이름(31자 제한).
+ws.append(headers)	머리 행.
+for c in range(1, len(headers) + 1):	열마다
+cell = ws.cell(row=1, column=c)	셀.
+cell.fill, cell.font = HEAD_FILL, HEAD_FONT	서식.
+ws.column_dimensions[get_column_letter(c)].width = widths[c - 1] if c - 1 < len(widths) else 12	너비.
+ws.freeze_panes = "A2"	머리 고정.
+return ws	반환.
+def _finish(ws, n_cols: int) -> None:	마무리 도우미.
+if ws.max_row > 1:	행이 있으면
+ws.auto_filter.ref = f"A1:{get_column_letter(n_cols)}{ws.max_row}"	자동 필터.
+for row in ws.iter_rows(min_row=2):	둘째 행부터
+for cell in row:	셀마다
+cell.alignment = WRAP	줄바꿈.
+def _pct(v) -> str:	비율 → 글.
+return "-" if v is None else f"{v:.1%}"	None 은 -, 아니면 %.
+def _delta(v: int) -> str:	증감 → 글.
+return f"{v:+d}" if v else "0"	0 이면 '0', 아니면 부호 포함.
+def _color_delta(ws, row: int, col: int, v: int, good_when_down: bool = False) -> None:	증감 색칠 도우미(현재 미사용, 추후 요약 강조용).
+if not v:	0 이면
+return	끝.
+better = (v < 0) if good_when_down else (v > 0)	좋은 방향 판단.
+ws.cell(row=row, column=col).fill = UP if better else DOWN	색칠.
+# ------------------------------------------------------------------ 실행 비교	절 주석: 실행 비교.
+def write_runs_compare(diffs: list[RunDiff], out: Path, title_a: str = "A", title_b: str = "B", gold: list[tuple[dict, dict]] | None = None) -> Path:	실행 비교 Excel 함수.
+wb = Workbook()	새 통합 문서.
+ws = _sheet(wb, "요약", ["파일", "상태", f"{title_a}", f"{title_b}", "증감"], [28, 16, 10, 10, 8], first=True)	요약 시트.
+total: dict[str, list[int]] = {s: [0, 0] for s in STATUSES}	상태별 합계.
+for d in diffs:	비교마다
+for s, a, b, dl in d.summary_rows():	요약 행마다
+ws.append([d.a.name, s, a, b, _delta(dl)])	행 추가.
+if s in total:	상태면
+total[s][0] += a	A 합.
+total[s][1] += b	B 합.
+if len(diffs) > 1:	파일이 여럿이면
+for s, (a, b) in total.items():	상태마다
+ws.append(["(전체 합)", s, a, b, _delta(b - a)])	전체 합 행.
+ws.append([])	빈 줄.
+ws.append(["변경 종류", "건수(전체 파일)", "", "", ""])	변경 종류 머리.
+kinds: Counter = Counter()	종류별 건수.
+for d in diffs:	비교마다
+kinds.update(d.counts())	더한다.
+for k in KIND_ORDER:	종류마다
+ws.append(["", k, kinds.get(k, 0), "", ""])	행.
+ws.append([])	빈 줄.
+ws.append(["검토 목록 등급 분포", "등급", title_a, title_b, "증감"])	등급 분포 머리.
+ga: Counter = Counter()	A 등급 수.
+gb: Counter = Counter()	B 등급 수.
+for d in diffs:	비교마다
+ga.update(d.a.grade_counts())	A.
+gb.update(d.b.grade_counts())	B.
+for g in ("A", "B", "C", "D"):	등급마다
+ws.append(["", g, ga.get(g, 0), gb.get(g, 0), _delta(gb.get(g, 0) - ga.get(g, 0))])	행.
+ws.append([])	빈 줄.
+ws.append(["처리 시간(초)", "", round(sum(d.a.elapsed for d in diffs), 1), round(sum(d.b.elapsed for d in diffs), 1), ""])	처리 시간 합.
+ws.append(["비교 기준", f"{title_a}: 이전·기준 / {title_b}: 이후·비교. 문장 맞추기: 동일(공백 무시) → 포함(합쳐짐·나뉨) → 유사(0.6 이상)", "", "", ""])	비교 기준 설명.
+_finish(ws, 5)	마무리.
+ws = _sheet(wb, "설정 차이", ["파일", "달라진 설정"], [28, 100])	설정 차이 시트.
+for d in diffs:	비교마다
+for s in d.settings_diff or ["설정 차이 없음 (결과 파일에 설정 표가 없으면 비교하지 못함)"]:	차이마다(없으면 안내).
+ws.append([d.a.name, s])	행.
+_finish(ws, 2)	마무리.
+ws = _sheet(wb, "변경 문장", ["파일", "변경", "페이지", f"{title_a} 발췌", f"{title_a} 상태", f"{title_a} 등급", f"{title_a} 점수",	변경 문장 시트 열(첫 줄).
+f"{title_b} 발췌", f"{title_b} 상태", f"{title_b} 등급", f"{title_b} 점수", "설명"],	이어짐.
+[20, 12, 7, 46, 11, 6, 6, 46, 11, 6, 6, 44])	너비.
+for d in diffs:	비교마다
+for ch in d.changes:	변경 행마다
+ws.append([d.a.name, ch["kind"], ch["page"], ch["a_text"], ch["a_status"], ch["a_grade"], ch["a_score"],	A 쪽 값들,
+ch["b_text"], ch["b_status"], ch["b_grade"], ch["b_score"], ch["desc"]])	B 쪽 값들과 설명.
+if ws.max_row == 1:	비었으면
+ws.append(["", "", "", "달라진 문장이 없습니다."])	안내.
+_finish(ws, 12)	마무리.
+ws = _sheet(wb, "페이지별", ["파일", "페이지", f"{title_a} 문장", f"{title_a} 목록", f"{title_b} 문장", f"{title_b} 목록", "목록 증감"], [24, 7, 9, 9, 9, 9, 9])	페이지별 시트.
+for d in diffs:	비교마다
+pages = sorted({u.page for u in d.a.units} | {u.page for u in d.b.units})	두 쪽의 쪽 번호 합집합.
+for p in pages:	쪽마다
+ua = [u for u in d.a.units if u.page == p]	A 의 단위.
+ub = [u for u in d.b.units if u.page == p]	B 의 단위.
+ra, rb = sum(1 for u in ua if u.in_review), sum(1 for u in ub if u.in_review)	검토 목록 수 둘.
+ws.append([d.a.name, p, len(ua), ra, len(ub), rb, _delta(rb - ra)])	행.
+_finish(ws, 7)	마무리.
+if gold:	골드 지표가 있으면
+ws = _sheet(wb, "골드 지표", ["파일", "지표", title_a, title_b], [24, 26, 12, 12])	시트.
+for d, (ma, mb) in zip(diffs, gold):	비교와 지표 쌍마다
+for key, name in (("recall", "A·B 재현율"), ("precision", "A·B 정밀도(골드 기준)"), ("grade_accuracy", "등급 정확도"),	지표 항목마다(첫 줄).
+("review", "검토 목록 수"), ("review_unscored", "그중 골드 밖(미채점)"), ("matched", "맞춰진 골드 문장"), ("gold_rows", "골드 문장 수")):	이어짐.
+va, vb = (ma or {}).get(key), (mb or {}).get(key)	A·B 값.
+fmt = _pct if key in ("recall", "precision", "grade_accuracy") else (lambda v: "-" if v is None else v)	비율이면 %, 아니면 그대로.
+ws.append([d.a.name, name, fmt(va), fmt(vb)])	행.
+_finish(ws, 4)	마무리.
+ws = _sheet(wb, "실행 정보", ["항목", "값"], [20, 100])	실행 정보 시트.
+ws.append(["프로그램 버전", __version__])	버전.
+ws.append([f"{title_a}", "; ".join(d.a.path or d.a.name for d in diffs)])	A 경로들.
+ws.append([f"{title_b}", "; ".join(d.b.path or d.b.name for d in diffs)])	B 경로들.
+ws.append(["파일 수", len(diffs)])	파일 수.
+_finish(ws, 2)	마무리.
+out.parent.mkdir(parents=True, exist_ok=True)	폴더 만들기.
+wb.save(str(out))	저장.
+return out	경로 반환.
+# ------------------------------------------------------------------ 분류기 비교	절 주석: 분류기 비교.
+def write_classifier_compare(result: dict, out: Path) -> Path:	분류기 비교 Excel 함수.
+reps = result["reports"]	성적표들.
+y = result["y"]	정답.
+wb = Workbook()	새 통합 문서.
+ws = _sheet(wb, "요약", ["분류기", "학습", "임베딩", "등급 정확도", "정확도 표준편차", "거시 F1", "A·B 재현율", "A·B 정밀도", "후보 수", "학습·판정 시간(초)", "비고"],	요약 시트 열.
+[26, 6, 7, 11, 13, 9, 11, 11, 8, 15, 40], first=True)	너비.
+for r in reps:	성적표마다
+c = r.candidates or {}	후보 지표.
+ws.append([r.label, "O" if r.trainable else "X", "O" if r.needs_embedding else "X", _pct(r.accuracy), _pct(r.acc_std) if r.acc_std is not None else "-",	이름·학습·임베딩·정확도·표준편차,
+_pct(r.macro_f1), _pct(c.get("recall")) if c else "-", _pct(c.get("precision")) if c else "-", c.get("candidates", "-") if c else "-",	F1·재현율·정밀도·후보 수,
+round(r.fit_sec + r.predict_sec, 2), r.skipped])	시간·비고.
+ws.append([])	빈 줄.
+ws.append(["골드", f"{result['n']}문장, 등급별 {result['gold_counts']}, 파일 {len(result['files'])}개"])	골드 설명.
+ws.append(["채점 방식", f"학습형: 층화 {result['k']}겹 교차 검증 × {result['repeats']}회 (seed {result['seed']}~), 학습 없는 분류기: 전체 골드 채점"])	채점 방식.
+ws.append(["임베딩", result["embed_model"] or result.get("embed_error") or "-", f"{result['embed_sec']:.1f}초"])	임베딩.
+ws.append(["주의", "골드가 100문장 미만이면 정확도 몇 %p 차이는 겹 나누기에 따라 바뀌는 잡음일 수 있습니다. '정확도 표준편차' 보다 작은 차이는 같은 것으로 보세요."])	주의 문구.
+_finish(ws, 11)	마무리.
+ws = _sheet(wb, "등급별", ["분류기", "등급", "골드 수", "정밀도", "재현율", "F1"], [26, 6, 8, 9, 9, 9])	등급별 시트.
+for r in reps:	성적표마다
+if r.skipped:	건너뛴 것은
+continue	제외.
+for g in LABELS:	등급마다
+m = r.per_grade.get(g, {})	지표.
+ws.append([r.label, g, m.get("support", 0), _pct(m.get("precision")), _pct(m.get("recall")), _pct(m.get("f1"))])	행.
+_finish(ws, 6)	마무리.
+ws = _sheet(wb, "혼동 행렬", ["분류기", "정답 ＼ 예측", *LABELS, "?"], [26, 12, 6, 6, 6, 6, 6, 6])	혼동 행렬 시트.
+for r in reps:	성적표마다
+if r.skipped:	건너뛴 것은
+continue	제외.
+for g in LABELS:	정답 등급마다
+row = r.confusion.get(g, {})	행.
+ws.append([r.label, g, *[row.get(p, 0) for p in LABELS], row.get("?", 0)])	예측 등급별 수와 ?.
+ws.append([])	빈 줄.
+_finish(ws, 8)	마무리.
+heads = ["번호", "파일", "제목", "문장", "정답"]	문장별 시트 머리 시작.
+for r in reps:	성적표마다
+if not r.skipped:	건너뛰지 않았으면
+heads += [r.label, f"{r.label} 확신"]	판정·확신 열.
+heads.append("맞힌 분류기 수")	맞힌 수 열.
+ws = _sheet(wb, "문장별", heads, [6, 16, 18, 56, 6] + [10, 7] * sum(1 for r in reps if not r.skipped) + [10])	시트.
+active = [r for r in reps if not r.skipped]	채점된 성적표.
+for i, (t, g) in enumerate(zip(result["texts"], y), 1):	문장마다
+row = [i, str(result["files"][0]) if len(result["files"]) == 1 else "", result["titles"][i - 1], t, g]	번호·파일·제목·문장·정답.
+hits = 0	맞힌 수.
+for r in active:	성적표마다
+p = r.preds[i - 1] if i - 1 < len(r.preds) else None	그 문장의 판정.
+row += [p.label if p else "?", round(p.confidence, 2) if p else ""]	라벨·확신.
+hits += 1 if (p and p.label == g) else 0	맞았으면 1.
+row.append(hits)	맞힌 수 추가.
+ws.append(row)	행.
+for k, r in enumerate(active):	성적표마다
+p = r.preds[i - 1] if i - 1 < len(r.preds) else None	판정.
+if p is not None:	있으면
+ws.cell(row=ws.max_row, column=6 + 2 * k).fill = UP if p.label == g else DOWN	맞으면 초록, 틀리면 빨강.
+_finish(ws, len(heads))	마무리.
+ws = _sheet(wb, "불일치", ["번호", "문장", "정답", "분류기별 판정", "맞힌 분류기 수"], [6, 60, 6, 60, 10])	불일치 시트.
+for i, (t, g) in enumerate(zip(result["texts"], y), 1):	문장마다
+labels = {r.label: (r.preds[i - 1].label if i - 1 < len(r.preds) and r.preds[i - 1] else "?") for r in active}	분류기별 판정 사전.
+if len(set(labels.values())) > 1:	판정이 갈리면
+ws.append([i, t, g, ", ".join(f"{k}={v}" for k, v in labels.items()), sum(1 for v in labels.values() if v == g)])	행.
+_finish(ws, 5)	마무리.
+ws = _sheet(wb, "실행 정보", ["항목", "값"], [20, 100])	실행 정보 시트.
+for k, v in (("프로그램 버전", __version__), ("골드 파일", ", ".join(result["files"])), ("골드 문장 수", result["n"]),	버전·골드 파일·문장 수,
+("대상 등급", result["targets"]), ("임베딩 모델", result["embed_model"] or "-"),	대상 등급·임베딩,
+("분류기", ", ".join(f"{r.name}({CLASSIFIER_NAMES.get(r.name, r.name)})" for r in reps))):	분류기 목록.
+ws.append([k, v])	행.
+_finish(ws, 2)	마무리.
+out.parent.mkdir(parents=True, exist_ok=True)	폴더.
+wb.save(str(out))	저장.
+return out	반환.
+# ------------------------------------------------------------------ 사다리	절 주석: 사다리.
+def write_ladder(result, out: Path) -> Path:	사다리 Excel 함수.
+from .ladder import LadderResult	타입 확인용 import.
+assert isinstance(result, LadderResult)	확인.
+steps = result.steps	칸들.
+mode_ko = "누적 (직전 칸과 비교)" if result.ladder.mode == "cumulative" else "단독 (기준선과 비교)"	방식 글.
+wb = Workbook()	새 통합 문서.
+heads = ["칸", "켠 것", "문장 단위", *STATUSES, "A", "B", "증감(검토 목록)", "처리 시간(초)"]	요약 열.
+if result.gold_used:	골드를 썼으면
+heads += ["A·B 재현율", "A·B 정밀도", "등급 정확도", "골드 밖 후보"]	지표 열 추가.
+ws = _sheet(wb, "사다리 요약", heads, [18, 44, 9] + [9] * len(STATUSES) + [6, 6, 12, 10, 10, 10, 10, 10], first=True)	시트.
+prev = None	직전 칸.
+for sr in steps:	칸마다
+tot = sr.totals()	상태별 합계.
+gc = sr.grade_counts()	등급별.
+what = ("아무것도 켜지 않음" if sr.index < 0 else	켠 것 설명(기준선·누적·단독).
+(" + ".join(s.label for s in result.ladder.steps[:sr.index + 1]) if result.ladder.mode == "cumulative" else sr.label))	이어짐.
+review = tot.get("검토 목록", 0)	검토 목록 수.
+base = steps[0] if result.ladder.mode == "single" else prev	비교 기준 칸.
+delta = "" if base is None else _delta(review - base.totals().get("검토 목록", 0))	증감.
+row = [sr.title, what, sum(tot.values()), *[tot.get(s, 0) for s in STATUSES], gc.get("A", 0), gc.get("B", 0), delta, round(sr.elapsed, 1)]	행.
+if result.gold_used:	골드면
+g = sr.gold or {}	지표.
+row += [_pct(g.get("recall")), _pct(g.get("precision")), _pct(g.get("grade_accuracy")), g.get("review_unscored", "-")]	열 추가.
+ws.append(row)	행 추가.
+prev = sr	직전 갱신.
+ws.append([])	빈 줄.
+ws.append(["방식", mode_ko])	방식.
+ws.append(["입력", f"{len(result.inputs)}개 파일: " + ", ".join(p.name for p in result.inputs)])	입력.
+ws.append(["결과 폴더", str(result.out_dir)])	결과 폴더.
+ws.append(["읽는 법", "칸마다 그 설정으로 모든 파일을 다시 실행했습니다. '증감'은 검토 목록 문장 수의 변화, 문장 단위 근거는 '칸별 변화' 시트입니다."])	읽는 법.
+_finish(ws, len(heads))	마무리.
+ws = _sheet(wb, "칸별 변화", ["칸", "비교 기준", "파일", "변경", "페이지", "이전 발췌", "이전 상태", "이전 등급", "현재 발췌", "현재 상태", "현재 등급", "설명"],	칸별 변화 시트 열.
+[16, 12, 18, 12, 7, 44, 11, 6, 44, 11, 6, 40])	너비.
+for base, sr, dl in result.diffs:	비교마다
+for d in dl:	파일별 RunDiff 마다
+for ch in d.changes:	변경 행마다
+ws.append([sr.title, base.title, d.a.name, ch["kind"], ch["page"], ch["a_text"], ch["a_status"], ch["a_grade"],	칸·기준·파일·종류·쪽·이전 값,
+ch["b_text"], ch["b_status"], ch["b_grade"], ch["desc"]])	현재 값·설명.
+if ws.max_row == 1:	비었으면
+ws.append(["", "", "", "달라진 문장이 없습니다."])	안내.
+_finish(ws, 12)	마무리.
+ws = _sheet(wb, "변경 종류별", ["칸", *KIND_ORDER], [18] + [11] * len(KIND_ORDER))	변경 종류별 시트.
+for base, sr, dl in result.diffs:	비교마다
+c: Counter = Counter()	합계.
+for d in dl:	RunDiff 마다
+c.update(d.counts())	더한다.
+ws.append([sr.title, *[c.get(k, 0) for k in KIND_ORDER]])	행.
+_finish(ws, 1 + len(KIND_ORDER))	마무리.
+ws = _sheet(wb, "파일별", ["칸", "파일", *STATUSES, "처리 시간(초)"] + (["A·B 재현율", "A·B 정밀도"] if result.gold_used else []),	파일별 시트 열.
+[18, 28] + [9] * len(STATUSES) + [10, 10, 10])	너비.
+for sr in steps:	칸마다
+for n, r in enumerate(sr.records):	기록마다
+c = r.by_status()	상태별.
+row = [sr.title, r.name, *[c.get(s, 0) for s in STATUSES], round(r.elapsed, 1)]	행.
+if result.gold_used:	골드면
+g = sr.per_file_gold[n] if n < len(sr.per_file_gold) else {}	그 파일의 지표.
+row += [_pct(g.get("recall")) if g else "-", _pct(g.get("precision")) if g else "-"]	열 추가.
+ws.append(row)	행 추가.
+_finish(ws, len(STATUSES) + 5)	마무리.
+ws = _sheet(wb, "칸 설정", ["칸", "설정", "값"], [18, 28, 60])	칸 설정 시트.
+for sr in steps:	칸마다
+for k, v in sr.cfg.fingerprint().items():	지문 항목마다
+ws.append([sr.title, k, v if isinstance(v, (int, float, str)) else ", ".join(map(str, v))])	행.
+_finish(ws, 3)	마무리.
+out.parent.mkdir(parents=True, exist_ok=True)	폴더.
+wb.save(str(out))	저장.
+return out	반환.

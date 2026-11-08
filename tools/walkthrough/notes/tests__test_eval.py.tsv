@@ -1,0 +1,110 @@
+# tests/test_eval.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+from pathlib import Path	경로.
+import pytest	pytest.
+from openpyxl import load_workbook	Excel.
+from ip_finder.config import Config	설정.
+from ip_finder.eval import GOLD_HEADERS, evaluate, import_feedback, interpret, make_gold_sheet, train_classifier	평가 함수들.
+from ip_finder.goldmap import GoldMap, find_gold_files, load_gold	골드 도구.
+from ip_finder.history import History	이력.
+from ip_finder.pipeline import extract, run_file	실행.
+from ip_finder.post import in_review_list	검토 목록 판정.
+def test_gold_sheet_and_scoring(sample_dir, cfg, fake_embedder, tmp_path):	골드 시트·채점 테스트.
+gold = make_gold_sheet(sample_dir / "sample_report.pptx", cfg, tmp_path / "g.xlsx", embedder=fake_embedder)	골드 시트.
+wb = load_workbook(str(gold))	열기.
+assert wb.sheetnames == ["라벨링", "안내", "메타"]	시트 이름.
+assert [c.value for c in wb["라벨링"][1]] == GOLD_HEADERS	열 이름.
+rows = [r for r in wb["라벨링"].iter_rows(min_row=2, values_only=True) if r[0]]	행.
+assert rows and all(r[12] in ("A", "B", "C", "D", "X") for r in rows) and all(isinstance(r[9], float) for r in rows)   # 확신 열	정답 채워짐, 확신 열 숫자.
+meta = dict(r[:2] for r in wb["메타"].iter_rows(values_only=True))	메타.
+assert meta["1차 분류기"].startswith("원형 문장") and "layout=끔" in meta["스위치"]	분류기·스위치.
+stored = evaluate(gold, cfg, rerun=False)	저장 라벨 채점.
+assert stored["raw"]["accuracy"] == 1.0	100%.
+rerun = evaluate(gold, cfg, rerun=True, embedder=fake_embedder)	재실행 채점.
+assert rerun["rows"] == len(rows) and rerun["raw"]["accuracy"] == 1.0 and rerun["candidates"]["recall"] == 1.0	행 수·정확도·후보 재현율.
+assert set(rerun["final"]["per_grade"]) == {"A", "B", "C", "D", "X"} and len(rerun["sweep"]) == 6	등급 다섯, 스윕 6.
+@pytest.mark.parametrize("name", ["knn", "centroid", "softmax", "ovr", "ngram"])	학습형 다섯 매개변수화.
+def test_train_each_classifier_and_use_it(name, sample_dir, cfg, fake_embedder, tmp_path):	학습·사용 테스트.
+gold = make_gold_sheet(sample_dir / "sample_report.pptx", cfg, tmp_path / "g.xlsx", embedder=fake_embedder)	골드 시트.
+stats = train_classifier([gold], cfg, None, fake_embedder, name=name)	학습.
+out = cfg.classifier_file(name)	파일.
+assert out.exists() and stats["classifier"] == name and stats["n"] >= 20 and 0.0 <= stats["cv_accuracy"] <= 1.0	존재·이름·수·정확도.
+cfg.classifier = name	분류기 바꿈.
+_, res = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, embedder=fake_embedder)	실행.
+assert res.info.classifier_name == name and "학습" in res.info.classifier	학습 분류기 사용.
+rep = evaluate(gold, cfg, rerun=True, embedder=fake_embedder)	채점.
+assert rep["rows"] == stats["n"]	행 수.
+def test_train_rejects_non_trainable(sample_dir, cfg, fake_embedder, tmp_path):	학습 거부 테스트.
+gold = make_gold_sheet(sample_dir / "sample_report.pptx", cfg, tmp_path / "g.xlsx", embedder=fake_embedder)	골드 시트.
+with pytest.raises(ValueError):	오류 기대.
+train_classifier([gold], cfg, None, fake_embedder, name="proto")	proto 학습.
+def test_interpret_feedback_values():	피드백 해석 테스트.
+assert interpret("O", "A") == "A" and interpret("맞음", "X?") == "X" and interpret("X", "A") == "X"	O·맞음·X.
+assert interpret("c", "A") == "C" and interpret("", "A") is None and interpret("??", "A") is None	c·빈·??.
+def test_feedback_import_builds_and_merges_gold(sample_dir, cfg, fake_embedder, tmp_path):	피드백 가져오기 테스트.
+out, res = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, embedder=fake_embedder)	실행.
+from ip_finder.report.xlsx import FEEDBACK_COL as FC	피드백 열.
+wb = load_workbook(str(out))	열기.
+ws = wb["검토 목록"]	검토 목록.
+ws.cell(row=2, column=FC).value = "O"	맞음.
+ws.cell(row=3, column=FC).value = "X"	틀림.
+ws.cell(row=4, column=FC).value = "c"	C.
+ws.cell(row=4, column=FC + 1).value = "원인 설명임"	메모.
+ws.cell(row=5, column=FC).value = "???"	해석 불가.
+wb.save(str(out))	저장.
+h = History(cfg.history_dir())	이력.
+rec = import_feedback(out, history=h)	가져오기.
+gold = Path(rec["gold"])	골드 경로.
+assert gold.name == "sample_report_gold.xlsx" and rec["skipped"] == 1 and rec["added"] == rec["feedback_rows"] == 3	이름·건너뜀 1·추가 3.
+rows = load_gold(gold)	골드 행.
+first = [r for r in res.labeled if in_review_list(r)]	검토 목록 문장.
+by_text = {r["문장"]: r for r in rows}	문장 → 행.
+assert by_text[first[0].text]["정답"] == first[0].label and by_text[first[1].text]["정답"] == "X" and by_text[first[2].text]["정답"] == "C"	정답들.
+assert by_text[first[2].text]["메모"] == "원인 설명임" and len(h.feedback_log()) == 1	메모와 이력.
+wb = load_workbook(str(out))	다시 열기.
+wb["검토 목록"].cell(row=2, column=FC).value = "B"	B 로.
+wb["검토 목록"].cell(row=6, column=FC).value = "O"	새 행.
+wb.save(str(out))	저장.
+rec2 = import_feedback(out, history=h)	두 번째 가져오기.
+assert rec2["updated"] == 3 and rec2["added"] == 1 and {r["문장"]: r for r in load_gold(gold)}[first[0].text]["정답"] == "B"	갱신 3, 추가 1, B.
+def test_gold_override_in_new_runs(sample_dir, cfg, fake_embedder, tmp_path):	골드 반영 테스트.
+out, res = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, embedder=fake_embedder)	실행.
+from ip_finder.report.xlsx import FEEDBACK_COL as FC	피드백 열.
+wb = load_workbook(str(out))	열기.
+wb["검토 목록"].cell(row=2, column=FC).value = "X"	X.
+wb["검토 목록"].cell(row=3, column=FC).value = "D"	D.
+wb.save(str(out))	저장.
+rec = import_feedback(out, gold_dir=cfg.gold_dir(), history=History(cfg.history_dir()))	가져오기(골드 폴더).
+assert Path(rec["gold"]).parent == tmp_path / "gold" and cfg.gold_files() == [Path(rec["gold"])]	골드 폴더에 생김.
+listed = [ll for ll in res.labeled if in_review_list(ll)]	검토 목록.
+gm = GoldMap.load(cfg.gold_paths, cfg.base_dir)	골드 맵.
+assert gm.get(listed[0].text) == "X" and gm.get(listed[1].text) == "D" and len(gm) == 2	정답 둘.
+out2, res2 = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, embedder=fake_embedder)	다시 실행.
+by_key = {ll.key: ll for ll in res2.labeled}	키 → 문장.
+a, b = by_key[listed[0].key], by_key[listed[1].key]	두 문장.
+assert a.label == "X" and a.source == "gold" and "골드 반영(" in a.notes[-1] and a.stage_out == 2	X 로 바뀜, 골드 출처, 후처리 제외.
+assert b.label == "D" and b.source == "gold" and b.score == 1.0 and b.stage_out == 2	D 로, 점수 1.
+assert res2.info.gold_lines >= 2 and res2.info.gold_changed >= 2 and any("골드" in s for s in res2.info.settings_diff)   # 기준선은 반복 꼬리말도 판정하므로 같은 문장이 여러 쪽에 있을 수 있다	골드 반영 수와 설정 차이(기준선은 반복 꼬리말도 판정).
+wb2 = load_workbook(str(out2))	Excel.
+assert any(r[5] == listed[0].text and r[10] == "골드" for r in wb2["후처리 제외"].iter_rows(min_row=2, values_only=True))	후처리 제외 시트에 골드.
+cfg.use_gold = False	골드 끔.
+_, res3 = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, embedder=fake_embedder)	실행.
+assert {ll.key: ll for ll in res3.labeled}[listed[0].key].label == listed[0].label	원래 라벨.
+cfg.use_gold = True	다시 켬.
+rep = evaluate(Path(rec["gold"]), cfg, rerun=True, embedder=fake_embedder)	채점.
+assert rep["raw"]["accuracy"] < 1.0                                         # 채점에는 골드 반영 없음	골드 반영 없이 채점되어 100% 미만.
+res4 = run_file(sample_dir / "sample_report.pptx", cfg, embedder=fake_embedder, use_gold=False)	use_gold=False 실행.
+assert res4.info.gold_lines == 0	골드 반영 0.
+def test_gold_map_conflicts_latest_wins(tmp_path):	골드 충돌 테스트.
+import os, time	os·time.
+from ip_finder.eval import write_gold_workbook	골드 쓰기.
+d = tmp_path / "g"	폴더.
+d.mkdir()	만들기.
+row = lambda n, text, ans: [n, "r.pptx", 3, "제목", n, text, "A", "A", "분류기", "", 1.0, 1.0, ans, ""]	행 도우미.
+write_gold_workbook(d / "old_gold.xlsx", [row(1, "냉각 유로를  이중 구조로 변경", "A"), row(2, "일정 조정", "X")], [])	옛 골드.
+write_gold_workbook(d / "new_gold.xlsx", [row(1, "냉각 유로를 이중 구조로 변경", "B")], [])	새 골드.
+t = time.time()	시각.
+os.utime(d / "old_gold.xlsx", (t - 100, t - 100))	옛 파일 시각 과거로.
+os.utime(d / "new_gold.xlsx", (t, t))	새 파일 현재.
+assert [p.name for p in find_gold_files([d])] == ["new_gold.xlsx", "old_gold.xlsx"]	최근 순.
+gm = GoldMap.load([d])	맵.
+assert gm.get("냉각 유로를 이중 구조로 변경") == "B" and gm.get("  일정   조정 ") == "X" and gm.conflicts == 1	최근 파일이 이김, 충돌 1.

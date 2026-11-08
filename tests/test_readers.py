@@ -46,7 +46,7 @@ def test_pdf_reader_titles(sample_dir):
 
 
 # ------------------------------------------------------------------ PDF 레이아웃
-def test_pdf_single_column_report(layout_dir, cfg):
+def test_pdf_single_column_report(layout_dir, cfg_all):
     doc = load_document(layout_dir / "layout_01_single_column.pdf")
     assert len(doc.pages) == 9
     texts = [ln.text for p in doc.pages for ln in p.lines]
@@ -66,7 +66,7 @@ def test_pdf_single_column_report(layout_dir, cfg):
     assert len(table) == 20 and [t.text for t in table[:3]] == ["항목: 진동 속도 RMS (24,000 rpm)", "개선 전: 4.5 mm/s", "개선 후: 1.9 mm/s"]   # 셀마다 한 줄
     t6 = _texts(doc.pages[5])
     assert t6[t6.index("제어식") + 1] == "n_cmd = n_set × (1 + k · sgn(f_res − f_cur) · min(|f_res − f_cur| / f_res, 0.06))"   # 수식의 |x| 는 나누지 않는다
-    prepare(doc, cfg)                                                            # 전처리 뒤에는 머리말·꼬리말·쪽 번호가 후보에 없다
+    prepare(doc, cfg_all)                                                        # 규칙을 모두 켠 전처리 뒤에는 머리말·꼬리말·쪽 번호가 후보에 없다
     active = [ln.text for p in doc.pages for ln in p.active_lines()]
     assert active and not any(t in ("대외비", "생산기술연구소 정밀가공팀") or t.endswith(" -") for t in active)
 
@@ -369,3 +369,27 @@ def test_pptx_smartart_points_become_diagram_lines():
 
     lines = _smartart_lines(Slide(), Shape())
     assert [(ln.text, ln.source) for ln in lines] == [("신뢰도 추정 가중치 전환", "diagram"), ("융합 출력", "diagram")]   # 줄바꿈은 공백, 전환 점은 무시
+
+
+# ------------------------------------------------------------------ 원시 읽기 (레이아웃 분석 끔)
+def test_raw_reading_mode_pdf_and_pptx(sample_dir):
+    for name in ("sample_report.pdf", "sample_report.pptx"):
+        raw = load_document(sample_dir / name, layout=False)
+        lay = load_document(sample_dir / name, layout=True)
+        assert raw.reader == "raw" and lay.reader == "layout" and len(raw.pages) == len(lay.pages) == 12
+        assert any("원시 읽기" in n for n in raw.notes)
+        assert raw.pages[4].title.startswith("개선안 1")                          # 제목 자리(PPTX)·첫 줄(PDF)
+        joined = " ".join(ln.text for ln in raw.pages[4].lines)
+        assert "저탄성" in joined
+    raw_pdf = load_document(sample_dir / "sample_report.pdf", layout=False)
+    assert any("|" in ln.text for p in raw_pdf.pages for ln in p.lines)        # 원시 읽기는 '|' 항목을 나누지 않는다
+    assert all(ln.source == "body" and ln.level == 0 for p in raw_pdf.pages for ln in p.lines)
+
+
+def test_raw_reading_two_columns_keeps_pymupdf_order(layout_dir):
+    raw = load_document(layout_dir / "layout_02_two_columns.pdf", layout=False)
+    lay = load_document(layout_dir / "layout_02_two_columns.pdf", layout=True)
+    assert not any("다단" in n for n in raw.notes) and any("다단" in n for n in lay.notes)
+    assert LS.LEFT_COLUMN_FIRST not in _texts(raw.pages[0])                       # 원시 읽기는 꺾인 줄을 잇지 않는다
+    assert LS.LEFT_COLUMN_FIRST in _texts(lay.pages[0])
+    assert sum(1 for ln in raw.pages[1].lines if ln.source == "table") == 0        # 표 인식 없음

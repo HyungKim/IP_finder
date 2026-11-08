@@ -1,0 +1,637 @@
+# ip_finder/layout_samples.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""레이아웃 시험용 가짜 PDF 보고자료 생성기. 실제 사내 자료는 포함하지 않는다.	파일 설명: 레이아웃 시험용 가짜 PDF 생성기. 실제 자료 없음.
+PDF 리더(레이아웃 분석)를 여러 배치에서 검증하기 위한 합성 보고서 5건을 만든다. 모든 회사·제품·수치는 지어낸 것이다.	목적: PDF 리더를 여러 배치에서 검증. 회사·제품·수치는 전부 지어낸 것.
+01 단일 단 불릿 보고서(PPT 출력 모사): 머리말·꼬리말 반복, 긴 문장 줄바꿈, 하위 불릿, 번호 목록, 테두리 표	01 단일 단 불릿 보고서가 시험하는 것.
+02 문서형 2단·3단 기술 검토서: 좌우 단 읽기 순서, 영문 하이픈 줄바꿈, 단 아래 전체 폭 표, 셀 안 줄바꿈	02 2단·3단 문서가 시험하는 것.
+03 도식 중심 보고서: 블록도(박스·화살표), 막대 차트 자리, 사진 전용 페이지, 순서도, 2×2 매트릭스	03 도식 보고서가 시험하는 것.
+04 표 중심 보고서: 큰 표, 좌 표·우 설명, 선 없는 공백 정렬 표, 일정표, 담당자 표	04 표 보고서가 시험하는 것.
+05 영문 혼용·규격 검토서: 영문 소제목, 영어만 있는 줄, 수식, 짧은 라벨, 회전 페이지, 옆으로 누운 글	05 영문 혼용·회전 페이지가 시험하는 것.
+사용: python -m ip_finder.layout_samples [출력폴더]   (기본 demo/layout)	사용법.
+"""	docstring 끝.
+from __future__ import annotations	새 문법 호환.
+import sys	명령줄 인자.
+from pathlib import Path	경로.
+import pymupdf	PyMuPDF (PDF 를 그리는 데 쓴다).
+from .samples import _font	samples.py 의 한글 글꼴 찾기 함수 재사용.
+LANDSCAPE = (842, 595)	가로 페이지 크기 (pt).
+PORTRAIT = (595, 842)	세로 페이지 크기.
+GRAY = (0.35, 0.35, 0.35)	회색.
+LIGHT = (0.85, 0.85, 0.85)	연회색.
+BLUE = (0.2, 0.35, 0.65)	파랑.
+# 테스트가 참조하는 문장들	주석: 테스트가 참조하는 문장.
+WRAPPED_BULLET = ("주축 회전수 24,000 rpm 이상 구간에서 베어링 예압 손실로 1차 공진 주파수가 310 Hz 부근으로 내려오면서 "	줄바꿈으로 꺾이는 긴 불릿 문장 (한 문장으로 이어지는지 시험).
+"가공면 표면 거칠기 Ra 가 규격 0.4 ㎛ 를 초과하는 불량이 3월 이후 월평균 42건 발생")	문장 계속.
+SUB_BULLET = "불량 로트의 80%가 야간 연속 가공 6시간 이후에 집중되어 열변형과의 상관성이 높음"	하위 불릿 문장.
+NUMBERED_ITEM = "열팽창에 따른 외륜 끼워맞춤 공차 변화로 예압이 설계값 대비 35% 감소하는 것을 FEM 해석과 실측으로 확인"	번호 목록 항목.
+HYPHEN_SENTENCE = "The controller applies a feed-forward term computed from the predicted heat load of each module."	영문 하이픈 분철 시험 문장 ('com-' + 'puted').
+LEFT_COLUMN_FIRST = "현행 제어는 팩 입구 냉각수 온도만을 기준으로 펌프 듀티를 3단계로 바꾸는 방식이라 모듈 간 온도 편차에는 대응하지 못한다."	2단 문서 왼쪽 단 첫 문장 (왼쪽을 먼저 읽는지 시험).
+RIGHT_COLUMN_FIRST = "제안 방식은 모듈별 온도 센서 12점을 1초 주기로 읽어 최댓값과 최솟값의 차이를 편차로 정의하고 편차에 비례해 분배 밸브 개도를 바꾼다."	오른쪽 단 첫 문장.
+COLUMN_HEADS = ("개선안 A: 분배 밸브 비례 제어", "개선안 B: 펌프 듀티 연속 가변", "개선안 C: 냉각수 유로 이중화")	3단 비교 표의 머리 세 개.
+BLOCK_LABELS = ("Radar 전처리", "Confidence 추정기", "가중치 제어기", "융합 출력", "진단 모듈")	블록도 상자 라벨 다섯 개.
+TEXT_TABLE = [["공정", "불량률(개선 전)", "불량률(개선 후)", "조치"],	선 없는 표 (공백 정렬) 데이터: 머리 행,
+["세정", "2.4 %", "0.9 %", "세정액 농도 자동 보정"],	세정 행,
+["도포", "3.1 %", "0.7 %", "노즐 압력 폐루프 제어"],	도포 행,
+["경화", "1.2 %", "1.1 %", "변경 없음"],	경화 행,
+["검사", "0.8 %", "0.3 %", "비전 조명 각도 변경"]]	검사 행.
+ROTATED_LINE = "회전된 페이지에서도 바로 선 글은 읽는다: 냉각 유로 이중화 시 모듈 온도 편차 2.1℃ → 0.8℃"	회전 페이지의 바로 선 글 (읽혀야 함).
+SIDEWAYS_CAPTION = "그림 4. 옆으로 누운 도면 (세로 글자는 읽지 않음)"	옆으로 누운 그림의 캡션 (세로 글자는 안 읽힘).
+ENGLISH_ONLY = "IEC 61508-2:2010, SIL 2 / ISO 13849-1 PL d"	영어만 있는 줄 (한글 없음 규칙 시험).
+FORMULA = "τ = J·α + c·ω + K·θ"	수식 줄.
+class Sheet:	페이지 위에 글·표·도형을 그리는 도우미 클래스.
+"""PyMuPDF 페이지 위에 글·표·도형을 그리는 작은 도구."""	설명.
+def __init__(self, doc: pymupdf.Document, font: pymupdf.Font, size: tuple[int, int] = LANDSCAPE) -> None:	생성자: 문서, 글꼴, 크기 (기본 가로).
+self.w, self.h = size	너비·높이.
+self.page = doc.new_page(width=self.w, height=self.h)	새 페이지.
+self.font = font	글꼴.
+self.tw = pymupdf.TextWriter(self.page.rect)	글 쓰기 도구 (finish 때 한 번에 쓴다).
+# ---- 글 ----	주석: 글.
+def text(self, x: float, y: float, s: str, size: float = 11, color=None) -> None:	글 한 줄을 (x, y) 에 쓰는 메서드.
+self.tw.append((x, y), s, font=self.font, fontsize=size)	쓰기 도구에 추가.
+def width(self, s: str, size: float) -> float:	글 폭 측정.
+return self.font.text_length(s, fontsize=size)	글꼴로 길이 계산.
+def wrap(self, x: float, y: float, width: float, s: str, size: float = 11, leading: float | None = None,	폭에 맞춰 줄바꿈해 쓰는 메서드. 줄 간격과
+cont_indent: float = 0) -> float:	이어지는 줄 들여쓰기 옵션.
+"""공백 단위로 줄바꿈해 쓴다. 다음 줄의 기준선 y 를 돌려준다."""	설명: 다음 줄의 y 를 돌려준다.
+leading = leading or size * 1.55	줄 간격 기본 1.55배.
+line, first = "", True	현재 줄, 첫 줄 여부.
+for word in s.split(" "):	단어마다
+cand = f"{line} {word}".strip()	현재 줄에 단어를 붙인 후보.
+avail = width - (0 if first else cont_indent)	쓸 수 있는 폭 (둘째 줄부터 들여쓰기만큼 줄어듦).
+if line and self.width(cand, size) > avail:	후보가 폭을 넘으면
+self.text(x + (0 if first else cont_indent), y, line, size)	현재 줄을 쓰고
+y += leading	아래로,
+first, line = False, word	새 줄은 이 단어부터.
+else:	아니면
+line = cand	후보를 현재 줄로.
+if line:	남은 줄이 있으면
+self.text(x + (0 if first else cont_indent), y, line, size)	쓴다.
+y += leading	아래로.
+return y	다음 y.
+def para(self, x: float, y: float, width: float, s: str, size: float = 11, gap: float = 6) -> float:	문단 메서드: wrap 뒤에 간격.
+return self.wrap(x, y, width, s, size) + gap	줄바꿈 쓰기 + 간격.
+def bullets(self, x: float, y: float, width: float, items, size: float = 11, gap: float = 4) -> float:	불릿 목록 메서드. items 는 문자열 또는 (문자열, 수준).
+"""items: str 또는 (str, level). level 0 '•', 1 '–', 2 '·'."""	설명: 수준별 기호.
+markers = ("•", "–", "·")	기호 세 가지.
+for item in items:	항목마다
+text, level = (item, 0) if isinstance(item, str) else item	문자열이면 수준 0, 튜플이면 그 수준.
+ind = 18 * level	수준별 들여쓰기 18pt.
+marker = markers[min(level, 2)] + " "	기호와 공백.
+y = self.wrap(x + ind, y, width - ind, marker + text, size - min(level, 1), cont_indent=self.width(marker, size)) + gap	기호를 붙여 줄바꿈 쓰기 (둘째 줄은 기호 폭만큼 들여쓰기), 간격.
+return y	다음 y.
+def numbered(self, x: float, y: float, width: float, items: list[str], size: float = 11, gap: float = 5) -> float:	번호 목록 메서드.
+for n, text in enumerate(items, 1):	항목마다 1부터
+marker = f"{n}. "	'1. ' 기호.
+y = self.wrap(x, y, width, marker + text, size, cont_indent=self.width(marker, size)) + gap	쓰기.
+return y	다음 y.
+def heading(self, x: float, y: float, s: str, size: float = 14) -> float:	제목 메서드.
+self.text(x, y, s, size)	쓰기.
+return y + size * 1.7	제목 아래 간격.
+# ---- 표 ----	주석: 표.
+def table(self, x: float, y: float, col_widths: list[float], rows: list[list[str]], size: float = 10,	표 메서드: 열 너비들, 행들, 글씨 크기,
+borders: bool = True, pad: float = 5, header: bool = True) -> float:	테두리 여부, 셀 여백, 머리 행 여부.
+leading = size * 1.4	줄 간격.
+for r, row in enumerate(rows):	행마다
+# 셀마다 줄바꿈 수를 먼저 세어 행 높이를 정한다	주석: 행 높이.
+wrapped: list[list[str]] = []	셀마다 줄바꿈된 줄들.
+for cw, cell in zip(col_widths, row):	열 너비와 셀 글을 짝지어
+lines, line = [], ""	줄들과 현재 줄.
+for word in cell.split(" "):	단어마다
+cand = f"{line} {word}".strip()	후보.
+if line and self.width(cand, size) > cw - 2 * pad:	셀 폭을 넘으면
+lines.append(line)	줄 확정,
+line = word	새 줄.
+else:	아니면
+line = cand	후보로.
+lines.append(line)	마지막 줄.
+wrapped.append(lines)	셀 줄들 저장.
+row_h = max(len(ls) for ls in wrapped) * leading + 2 * pad	행 높이 = 가장 많은 줄 수 × 간격 + 여백.
+cx = x	현재 x.
+for cw, lines in zip(col_widths, wrapped):	셀마다
+if borders:	테두리면
+rect = pymupdf.Rect(cx, y, cx + cw, y + row_h)	셀 사각형.
+self.page.draw_rect(rect, color=GRAY, width=0.8, fill=LIGHT if (header and r == 0) else None)	그린다 (머리 행은 연회색 채움).
+ty = y + pad + size	글 시작 y.
+for ln in lines:	줄마다
+self.text(cx + pad, ty, ln, size)	쓰고
+ty += leading	아래로.
+cx += cw	다음 열로.
+y += row_h	다음 행으로.
+return y + 8	표 아래 간격.
+# ---- 도형 ----	주석: 도형.
+def box(self, x: float, y: float, w: float, h: float, label: str, size: float = 10, fill=None) -> None:	라벨이 가운데 있는 상자 메서드.
+self.page.draw_rect(pymupdf.Rect(x, y, x + w, y + h), color=GRAY, width=1.0, fill=fill)	사각형.
+lines = label.split("\n")	라벨 줄들.
+ty = y + h / 2 - (len(lines) - 1) * size * 0.7 + size * 0.35	세로 가운데 맞춤 시작 y.
+for ln in lines:	줄마다
+self.text(x + (w - self.width(ln, size)) / 2, ty, ln, size)	가로 가운데에 쓰고
+ty += size * 1.4	아래로.
+def arrow(self, x1: float, y1: float, x2: float, y2: float) -> None:	화살표 메서드.
+self.page.draw_line((x1, y1), (x2, y2), color=GRAY, width=1.0)	선.
+if x2 >= x1 and abs(y2 - y1) < 1:	오른쪽 수평이면
+head = [(x2, y2), (x2 - 7, y2 - 4), (x2 - 7, y2 + 4)]	오른쪽 화살촉.
+elif y2 > y1:	아래로 가면
+head = [(x2, y2), (x2 - 4, y2 - 7), (x2 + 4, y2 - 7)]	아래 화살촉.
+else:	아니면
+head = [(x2, y2), (x2 + 7, y2 - 4), (x2 + 7, y2 + 4)]	왼쪽 화살촉.
+self.page.draw_polyline(head, color=GRAY, fill=GRAY, closePath=True)	화살촉 다각형.
+def image(self, x: float, y: float, w: float, h: float) -> None:	그림 자리 메서드.
+"""사진 대신 회색 바둑판 이미지를 넣는다."""	설명: 회색 바둑판.
+pix = pymupdf.Pixmap(pymupdf.csGRAY, pymupdf.IRect(0, 0, 160, 120), False)	회색 비트맵 160×120.
+pix.clear_with(170)	밝은 회색으로 채움.
+for i in range(0, 160, 40):	40 간격으로
+for j in range(0, 120, 40):	격자마다
+if (i // 40 + j // 40) % 2 == 0:	번갈아
+pix.set_rect(pymupdf.IRect(i, j, i + 40, j + 40), (110,))	어두운 칸.
+self.page.insert_image(pymupdf.Rect(x, y, x + w, y + h), pixmap=pix)	페이지에 삽입.
+def bar_chart(self, x: float, y: float, w: float, h: float, labels: list[str], values: list[float], unit: str) -> None:	막대 차트 메서드.
+self.page.draw_line((x, y + h), (x + w, y + h), color=GRAY, width=1)	x 축.
+self.page.draw_line((x, y), (x, y + h), color=GRAY, width=1)	y 축.
+vmax = max(values) * 1.2	최댓값의 1.2배를 축 상한으로.
+bw = w / (len(values) * 2)	막대 폭.
+for i, (lab, v) in enumerate(zip(labels, values)):	항목마다
+bx = x + bw * (2 * i + 0.5)	막대 x.
+bh = h * v / vmax	막대 높이.
+self.page.draw_rect(pymupdf.Rect(bx, y + h - bh, bx + bw, y + h), color=BLUE, fill=BLUE)	막대.
+self.text(bx + (bw - self.width(lab, 8)) / 2, y + h + 12, lab, 8)	축 아래 라벨.
+val = f"{v:g}{unit}"	값 문자열.
+self.text(bx + (bw - self.width(val, 8)) / 2, y + h - bh - 4, val, 8)	막대 위 값.
+for k in range(5):	눈금 다섯 개
+yy = y + h - h * k / 4	y 위치.
+self.page.draw_line((x - 3, yy), (x, yy), color=GRAY, width=0.6)	눈금선.
+self.text(x - 26, yy + 3, f"{vmax * k / 4:.0f}", 7)	눈금 값.
+# ---- 머리말·꼬리말 ----	주석: 머리말·꼬리말.
+def frame(self, header: str, footer: str, page_no: int, number_style: str = "dash") -> None:	머리말·꼬리말·쪽 번호 메서드.
+self.text(40, 26, header, 8)	위쪽 머리말 8pt.
+self.text(40, self.h - 16, footer, 8)	아래쪽 꼬리말.
+num = f"- {page_no} -" if number_style == "dash" else f"{page_no}"	쪽 번호 꼴: '- 3 -' 또는 '3'.
+self.text(self.w - 40 - self.width(num, 8), self.h - 16, num, 8)	오른쪽 아래에 쪽 번호.
+def finish(self) -> None:	페이지 마무리.
+self.tw.write_text(self.page)	모아 둔 글을 실제로 쓴다.
+def _rotated_text(page: pymupdf.Page, font: pymupdf.Font, vx: float, vy: float, s: str, size: float) -> None:	회전 페이지에 바로 선 글을 쓰는 함수.
+"""/Rotate 90 페이지에서 화면 기준 (vx, vy) 에 바로 선 글을 쓴다."""	설명.
+p = pymupdf.Point(vx, vy) * ~page.rotation_matrix	화면 좌표를 페이지 좌표로 되돌린다 (회전 행렬의 역).
+tw = pymupdf.TextWriter(page.rect)	쓰기 도구.
+tw.append(p, s, font=font, fontsize=size)	글 추가.
+tw.write_text(page, morph=(p, pymupdf.Matrix(90)))	90도 돌려 쓴다 (화면에서는 바로 선 글이 됨).
+# ------------------------------------------------------------------ 01 단일 단 불릿 보고서	절 주석: 01 단일 단.
+def report_spindle(doc: pymupdf.Document, font: pymupdf.Font) -> None:	단일 단 불릿 보고서를 만드는 함수.
+H = "SV-700 고속 스핀들 진동 저감 과제 | 대외비"	머리말.
+F = "생산기술연구소 정밀가공팀"	꼬리말.
+n = 0	쪽 번호 카운터.
+def sheet() -> Sheet:	새 페이지를 만들고 머리말·꼬리말을 찍는 내부 함수.
+nonlocal n	바깥 변수 n 을 고친다는 선언.
+n += 1	쪽 번호 +1.
+s = Sheet(doc, font)	페이지.
+s.frame(H, F, n)	머리말·꼬리말.
+return s	돌려준다.
+s = sheet()	표지 페이지.
+s.text(60, 200, "SV-700 고속 스핀들 진동 저감 개선 결과 보고", 28)	큰 제목 28pt.
+s.text(60, 240, "베어링 예압 자동 조정 구조와 공진 회피 제어 적용", 16)	부제.
+s.text(60, 330, "생산기술연구소 정밀가공팀 · 설비제어팀", 13)	부서.
+s.text(60, 352, "2026. 10. 28.", 13)	날짜.
+s.finish()	마무리.
+s = sheet()	목차 페이지.
+y = s.heading(50, 70, "목차", 22)	'목차' 제목.
+s.numbered(70, y + 10, 600, ["배경 및 문제점", "원인 분석", "개선안 1: 베어링 예압 자동 조정 구조", "개선안 2: 공진 회피 제어",	번호 목록 일곱 항목.
+"검증 결과", "양산 적용 일정 및 비용", "향후 계획"], 13, gap=10)	계속.
+s.finish()	마무리.
+s = sheet()	배경 및 문제점 페이지.
+y = s.heading(50, 70, "배경 및 문제점", 22)	제목.
+y = s.bullets(60, y + 8, 720, [	불릿 목록:
+WRAPPED_BULLET,	긴 문장 (줄바꿈 시험),
+(SUB_BULLET, 1),	하위 불릿,
+("가공 후 수정 작업으로 라인 가동률이 3.2%p 하락하고 월 2,400만 원의 재작업 비용 발생", 1),	하위 불릿 (비용 문장),
+"진동 센서(가속도계) 데이터에서 24,000 rpm 이상 구간의 진동 속도 RMS 가 4.5 mm/s 로 ISO 10816 기준 2.8 mm/s 초과",	진동 수치 문장,
+"기존 대응은 회전수를 22,000 rpm 으로 낮추는 방법뿐이어서 사이클 타임이 11% 늘어남",	기존 대응 문장,
+"고객사 B 의 알루미늄 하우징 신규 모델은 24,000 rpm 가공이 필수 조건이라 근본 대책 필요",	고객 요구 문장.
+], 13)	13pt.
+s.finish()	마무리.
+s = sheet()	원인 분석 페이지.
+y = s.heading(50, 70, "원인 분석", 22)	제목.
+y = s.heading(60, y + 4, "1) 구조 요인", 14)	소제목 '1) 구조 요인'.
+y = s.numbered(70, y, 700, [	번호 목록:
+NUMBERED_ITEM,	열팽창 항목,
+"주축 전면 베어링 하우징의 냉각 재킷이 후면에만 있어 전후 온도차 14℃ 가 발생하고 예압이 비대칭으로 풀림",	냉각 재킷 항목,
+"스핀들 모터 로터와 주축의 열팽창 계수 차이(강 11.5 vs 알루미늄 23 ×10⁻⁶/℃)로 축방향 간섭이 변함",	열팽창 계수 항목.
+], 12)	12pt.
+y = s.heading(60, y + 6, "2) 제어 요인", 14)	소제목 '2) 제어 요인'.
+y = s.bullets(70, y, 700, [	불릿:
+"가공 프로그램이 회전수를 고정값으로 지정해 공진 주파수가 이동해도 회피하지 못함",	회전수 고정 문제,
+"진동 모니터링은 사후 알람만 발생시키고 제어기와 연동되어 있지 않음",	모니터링 미연동,
+("알람 임계값 5.0 mm/s 는 불량 발생 시점(3.8 mm/s)보다 높게 설정되어 있었음", 1),	하위 불릿 (임계값).
+], 12)	12pt.
+s.finish()	마무리.
+s = sheet()	개선안 1 페이지.
+y = s.heading(50, 70, "개선안 1: 베어링 예압 자동 조정 구조", 22)	제목.
+y = s.bullets(60, y + 8, 720, [	불릿:
+"전면 베어링 외륜을 피에조 액추에이터 3점으로 지지하고 주축 온도 센서 값에 따라 축방향 예압을 0~800 N 범위에서 보정",	피에조 액추에이터 수단,
+("액추에이터 변위 분해능 0.1 ㎛, 응답 시간 20 ms 로 열팽창 속도(최대 0.5 ㎛/s)보다 충분히 빠름", 1),	하위: 분해능·응답,
+("예압 목표값은 회전수와 온도의 2차원 테이블로 관리하고 시운전 데이터로 초기 테이블을 채움", 1),	하위: 테이블 관리,
+"전면 하우징에 냉각 재킷을 추가하고 전후 냉각수 유량을 독립 제어하여 전후 온도차를 3℃ 이내로 유지",	냉각 재킷 추가,
+"외륜 끼워맞춤을 억지 끼워맞춤에서 중간 끼워맞춤으로 바꾸고 회전 방지 키를 추가",	끼워맞춤 변경,
+("기존 스핀들 카트리지와 치수 호환을 유지해 현장 교체 시간 4시간 이내", 1),	하위: 치수 호환,
+"제어 보드는 기존 CNC 의 PLC 입출력 모듈과 EtherCAT 으로 연결하며 별도 PC 가 필요 없음",	제어 보드 연결.
+], 13)	13pt.
+s.finish()	마무리.
+s = sheet()	개선안 2 페이지.
+y = s.heading(50, 70, "개선안 2: 공진 회피 제어", 22)	제목.
+y = s.para(60, y + 8, 720, "진동 센서의 주파수 스펙트럼을 100 ms 주기로 분석해 1차 공진 주파수를 추정하고, 현재 회전수가 공진 "	문단 1: 공진 회피 제어 설명,
+"주파수의 ±8% 안에 들어오면 가공 부하가 작은 구간에서 회전수를 공진 밴드 바깥으로 자동 이동시킨다. 이동 폭은 "	계속,
+"공구 수명과 표면 조도 영향을 고려해 최대 6% 로 제한한다.", 13)	계속.
+y = s.para(60, y, 720, "회전수 변경은 이송 속도와 연동해 절삭량을 일정하게 유지하므로 가공 시간은 변하지 않는다. 공진 주파수 추정은 "	문단 2: 이송 연동과 추정 방법,
+"최근 30초 데이터의 이동 평균을 쓰며, 추정값이 급변하면 센서 이상으로 보고 이전 값을 유지한다.", 13)	계속.
+y = s.heading(60, y + 4, "제어식", 14)	소제목 '제어식'.
+s.text(80, y, "n_cmd = n_set × (1 + k · sgn(f_res − f_cur) · min(|f_res − f_cur| / f_res, 0.06))", 12)	수식 한 줄.
+y += 30	아래로.
+s.bullets(60, y, 720, ["k 는 공구 종류별 계수(엔드밀 0.8, 페이스밀 1.0), f_res 는 추정 공진 주파수, f_cur 는 현재 회전 주파수",	불릿: 계수 설명,
+"시운전에서 k 를 0.5~1.2 로 바꿔 가며 표면 조도와 진동을 함께 측정해 결정"], 12)	시운전 방법.
+s.finish()	마무리.
+s = sheet()	검증 결과 페이지.
+y = s.heading(50, 70, "검증 결과", 22)	제목.
+y = s.table(60, y + 6, [170, 130, 130, 130, 160], [	테두리 표:
+["항목", "개선 전", "개선 후", "목표", "비고"],	머리 행,
+["진동 속도 RMS (24,000 rpm)", "4.5 mm/s", "1.9 mm/s", "2.8 mm/s 이하", "ISO 10816 Zone B"],	진동 행,
+["표면 거칠기 Ra", "0.52 ㎛", "0.28 ㎛", "0.4 ㎛ 이하", "알루미늄 하우징 기준"],	거칠기 행,
+["전후 베어링 온도차", "14 ℃", "2.6 ℃", "3 ℃ 이내", "6시간 연속 가공"],	온도차 행,
+["월 불량 건수", "42 건", "3 건", "5 건 이하", "9월 실적"],	불량 건수 행.
+], 11)	11pt.
+s.bullets(60, y + 6, 720, [	불릿:
+"두 개선안을 모두 적용한 조건의 결과이며, 개선안 1 만 적용 시 진동 2.7 mm/s, 개선안 2 만 적용 시 3.1 mm/s",	개선안별 효과,
+"공구 수명은 변화 없음(엔드밀 평균 41분 → 42분), 사이클 타임은 22,000 rpm 운전 대비 10% 단축",	공구 수명·사이클 타임.
+], 12)	12pt.
+s.finish()	마무리.
+s = sheet()	일정·비용 페이지 (제외 규칙 시험용).
+y = s.heading(50, 70, "양산 적용 일정 및 비용", 22)	제목.
+y = s.bullets(60, y + 8, 720, [	불릿:
+"2026년 11월 1호기 개조 완료, 12월 2주간 양산 검증 후 2027년 1분기에 나머지 7대 순차 적용",	일정,
+"개조 비용 대당 3,800만 원(액추에이터 1,200, 냉각 재킷 900, 제어 보드 700, 공사 1,000), 총 3.04억 원",	비용,
+"재작업 비용 절감 월 2,400만 원과 가동률 회복 효과로 투자 회수 기간 약 11개월",	투자 회수,
+"담당: 정밀가공팀(구조 설계·검증), 설비제어팀(제어 소프트웨어), 구매팀(액추에이터 조달)",	담당,
+"2027. 3. 31. 까지 전 호기 적용 완료 목표, 월간 설비 회의에서 진행 상황 보고",	완료 목표.
+], 13)	13pt.
+s.finish()	마무리.
+s = sheet()	향후 계획 페이지.
+y = s.heading(50, 70, "향후 계획", 22)	제목.
+y = s.bullets(60, y + 8, 720, [	불릿:
+"예압 자동 조정 구조를 차기 모델 SV-900(30,000 rpm)에 기본 사양으로 반영",	차기 모델 반영,
+"공진 회피 제어를 다축 가공기로 확장하고 채터 예측 모델과 결합",	다축 확장,
+"진동·온도 데이터를 설비 데이터 플랫폼에 저장해 베어링 잔여 수명 예측에 활용",	데이터 플랫폼,
+"사내 스핀들 설계 표준 개정 추진(2027년 상반기)",	표준 개정.
+], 13)	13pt.
+s.text(380, 420, "감사합니다", 20)	'감사합니다'.
+s.text(410, 450, "Q&A", 13)	'Q&A'.
+s.finish()	마무리.
+# ------------------------------------------------------------------ 02 문서형 2단·3단 기술 검토서	절 주석: 02 2단·3단.
+def report_thermal(doc: pymupdf.Document, font: pymupdf.Font) -> None:	2단·3단 문서형 검토서를 만드는 함수.
+H = "배터리 팩 열관리 제어 로직 검토서  v1.2"	머리말.
+F = "Confidential · 열관리개발팀"	꼬리말.
+n = 0	쪽 번호.
+def sheet() -> Sheet:	새 세로 페이지 함수.
+nonlocal n	바깥 n.
+n += 1	+1.
+s = Sheet(doc, font, PORTRAIT)	세로 페이지.
+s.frame(H, F, n, "plain")	머리말·꼬리말 (쪽 번호는 숫자만).
+return s	돌려준다.
+L, R, CW = 50, 310, 240   # 2단: 왼쪽 x, 오른쪽 x, 단 폭	2단 배치: 왼쪽 x, 오른쪽 x, 단 폭.
+s = sheet()	1페이지.
+y = s.heading(50, 80, "배터리 팩 열관리 제어 로직 검토서", 20)	제목.
+y = s.para(50, y, 500, "본 문서는 모듈 간 온도 편차를 줄이기 위한 냉각수 분배 제어 방식을 검토한 결과를 정리한 것이다. 현행 방식의 "	문단: 문서 목적,
+"한계와 제안 방식의 구성, 시뮬레이션 결과, 적용 시 고려 사항을 다룬다. 수치는 모두 합성 예시이다.", 11)	계속.
+y = s.para(50, y, 500, "요약: 모듈별 온도 센서를 활용한 비례 분배 제어로 온도 편차를 2.1℃ 에서 0.8℃ 로 줄일 수 있으며, 펌프 소비 "	요약 문단,
+"전력은 6% 감소한다. 밸브 구동기 추가에 따른 원가 상승은 팩당 약 1.4만 원이다.", 11)	계속.
+y0 = y + 6	두 단의 시작 y.
+s.heading(L, y0, "1. 현행 방식과 문제", 13)	왼쪽 단 소제목.
+s.heading(R, y0, "2. 제안 방식", 13)	오른쪽 단 소제목.
+yl = y0 + 22	왼쪽 단 y.
+yl = s.para(L, yl, CW, LEFT_COLUMN_FIRST, 10)	왼쪽 첫 문장 (읽기 순서 시험).
+yl = s.para(L, yl, CW, "급속 충전 중 중앙 모듈의 온도가 가장자리 모듈보다 평균 2.1℃ 높게 유지되며, 이 편차가 셀 열화 속도의 "	왼쪽 문단,
+"차이로 이어져 팩 수명을 설계값보다 8% 단축시키는 것으로 추정된다.", 10)	계속.
+yl = s.bullets(L, yl, CW, ["펌프 듀티 3단계(40/70/100%)", "입구 온도 기준 히스테리시스 2℃", "모듈 온도는 알람에만 사용"], 10)	왼쪽 불릿 세 개.
+yr = y0 + 22	오른쪽 단 y.
+yr = s.para(R, yr, CW, RIGHT_COLUMN_FIRST, 10)	오른쪽 첫 문장.
+yr = s.para(R, yr, CW, "분배 비율은 모듈 열용량의 역수에 비례하도록 계산하고, 계산된 비율은 5초 이동 평균으로 평활화한 뒤 "	오른쪽 문단,
+"밸브 구동기에 전달한다. 편차가 0.5℃ 이하로 줄면 기본 분배 비율로 복귀한다.", 10)	계속.
+yr = s.bullets(R, yr, CW, ["센서 주기 1초, 제어 주기 5초", "밸브 개도 범위 20~100%", "펌프 듀티는 총 유량 요구에 따라 연속 가변"], 10)	오른쪽 불릿 세 개.
+s.finish()	마무리.
+s = sheet()	2페이지.
+y0 = 80	시작 y.
+s.heading(L, y0, "3. 제어 로직 상세", 13)	왼쪽 소제목 '3. 제어 로직 상세'.
+s.heading(R, y0, "4. 영문 요약 (Abstract)", 13)	오른쪽 소제목 '4. 영문 요약'.
+yl = y0 + 22	왼쪽 y.
+yl = s.para(L, yl, CW, "편차 계산은 유효한 센서 값만 사용한다. 센서 값이 1초 안에 5℃ 이상 변하거나 범위(-40~120℃)를 벗어나면 "	왼쪽 문단 (센서 유효성),
+"해당 센서를 제외하고, 유효 센서가 8점 미만이면 기본 분배 비율로 전환하며 진단 코드를 기록한다.", 10)	계속.
+yl = s.para(L, yl, CW, "밸브 개도 변경은 1회당 최대 10%p 로 제한해 유량 충격을 막는다. 개도 변경 후 15초 동안은 편차를 다시 "	왼쪽 문단 (개도 제한),
+"평가하지 않아 제어 진동을 방지한다.", 10)	계속.
+yl = s.numbered(L, yl, CW, ["모듈 온도 12점 읽기", "이상 센서 제외 후 최댓값·최솟값 계산", "편차 ≥ 1℃ 이면 분배 비율 갱신",	왼쪽 번호 목록 네 단계,
+"개도 명령 전송 및 15초 대기"], 10)	계속.
+yr = y0 + 22	오른쪽 y.
+yr = s.para(R, yr, CW, "This document reviews a proportional coolant distribution scheme for battery packs. "	영문 문단,
+"Module temperatures are sampled every second and the spread between the hottest and the coldest module "	계속,
+"drives the valve opening of each branch.", 10)	계속.
+for ln in ("The controller applies a feed-forward term com-", "puted from the predicted heat load of each", "module."):	하이픈 분철 세 줄을 직접 쓴다 ('com-' / 'puted' / 'module.').
+s.text(R, yr, ln, 10)                                     # 줄 끝 하이픈: 'com-' + 'puted' → 'computed'	한 줄씩 (주석: 이어 붙이면 'computed').
+yr += 15.5	아래로.
+yr = s.para(R, yr + 6, CW, "Simulation shows a spread reduction from 2.1 to 0.8 degrees with a 6% lower pump energy.", 10)	영문 문장 하나 더.
+y = max(yl, yr) + 10	두 단 중 더 아래 y.
+y = s.heading(L, y, "5. 시뮬레이션 조건", 13)	전체 폭 소제목 '5. 시뮬레이션 조건' (단 아래 전체 폭 시험).
+s.table(L, y, [110, 130, 130, 130], [	전체 폭 표:
+["항목", "현행", "제안", "비고"],	머리 행,
+["급속 충전 전류", "150 A", "150 A", "SOC 20→80%"],	충전 전류,
+["외기 온도", "35 ℃", "35 ℃", "여름 조건"],	외기 온도,
+["온도 편차 (최대-최소)", "2.1 ℃", "0.8 ℃", "충전 종료 시점"],	온도 편차,
+["펌프 소비 전력", "48 W", "45 W", "평균값, 6% 감소"],	펌프 전력.
+], 10)	10pt.
+s.finish()	마무리.
+s = sheet()	3페이지 (3단 비교).
+y = s.heading(50, 80, "6. 개선안 비교", 16)	제목 '6. 개선안 비교'.
+xs = (50, 225, 400)	세 단의 x.
+cw3 = 160	단 폭.
+ys = []	각 단의 끝 y.
+bodies = (	세 단의 본문:
+["분배 밸브 3개 추가, 모듈 온도 비례 제어", "온도 편차 0.8℃, 원가 +1.4만 원", "제어 로직 변경 범위 중간"],	A 안,
+["펌프 듀티를 0~100% 연속 가변", "온도 편차 1.6℃, 원가 변동 없음", "편차 자체는 줄이지 못함"],	B 안,
+["중앙 모듈에 독립 유로 추가", "온도 편차 0.5℃, 원가 +4.8만 원", "팩 구조 변경으로 금형 수정 필요"],	C 안.
+)	끝.
+for x, head, body in zip(xs, COLUMN_HEADS, bodies):	단마다 x·머리·본문을 짝지어
+s.page.draw_rect(pymupdf.Rect(x - 6, y - 16, x + cw3 + 6, y + 150), color=GRAY, width=0.8)	테두리 상자.
+yy = s.wrap(x, y, cw3, head, 11)	머리 쓰기.
+yy = s.bullets(x, yy + 2, cw3, body, 9)	불릿 쓰기.
+ys.append(yy)	끝 y 기록.
+y = max(ys) + 24	가장 아래 + 간격.
+y = s.heading(50, y, "7. 결론", 13)	'7. 결론' 소제목.
+y = s.para(50, y, 500, "개선안 A 가 원가와 효과의 균형이 가장 좋다. 개선안 C 는 효과가 크지만 금형 수정으로 적용 시점이 1년 이상 "	결론 문단,
+"늦어지므로 차기 팩 설계에 반영한다. 개선안 B 는 A 와 함께 적용하면 펌프 전력을 추가로 4% 줄일 수 있다.", 11)	계속.
+s.para(50, y, 500, "다음 단계로 실차 팩 1대에 분배 밸브를 장착해 11월까지 급속 충전 시험을 수행하고, 시험 결과로 분배 비율 "	다음 단계 문단,
+"계산식의 계수를 확정한다.", 11)	계속.
+s.finish()	마무리.
+s = sheet()	4페이지 (표 두 개).
+y = s.heading(50, 80, "8. 시험 조건 및 결과", 16)	제목 '8. 시험 조건 및 결과'.
+y = s.table(50, y, [120, 190, 190], [	조건 표 (셀 안 줄바꿈 시험):
+["시험", "조건", "판정 기준"],	머리 행,
+["급속 충전 열 시험", "SOC 20→80%, 150 A, 외기 35℃, 3회 반복", "모듈 간 편차 1.0℃ 이하, 최고 온도 45℃ 이하"],	급속 충전,
+["센서 고장 모사", "센서 2점 단선, 2점 단락", "기본 분배로 전환, 진단 코드 기록, 편차 1.5℃ 이하"],	센서 고장,
+["밸브 고착 모사", "분기 1 밸브 50% 고정", "나머지 분기로 보상, 편차 1.2℃ 이하"],	밸브 고착.
+], 10)	10pt.
+y = s.para(50, y, 500, "표의 판정 기준은 사내 열관리 시험 표준 TM-07 의 급속 충전 항목을 따랐다. 센서 고장 모사는 "	문단: 판정 기준 출처,
+"실제 단선 대신 신호선에 저항을 삽입해 구현했다.", 10)	계속.
+y = s.table(50, y + 6, [120, 100, 100, 180], [	결과 표:
+["시험", "결과", "판정", "비고"],	머리 행,
+["급속 충전 열 시험", "편차 0.8℃", "합격", "최고 온도 43.2℃"],	급속 충전 결과,
+["센서 고장 모사", "편차 1.3℃", "합격", "전환 지연 4초"],	센서 고장 결과,
+["밸브 고착 모사", "편차 1.4℃", "불합격", "보상 로직 계수 재조정 필요"],	밸브 고착 결과.
+], 10)	10pt.
+s.para(50, y, 500, "밸브 고착 시험은 보상 계수를 1.5 로 올린 뒤 재시험에서 편차 1.1℃ 로 합격했다. 계수 변경은 로직 v1.3 에 반영한다.", 10)	재시험 문단.
+s.finish()	마무리.
+# ------------------------------------------------------------------ 03 도식 중심 보고서	절 주석: 03 도식.
+def report_fusion(doc: pymupdf.Document, font: pymupdf.Font) -> None:	도식 중심 보고서를 만드는 함수.
+H = "센서 융합 인식 성능 개선 과제 | 대외비"	머리말.
+F = "자율주행인식팀"	꼬리말.
+n = 0	쪽 번호.
+def sheet() -> Sheet:	새 페이지 함수.
+nonlocal n	바깥 n.
+n += 1	+1.
+s = Sheet(doc, font)	가로 페이지.
+s.frame(H, F, n)	머리말·꼬리말.
+return s	돌려준다.
+s = sheet()	1페이지 (블록도).
+y = s.heading(50, 70, "융합 제어 구조", 22)	제목.
+bx, by, bw, bh = 60, 150, 110, 50	상자 시작 위치와 크기.
+for i, label in enumerate(BLOCK_LABELS[:4]):	앞 네 상자를
+s.box(bx + i * 140, by, bw, bh, label, 10)	가로로 늘어놓고
+if i < 3:	마지막이 아니면
+s.arrow(bx + i * 140 + bw, by + bh / 2, bx + (i + 1) * 140, by + bh / 2)	오른쪽 화살표.
+s.box(bx + 140, by + 110, bw, bh, BLOCK_LABELS[4], 10)	다섯째 상자 (아래).
+s.arrow(bx + 140 + bw / 2, by + 110, bx + 140 + bw / 2, by + bh)	위로 향하는 화살표.
+s.text(bx, by + 200, "그림 1. 야간 신뢰도 기반 가중치 제어 구조", 10)	그림 캡션.
+s.bullets(610, 150, 200, [	오른쪽 설명 불릿:
+"Confidence 추정기는 카메라 영상의 조도와 대비를 100 ms 마다 계산해 0~1 사이 신뢰도로 변환",	신뢰도 추정기,
+"가중치 제어기는 신뢰도가 0.4 아래로 내려가면 레이더 가중치를 0.5 에서 0.8 로 올리고 카메라 가중치를 낮춤",	가중치 제어기,
+"진단 모듈은 두 센서 판단이 2초 이상 어긋나면 운전자에게 알림",	진단 모듈.
+], 11)	11pt.
+s.finish()	마무리.
+s = sheet()	2페이지 (막대 차트).
+y = s.heading(50, 70, "야간 오검출률 비교", 22)	제목.
+s.bar_chart(90, 130, 320, 200, ["기존 고정 가중치", "제안 방식", "제안+진단"], [8.4, 5.1, 4.6], "%")	막대 차트 세 항목.
+s.text(90, 360, "그림 2. 야간 주행 2,000 km 기준 오검출률", 10)	캡션.
+s.para(470, 140, 330, "제안 방식은 야간 시나리오에서 오검출률을 8.4% 에서 5.1% 로 낮췄다. 진단 모듈을 함께 켜면 "	오른쪽 문단 1,
+"두 센서가 어긋난 구간을 제외해 4.6% 까지 내려간다.", 12)	계속.
+s.para(470, 230, 330, "주간 시나리오에서는 세 조건 모두 2.0% 안팎으로 차이가 없었다. 신뢰도 임계값 0.4 는 "	문단 2,
+"터널 진입 구간의 급격한 조도 변화를 기준으로 정했다.", 12)	계속.
+s.finish()	마무리.
+s = sheet()	3페이지 (사진 전용).
+s.text(50, 70, "야간 시험 주행 장면", 22)	제목.
+s.image(60, 100, 720, 440)	큰 그림 자리.
+s.text(60, 560, "그림 3. 시험 차량 전방 카메라 영상 (합성 예시 이미지)", 10)	캡션.
+s.finish()	마무리.
+s = sheet()	4페이지 (순서도).
+y = s.heading(50, 70, "가중치 전환 순서도", 22)	제목.
+fx, fy = 80, 120	시작 위치.
+steps = ["조도·대비 계산", "신뢰도 < 0.4 ?", "레이더 가중치 0.8", "가중치 유지", "융합 결과 출력"]	단계 라벨 다섯 개.
+s.box(fx, fy, 150, 40, steps[0], 10)	1단계 상자.
+s.arrow(fx + 75, fy + 40, fx + 75, fy + 70)	아래 화살표.
+s.box(fx, fy + 70, 150, 40, steps[1], 10)	2단계(판단) 상자.
+s.arrow(fx + 75, fy + 110, fx + 75, fy + 140)	아래 화살표.
+s.text(fx + 80, fy + 130, "Yes", 9)	'Yes'.
+s.box(fx, fy + 140, 150, 40, steps[2], 10)	3단계 상자.
+s.arrow(fx + 150, fy + 90, fx + 230, fy + 90)	오른쪽 화살표.
+s.text(fx + 180, fy + 84, "No", 9)	'No'.
+s.box(fx + 230, fy + 70, 150, 40, steps[3], 10)	4단계 상자 (오른쪽).
+s.arrow(fx + 75, fy + 180, fx + 75, fy + 210)	아래 화살표.
+s.box(fx, fy + 210, 150, 40, steps[4], 10)	5단계 상자.
+s.numbered(500, 130, 300, [	오른쪽 번호 목록:
+"카메라 프레임마다 평균 조도와 대비를 계산하고 100 ms 이동 평균을 취한다",	조도 계산,
+"신뢰도가 0.4 아래이면 레이더 가중치를 0.8 로 올리고 전환은 500 ms 에 걸쳐 선형으로 수행한다",	가중치 전환,
+"신뢰도가 0.6 을 다시 넘으면 기본 가중치로 복귀한다(히스테리시스 0.2)",	복귀 조건,
+"전환 중에는 진단 모듈의 어긋남 판정을 멈춘다",	진단 중지.
+], 11)	11pt.
+s.finish()	마무리.
+s = sheet()	5페이지 (2×2 매트릭스).
+y = s.heading(50, 70, "개선 항목 우선순위 매트릭스", 22)	제목.
+cells = [	네 칸의 (머리, 항목들):
+("효과 큼 · 적용 쉬움", ["신뢰도 기반 가중치 전환", "히스테리시스 0.2 적용"]),	효과 큼·쉬움 (가운뎃점 '·' 은 항목 구분이 아님을 시험),
+("효과 큼 · 적용 어려움", ["레이더 포인트 클라우드 재학습", "카메라 HDR 모드 연동"]),	효과 큼·어려움,
+("효과 작음 · 적용 쉬움", ["알림 문구 개선", "로그 저장 주기 단축"]),	효과 작음·쉬움,
+("효과 작음 · 적용 어려움", ["초음파 센서 추가", "차량 간 통신 활용"]),	효과 작음·어려움.
+]	끝.
+for i, (head, items) in enumerate(cells):	칸마다
+x = 80 + (i % 2) * 360	x (왼쪽/오른쪽),
+yy = 120 + (i // 2) * 200	y (위/아래).
+s.page.draw_rect(pymupdf.Rect(x, yy, x + 340, yy + 180), color=GRAY, width=1.0, fill=LIGHT if i == 0 else None)	칸 사각형 (첫 칸은 연회색).
+s.text(x + 12, yy + 26, head, 12)	머리.
+s.bullets(x + 12, yy + 56, 310, items, 11)	항목 불릿.
+s.finish()	마무리.
+# ------------------------------------------------------------------ 04 표 중심 보고서	절 주석: 04 표.
+def report_process(doc: pymupdf.Document, font: pymupdf.Font) -> None:	표 중심 보고서를 만드는 함수.
+H = "LP-40 라인 공정 불량 개선 보고 | 대외비"	머리말.
+F = "생산기술팀"	꼬리말.
+n = 0	쪽 번호.
+def sheet() -> Sheet:	새 페이지 함수.
+nonlocal n	바깥 n.
+n += 1	+1.
+s = Sheet(doc, font)	가로 페이지.
+s.frame(H, F, n)	머리말·꼬리말.
+return s	돌려준다.
+s = sheet()	표지.
+s.text(60, 220, "LP-40 라인 공정 불량 개선 결과 보고", 28)	큰 제목.
+s.text(60, 260, "도포 공정 폐루프 제어와 비전 검사 조명 개선", 16)	부제.
+s.text(60, 340, "생산기술팀 · 품질보증팀", 13)	부서.
+s.text(60, 362, "2026. 10.", 13)	날짜.
+s.finish()	마무리.
+s = sheet()	2페이지 (큰 표).
+y = s.heading(50, 70, "공정별 불량 현황", 22)	제목.
+y = s.table(60, y + 6, [120, 110, 110, 110, 270], [	표:
+["공정", "3월 불량률", "6월 불량률", "9월 불량률", "주요 불량 유형"],	머리 행,
+["세정", "2.4 %", "1.6 %", "0.9 %", "잔류 이물, 얼룩"],	세정,
+["도포", "3.1 %", "1.8 %", "0.7 %", "두께 편차, 기포"],	도포,
+["경화", "1.2 %", "1.2 %", "1.1 %", "미경화(저온 구간)"],	경화,
+["검사", "0.8 %", "0.5 %", "0.3 %", "과검출(조명 반사)"],	검사,
+["합계", "7.5 %", "5.1 %", "3.0 %", "목표 3.5 % 달성"],	합계.
+], 11)	11pt.
+s.text(60, y + 6, "※ 불량률은 월간 생산 수량 대비 공정 불량 수량. 9월은 개선 적용 후 첫 달 실적.", 10)	각주.
+s.finish()	마무리.
+s = sheet()	3페이지 (좌 표·우 설명).
+y = s.heading(50, 70, "도포 공정 개선 방향", 22)	제목.
+s.table(60, y + 6, [120, 110, 110], [	왼쪽 표:
+["인자", "개선 전", "개선 후"],	머리 행,
+["노즐 압력", "고정 0.30 MPa", "두께 센서 폐루프"],	노즐 압력,
+["토출 온도", "실온", "28 ℃ 항온"],	토출 온도,
+["라인 속도", "12 m/min", "12 m/min"],	라인 속도,
+["두께 편차", "±18 ㎛", "±6 ㎛"],	두께 편차.
+], 11)	11pt.
+s.bullets(430, y + 14, 370, [	오른쪽 불릿:
+"두께 센서(레이저 변위계 2점)를 노즐 하류 300 mm 에 설치하고 측정값으로 노즐 압력을 0.2~0.4 MPa 범위에서 PI 제어",	두께 센서 폐루프,
+"제어 주기는 200 ms, 라인 속도 12 m/min 에서 두께 변화가 40 mm 이동 안에 반영됨",	제어 주기,
+"토출 온도를 28℃ 로 유지해 점도 변동을 줄이고, 압력 제어 범위를 좁혀 기포 발생을 억제",	온도 유지,
+"두께 편차 ±6 ㎛ 는 고객 규격 ±10 ㎛ 를 여유 있게 만족",	규격 만족.
+], 12)	12pt.
+s.finish()	마무리.
+s = sheet()	4페이지 (선 없는 표).
+y = s.heading(50, 70, "공정별 조치 요약", 22)	제목.
+y = s.table(60, y + 10, [120, 170, 170, 300], TEXT_TABLE, 12, borders=False, header=False)	테두리 없는 표 (공백 정렬 표 인식 시험).
+s.para(60, y + 10, 720, "세정과 도포 공정의 개선 효과가 크고, 경화 공정은 저온 구간 미경화가 남아 있어 히터 배치 변경을 4분기에 "	문단,
+"검토한다. 검사 공정의 과검출은 조명 각도를 45도에서 30도로 바꿔 반사를 줄인 결과이다.", 12)	계속.
+s.finish()	마무리.
+s = sheet()	5페이지 (일정표·담당자 표).
+y = s.heading(50, 70, "추진 일정", 22)	제목.
+months = ["구분", "10월", "11월", "12월", "1월", "2월", "3월"]	월 머리.
+y = s.table(60, y + 6, [160, 100, 100, 100, 100, 100, 100], [months,	일정표:
+["도포 폐루프 제어 2호기 적용", "■■", "■■", "", "", "", ""],	도포 제어,
+["경화 히터 배치 변경 검토", "", "■■", "■■", "", "", ""],	히터 검토,
+["경화 히터 개조 공사", "", "", "", "■■", "■■", ""],	히터 공사,
+["검사 조명 전 라인 적용", "■■", "", "", "", "", ""],	조명 적용,
+["효과 검증 및 표준 개정", "", "", "", "", "■■", "■■"]], 11)	효과 검증.
+y = s.table(60, y + 6, [160, 200, 200], [["구분", "담당", "협조"], ["도포 제어", "생산기술팀 김OO", "설비팀"],	담당자 표 (담당자 규칙 시험):
+["경화 개조", "생산기술팀 이OO", "설비팀, 안전환경팀"], ["검사 조명", "품질보증팀 박OO", "생산기술팀"]], 11)	세 행.
+s.finish()	마무리.
+s = sheet()	6페이지 (결론).
+y = s.heading(50, 70, "결론 및 향후 계획", 22)	제목.
+s.bullets(60, y + 8, 720, [	불릿:
+"공정 불량률 7.5% → 3.0% 로 목표 3.5% 를 달성했으며, 도포 폐루프 제어가 가장 큰 기여(불량률 2.4%p 감소)",	목표 달성,
+"노즐 압력 폐루프 제어 방식은 타 라인(LP-20, LP-60)에도 적용 가능하며 센서 설치 위치만 라인별로 조정",	타 라인 적용,
+"경화 공정 미경화는 히터 배치 변경으로 해결 예정이며, 변경 전까지 저온 구간 라인 속도를 10% 낮춰 대응",	미경화 대응,
+"검사 조명 각도 변경 결과를 검사 표준 QS-112 에 반영하고 타 라인 전개",	표준 반영.
+], 13)	13pt.
+s.finish()	마무리.
+# ------------------------------------------------------------------ 05 영문 혼용·규격 검토서 (회전 페이지 포함)	절 주석: 05 영문 혼용·회전.
+def report_mixed(doc: pymupdf.Document, font: pymupdf.Font) -> None:	영문 혼용·회전 페이지 보고서를 만드는 함수.
+H = "SC-10 안전 제어기 규격 적합성 검토  Rev. B"	머리말.
+F = "기능안전팀"	꼬리말.
+n = 0	쪽 번호.
+def sheet() -> Sheet:	새 세로 페이지 함수.
+nonlocal n	바깥 n.
+n += 1	+1.
+s = Sheet(doc, font, PORTRAIT)	세로 페이지.
+s.frame(H, F, n, "plain")	머리말·꼬리말 (숫자 쪽 번호).
+return s	돌려준다.
+s = sheet()	1페이지.
+y = s.heading(50, 80, "SC-10 안전 제어기 규격 적합성 검토", 20)	제목.
+y = s.heading(50, y + 4, "1. Scope", 13)	'1. Scope' 소제목 (영문 소제목 시험).
+y = s.para(50, y, 500, "본 검토는 SC-10 안전 제어기의 하드웨어 구조와 진단 기능이 아래 규격의 요구 사항을 만족하는지 확인한다. "	문단,
+"대상은 2채널 입력 비교기, 워치독, 전원 감시 회로이다.", 11)	계속.
+s.text(70, y, ENGLISH_ONLY, 11)	영어만 있는 줄.
+y += 22	아래로.
+s.text(70, y, "Target device: SC-10 Rev. B, MCU STM32H743 (dual-core lockstep configuration)", 11)	영어 사양 줄.
+y += 22	아래로.
+y = s.heading(50, y + 4, "2. Safety function", 13)	'2. Safety function'.
+y = s.para(50, y, 500, "두 입력 채널의 값이 20 ms 이상 10% 넘게 다르면 출력을 안전 상태(OFF)로 전환한다. 전환 지연은 입력 필터 "	문단,
+"5 ms 와 비교 주기 10 ms 를 더한 15 ms 이내이다. 토크 제한은 다음 식으로 계산한다.", 11)	계속.
+s.text(70, y, FORMULA, 12)	수식 줄.
+y += 24	아래로.
+y = s.bullets(50, y, 500, ["τ: 허용 토크, J: 관성, α: 각가속도, c: 점성 계수, ω: 각속도, K: 강성, θ: 각변위",	불릿: 기호 설명,
+"계수는 축별 파라미터 테이블에서 읽으며 플래시 CRC 로 무결성을 확인"], 10)	계수 출처.
+s.finish()	마무리.
+s = sheet()	2페이지.
+y = s.heading(50, 80, "3. Diagnostic coverage", 13)	'3. Diagnostic coverage'.
+y = s.bullets(50, y, 500, [	불릿:
+"워치독은 윈도우 방식(window 8~12 ms)으로 동작하며 MCU 두 코어가 교대로 리셋 신호를 갱신한다",	워치독,
+"전원 감시 회로는 3.3 V 레일이 ±5% 를 벗어나면 150 ㎲ 안에 리셋을 발생시킨다",	전원 감시,
+"RAM 은 March-C 알고리즘으로 기동 시 전체 검사, 운전 중에는 4 KB 단위로 순환 검사",	RAM 검사,
+("검사 1회 주기는 24 시간 이내로 IEC 61508 의 진단 시험 간격 요구를 만족", 1),	하위: 주기,
+"ADC 입력은 기준 전압 2점을 주기적으로 읽어 이득 오차 0.5% 이상이면 채널 고장으로 판정",	ADC 검사.
+], 11)	11pt.
+y = s.heading(50, y + 6, "4. Labels", 13)	'4. Labels'.
+for lab in ("DC = 92 %", "SFF = 96 %", "PFH = 3.2E-8 /h", "HFT = 1", "Type B"):	짧은 라벨 다섯 개 (짧은 조각 규칙 시험)를
+s.text(70, y, lab, 11)	한 줄씩
+y += 18	아래로.
+y = s.para(50, y + 6, 500, "위 지표는 FMEDA 결과이며, 진단 커버리지 92% 는 SIL 2 의 요구(90% 이상)를 만족한다. "	문단,
+"PFH 값은 평균 수리 시간 8시간, 운전 시간 8,760 시간/년 조건으로 계산했다.", 11)	계속.
+s.finish()	마무리.
+# 회전 페이지: /Rotate 90 이지만 화면에서는 바로 선 글	주석: 회전 페이지.
+page = doc.new_page(width=PORTRAIT[0], height=PORTRAIT[1])	세로 크기 페이지를 만들고
+page.set_rotation(90)	/Rotate 90 을 건다 (화면에서는 가로).
+n += 1	쪽 번호 +1.
+_rotated_text(page, font, 40, 26, H, 8)	머리말 (회전 보정해 바로 선 글로).
+_rotated_text(page, font, 50, 70, "5. 모듈 온도 시험 결과 (가로 표 페이지)", 18)	제목.
+_rotated_text(page, font, 60, 110, ROTATED_LINE, 11)	읽혀야 하는 문장.
+vx, vy = 60, 140	표 시작 위치.
+cols = [150, 150, 150, 200]	열 너비.
+rows = [["조건", "현행 편차", "개선 편차", "비고"], ["급속 충전 150 A", "2.1 ℃", "0.8 ℃", "외기 35 ℃"], ["완속 충전 30 A", "0.9 ℃", "0.4 ℃", "외기 25 ℃"]]	행들: 머리, 급속 충전, 완속 충전.
+for r, row in enumerate(rows):	행마다
+cx = vx	현재 x.
+for cw, cell in zip(cols, row):	셀마다
+p1 = pymupdf.Point(cx, vy) * ~page.rotation_matrix	셀의 왼쪽 위를 페이지 좌표로,
+p2 = pymupdf.Point(cx + cw, vy + 24) * ~page.rotation_matrix	오른쪽 아래를 페이지 좌표로 되돌려
+page.draw_rect(pymupdf.Rect(p1, p2), color=GRAY, width=0.8)	사각형을 그리고
+_rotated_text(page, font, cx + 5, vy + 16, cell, 10)	글을 바로 선 방향으로 쓴다.
+cx += cw	다음 열.
+vy += 24	다음 행.
+_rotated_text(page, font, 60, vy + 24, "표의 개선 편차는 분배 밸브 비례 제어를 적용한 시뮬레이션 값이다.", 11)	표 아래 설명.
+_rotated_text(page, font, 40, LANDSCAPE[1] - 16, f"{F}   {n}", 8)	꼬리말과 쪽 번호.
+# 옆으로 누운 글 페이지: 도면을 세로로 돌려 넣은 경우	주석: 누운 글 페이지.
+s = sheet()	새 페이지.
+s.text(60, 80, "6. 도면", 13)	'6. 도면'.
+s.finish()	제목을 먼저 쓴다.
+tw = pymupdf.TextWriter(s.page.rect)	캡션용 쓰기 도구.
+for i, line in enumerate(["배관 계통도 - 분배 밸브 V1, V2, V3", "펌프 P1 → 열교환기 HX1 → 모듈 1~12", "밸브 개도 20~100 %, 신호 4~20 mA"]):	세 줄의 도면 글을
+p = pymupdf.Point(120 + i * 30, 700)	위치를 정해
+tw2 = pymupdf.TextWriter(s.page.rect)	쓰기 도구로
+tw2.append(p, line, font=font, fontsize=11)	추가하고
+tw2.write_text(s.page, morph=(p, pymupdf.Matrix(-90)))	-90도로 돌려 쓴다 (세로 글자 → 읽지 않아야 함).
+s.page.draw_rect(pymupdf.Rect(100, 150, 500, 720), color=GRAY, width=1.0)	도면 테두리.
+tw.append((60, 760), SIDEWAYS_CAPTION, font=font, fontsize=10)	캡션 (바로 선 글).
+tw.write_text(s.page)	쓴다.
+REPORTS = (	보고서 목록: (파일 이름, 생성 함수).
+("layout_01_single_column", report_spindle),	01.
+("layout_02_two_columns", report_thermal),	02.
+("layout_03_diagrams", report_fusion),	03.
+("layout_04_tables", report_process),	04.
+("layout_05_mixed_rotated", report_mixed),	05.
+)	끝.
+def make_report(name: str, out_dir: Path, font: pymupdf.Font | None = None) -> Path:	보고서 하나를 만드는 함수.
+fn = dict(REPORTS)[name]	이름으로 생성 함수.
+font = font or _font()	글꼴 (없으면 찾기).
+doc = pymupdf.open()	빈 문서.
+fn(doc, font)	그린다.
+out_dir.mkdir(parents=True, exist_ok=True)	폴더 생성.
+out = out_dir / f"{name}.pdf"	출력 경로.
+doc.subset_fonts()	글꼴 부분 집합화.
+doc.save(str(out), garbage=4, deflate=True)	저장.
+doc.close()	닫기.
+return out	경로.
+def make_all(out_dir: Path) -> list[Path]:	다섯 건을 모두 만드는 함수.
+font = _font()	글꼴 한 번만.
+return [make_report(name, out_dir, font) for name, _ in REPORTS]	각각 만들어 경로 목록.
+if __name__ == "__main__":	직접 실행했을 때
+target = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("demo") / "layout"	출력 폴더 (기본 demo/layout).
+for p in make_all(target):	만들고
+print(p)	경로를 찍는다.

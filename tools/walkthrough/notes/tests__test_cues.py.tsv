@@ -1,0 +1,9 @@
+# tests/test_cues.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+from ip_finder.cues import has_tech_word, tech_cues, unit_hits	단서어 함수.
+def test_units_and_words():	단위·단어 테스트.
+assert "%" in "".join(unit_hits("수율 92.1% → 97.8%"))	%.
+assert "㎛" in "".join(unit_hits("두께 편차 ±15㎛"))	㎛.
+assert "향상" in tech_cues("조립 수율 92.1% → 97.8%로 향상")	향상.
+def test_has_tech_word_ignores_units():	단위 무시 테스트.
+assert not has_tech_word("재료비 단가 약 4% 상승")	% 만 있으면 단서어 아님.
+assert has_tech_word("2분기 필드 불량률 1.8%로 목표 0.5% 대비 초과")	불량률은 단서어.

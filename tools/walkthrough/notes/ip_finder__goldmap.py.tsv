@@ -1,0 +1,91 @@
+# ip_finder/goldmap.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""골드 시트 읽기와 '골드 정답 반영'용 문장 → 정답 맵.	파일 설명: 골드 읽기와 정답 맵.
+사람이 정답을 확정한 문장(골드)이 새 실행에 다시 나오면 모델 판정 대신 골드 정답을 그대로 쓴다.	골드 정답을 그대로 쓴다는 원칙.
+비교는 공백을 정리한 문장 전체가 같을 때만. 여러 골드에 같은 문장이 다른 정답으로 있으면 가장 최근에 고친 파일이 이긴다."""	비교 기준(문장 전체 일치)과 충돌 규칙(최근 파일 우선).
+from __future__ import annotations	새 문법 호환.
+import re	정규식.
+from dataclasses import dataclass, field	dataclass.
+from pathlib import Path	경로.
+from openpyxl import load_workbook	엑셀 읽기.
+from .models import GRADES	등급 상수.
+GOLD_HEADERS = ["번호", "파일", "페이지", "제목", "줄", "문장", "모델 라벨", "후처리 라벨", "판정", "확신", "점수", "가중치", "정답", "메모"]	골드 시트 '라벨링' 의 열 제목 14개.
+LABELS = list(GRADES)	정답으로 허용되는 라벨 목록.
+GOLD_SUFFIX = "_gold.xlsx"	골드 파일 이름 꼬리.
+def norm_label(label) -> str:	라벨 정규화 함수.
+s = str(label or "").strip().upper()	문자열로, 공백 제거, 대문자.
+return "X" if s in ("X?", "X") else s	X? 와 X 는 X 로. 나머지는 그대로.
+def norm_text(text) -> str:	문장 정규화 함수.
+return re.sub(r"\s+", " ", str(text or "")).strip()	연속 공백을 하나로, 양끝 제거. None 은 빈 문자열.
+def load_gold(path: Path) -> list[dict]:	골드 파일 하나를 읽어 행(사전) 목록으로.
+"""'라벨링' 시트에서 정답이 A~D/X 인 행만. 열은 이름으로 찾으므로 옛 골드도 읽힌다."""	설명: 열을 이름으로 찾아 옛 형식도 읽힌다.
+wb = load_workbook(str(path), read_only=True, data_only=True)	읽기 전용·값만 모드로 연다 (수식 대신 값).
+try:	닫기를 보장하기 위해 try.
+ws = wb["라벨링"]	'라벨링' 시트.
+rows_iter = ws.iter_rows(values_only=True)	행을 값 튜플로 하나씩 꺼내는 반복자.
+header = [str(h) for h in next(rows_iter)]	첫 행이 열 제목.
+idx = {h: i for i, h in enumerate(header)}	열 제목 → 열 번호 사전.
+rows = []	결과.
+for r in rows_iter:	나머지 행마다
+if r is None or idx.get("문장") is None or r[idx["문장"]] is None:	빈 행이거나 '문장' 열이 없거나 문장이 비어 있으면
+continue	건너뛴다.
+gold = norm_label(r[idx["정답"]]) if "정답" in idx else ""	'정답' 열이 있으면 정규화한 값, 없으면 빈 문자열.
+if gold not in LABELS:	A~X 가 아니면 (빈칸, 오타)
+continue	건너뛴다 (정답이 적힌 행만 쓴다).
+rows.append({h: r[idx[h]] for h in GOLD_HEADERS if h in idx} | {"정답": gold})	알려진 열만 모아 사전으로 만들고 정답을 정규화 값으로 덮어쓴다 ('|' 는 사전 합치기).
+return rows	행 목록.
+finally:	finally:
+wb.close()	파일을 닫는다.
+def find_gold_files(paths: list[str | Path], base_dir: Path | None = None) -> list[Path]:	골드 파일 목록을 찾는 함수.
+"""파일이면 그대로, 폴더면 그 안의 *_gold.xlsx (하위 폴더 포함). 없는 경로는 조용히 건너뛴다."""	설명.
+out: list[Path] = []	결과.
+for p in paths:	경로마다
+p = Path(p).expanduser()	Path 로, '~' 풀기.
+if not p.is_absolute() and base_dir is not None:	상대 경로이고 기준 폴더가 있으면
+p = base_dir / p	기준 폴더 아래로.
+if p.is_dir():	폴더면
+out.extend(sorted(f for f in p.rglob(f"*{GOLD_SUFFIX}") if not f.name.startswith("~$")))	하위 폴더까지 *_gold.xlsx 를 이름순으로 (임시 파일 '~$' 제외).
+elif p.is_file():	파일이면
+out.append(p)	그대로.
+seen: set[Path] = set()	중복 제거용 집합.
+uniq = []	중복 없는 목록.
+for f in out:	파일마다
+if f.resolve() not in seen:	절대 경로로 본 적이 없으면
+seen.add(f.resolve())	기억하고
+uniq.append(f)	넣는다.
+return uniq	돌려준다.
+@dataclass	@dataclass.
+class GoldMap:	골드 맵: 문장 → 정답.
+labels: dict[str, str] = field(default_factory=dict)   # 정리한 문장 → 정답	정규화한 문장 → 정답 사전.
+files: list[Path] = field(default_factory=list)	읽은 골드 파일 목록.
+rows: int = 0	읽은 행 수.
+conflicts: int = 0                                      # 같은 문장, 다른 정답 (최근 파일이 이김)	같은 문장에 다른 정답이 있었던 수.
+@classmethod	@classmethod: GoldMap.load(...) 로 만든다.
+def load(cls, paths: list[str | Path], base_dir: Path | None = None) -> "GoldMap":	골드 경로 목록과 기준 폴더.
+gm = cls()	빈 맵.
+files = find_gold_files(paths, base_dir)	파일·폴더에서 *_gold.xlsx 목록.
+for f in sorted(files, key=lambda p: p.stat().st_mtime):      # 오래된 것부터 → 최근 파일이 덮어씀	수정 시각이 오래된 것부터 (최근 파일이 나중에 덮어쓰게).
+try:	읽기 오류 대비.
+rows = load_gold(f)	골드 행 읽기 ('라벨링' 시트, 정답이 A~X 인 행만).
+except Exception:	읽을 수 없으면
+continue	건너뛴다.
+gm.files.append(f)	읽은 파일 기록.
+for r in rows:	행마다
+key = norm_text(r.get("문장"))	문장 정규화.
+if not key:	비면
+continue	건너뛴다.
+gm.rows += 1	행 수 +1.
+old = gm.labels.get(key)	이미 있는 정답.
+if old is not None and old != r["정답"]:	있는데 다르면
+gm.conflicts += 1	충돌 수 +1.
+gm.labels[key] = r["정답"]	최근 것으로 덮어쓴다.
+return gm	맵을 돌려준다.
+def get(self, text: str) -> str | None:	문장으로 정답을 찾는 메서드.
+return self.labels.get(norm_text(text))	정규화해서 찾는다. 없으면 None.
+def __len__(self) -> int:	len(gm) 으로 쓰는 메서드.
+return len(self.labels)	문장 수.
+def __bool__(self) -> bool:	if gm: 으로 쓰는 메서드.
+return bool(self.labels)	문장이 하나라도 있으면 참.
+def describe(self) -> str:	요약 문자열.
+if not self.files:	파일이 없으면
+return "없음"	'없음'.
+return f"{len(self.files)}개 파일, {len(self.labels)}문장" + (f", 충돌 {self.conflicts}" if self.conflicts else "")	'2개 파일, 130문장' + 충돌이 있으면 ', 충돌 3'.

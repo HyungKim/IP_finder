@@ -1,0 +1,7 @@
+# ip_finder/eval/__init__.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+from .gold import make_gold_sheet, write_gold_workbook	골드 시트 함수들.
+from .score import evaluate, print_report, score, list_metrics, candidate_metrics, GOLD_HEADERS	채점 함수들(후보 지표 추가).
+from .train import train_classifier, gold_batch	학습 함수와 골드 배치 도우미.
+from .feedback import import_feedback, read_feedback, interpret	피드백 함수들.
+__all__ = ["make_gold_sheet", "write_gold_workbook", "evaluate", "print_report", "score", "list_metrics", "candidate_metrics",	공개 이름 목록.
+"GOLD_HEADERS", "train_classifier", "gold_batch", "import_feedback", "read_feedback", "interpret"]	이어짐.

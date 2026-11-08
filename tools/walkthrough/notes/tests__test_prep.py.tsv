@@ -1,0 +1,105 @@
+# tests/test_prep.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+from pathlib import Path	경로.
+from ip_finder.config import Config	설정.
+from ip_finder.models import Document, Line, Page	모델.
+from ip_finder.pipeline import prepare	전처리.
+from ip_finder.prep import page_weight	가중치.
+from ip_finder.prep.page_rules import IMAGE_PAGE	이미지 페이지 상수.
+from ip_finder.prep.splitter import split_sentences	분할 함수.
+from ip_finder.readers import load_document	읽기.
+from ip_finder.switches import BY_NAME, SWITCHES, describe, set_all, set_switch, switch_state	스위치 도구.
+def _doc(*texts, title="개선안", no=5):	문서 도우미.
+return Document(path=None, kind="pptx", title="", pages=[Page(no=no, title=title, lines=[Line(0, t) for t in texts])])	한 쪽짜리 Document.
+def test_baseline_removes_nothing(sample_dir, cfg):	기준선 테스트.
+doc = load_document(sample_dir / "sample_report.pptx", layout=True)	레이아웃 읽기.
+removed = prepare(doc, cfg)	전처리.
+assert dict(removed) == {} and all(p.excluded_reason in (None, IMAGE_PAGE) for p in doc.pages)	제거 없음, 쪽 제외는 이미지만.
+assert all(ln.idx > 0 for p in doc.pages for ln in p.lines if ln.text.strip())	모든 줄에 번호.
+def test_all_rules_on_sample(sample_dir, cfg_all):	전부 켠 테스트.
+doc = load_document(sample_dir / "sample_report.pptx", layout=True)	읽기.
+removed = prepare(doc, cfg_all)	전처리.
+reasons = {p.no: p.excluded_reason for p in doc.pages}	쪽별 사유.
+assert reasons[1] == "표지" and "목차" in reasons[2] and reasons[7] == IMAGE_PAGE and "일정" in reasons[10]	표지·목차·이미지·일정.
+assert removed["반복 문구"] >= 12 and removed["담당자"] == 1	반복·담당자.
+idxs = [ln.idx for ln in doc.pages[2].active_lines()]	번호.
+assert idxs == list(range(1, len(idxs) + 1))	연속.
+def test_switches_registry_and_config_fields():	스위치 등록부 테스트.
+cfg = Config()	설정.
+assert all(hasattr(cfg, s.field) for s in SWITCHES) and len(SWITCHES) == 11	필드 존재, 11개.
+assert all(v is False for v in switch_state(cfg).values()) and describe(cfg) == "전부 끔 (기준선)"	전부 끔, 설명.
+set_switch(cfg, "short_line", True)	하나 켬.
+assert cfg.rule_short_line is True and "짧은 줄 제외" in describe(cfg)	반영과 설명.
+set_all(cfg, True)	전부 켬.
+assert describe(cfg) == "전부 켬" and BY_NAME["layout"].field == "layout_analysis"	설명과 필드 이름.
+def test_short_line_switch():	짧은 줄 테스트.
+doc = _doc("접착 구조 변경", "제어 알고리즘 최적화 적용 완료", "12")	문서.
+assert len(doc.pages[0].active_lines()) == 0 or prepare(doc, Config()) == {}	끔이면 제거 없음.
+doc = _doc("접착 구조 변경", "제어 알고리즘 최적화 적용 완료", "12")	문서.
+removed = prepare(doc, Config(rule_short_line=True))	켬.
+assert [ln.text for ln in doc.pages[0].active_lines()] == ["제어 알고리즘 최적화 적용 완료"] and removed["짧은 조각"] == 2	긴 줄만 남고 2개 제거.
+doc = _doc("접착 구조 변경", "12")	문서.
+prepare(doc, Config(rule_short_line=True, rule_pattern_lines=True))	짧은 줄 + 패턴.
+assert [ln.removed_by for ln in doc.pages[0].lines] == ["짧은 조각", "숫자만"]        # 더 구체적인 사유가 우선	사유 우선순위.
+def test_korean_and_pattern_switches():	한글·패턴 테스트.
+texts = ["Adaptive gain scheduling for PID controller", "12.5 / 30 / 45", "담당: 품질팀", "도포 설비 개조 비용 1.2억 원", "PID 게인을 부하 구간별로 3단계 스케줄링"]	문장들.
+doc = _doc(*texts)	문서.
+removed = prepare(doc, Config(rule_require_korean=True))	한글 없음만.
+assert removed["한글 없음"] == 2 and len(doc.pages[0].active_lines()) == 3	2개 제거.
+doc = _doc(*texts)	문서.
+removed = prepare(doc, Config(rule_pattern_lines=True))	패턴만.
+assert removed["숫자만"] == 1 and removed["담당자"] == 1 and removed["일정/금액"] == 1	숫자만·담당자·일정/금액.
+assert [ln.text for ln in doc.pages[0].active_lines()] == [texts[0], texts[4]]	남은 줄.
+def test_repeated_switch_and_stoplist():	반복·stoplist 테스트.
+pages = [Page(no=n, title=f"p{n}", lines=[Line(0, "대외비"), Line(0, f"본문 {n} 접착제 변경"), Line(0, "Confidential")]) for n in range(1, 4)]	세 쪽.
+doc = Document(path=None, kind="pdf", title="", pages=pages)	문서.
+assert prepare(doc, Config()) == {}	끔이면 없음.
+removed = prepare(doc, Config(rule_repeated_line=True, stoplist=["confidential"]))	켬 + stoplist.
+assert removed["반복 문구"] == 3 and removed["수동 목록"] == 3	반복 3, 수동 3.
+def test_split_long_switch():	긴 줄 분할 테스트.
+text = "첫 번째 문장은 충분히 길게 써서 분할 기준을 넘긴다. 두 번째 문장도 마찬가지로 길게 이어진다. 끝."	긴 글.
+assert len(split_sentences(text)) == 2 and split_sentences(text)[-1].endswith("끝.")	두 문장.
+doc = _doc(text, "분할되지 않을 만큼 짧지만 열 자는 넘는 줄입니다", title="본문", no=1)	문서.
+prepare(doc, Config(split_len=40))	끔.
+assert [ln.idx for ln in doc.pages[0].active_lines()] == [1, 2]                       # 스위치 끔: 그대로	그대로.
+doc = _doc(text, "분할되지 않을 만큼 짧지만 열 자는 넘는 줄입니다", title="본문", no=1)	문서.
+prepare(doc, Config(rule_split_long=True, split_len=40))	켬.
+act = doc.pages[0].active_lines()	활성 줄.
+assert [ln.idx for ln in act] == [1, 2, 3] and act[0].split_from == 1 and act[2].split_from is None	나뉨과 split_from.
+def test_page_exclude_and_cover_switches():	페이지 제외·표지 테스트.
+doc = Document(path=None, kind="pptx", title="", pages=[Page(no=1, title="표지", lines=[Line(0, "PS-200 개선 보고")]),	두 쪽(첫 줄).
+Page(no=2, title="목차", lines=[Line(0, "1. 배경 2. 개선안")])])	이어짐.
+prepare(doc, Config())	끔.
+assert [p.excluded_reason for p in doc.pages] == [None, None]	제외 없음.
+prepare(doc, Config(rule_page_exclude=True))	페이지 제외.
+assert doc.pages[0].excluded_reason is None and doc.pages[1].excluded_reason.startswith("제목 규칙")	목차만 제외.
+prepare(doc, Config(rule_cover=True))	표지.
+assert doc.pages[0].excluded_reason == "표지" and doc.pages[1].excluded_reason is None	1쪽만 제외.
+def test_page_weight_two_classes():	가중치 테스트.
+on = Config(page_weight_enabled=True)	켬.
+for title in ("개선안 1: 패키지 접착 구조 변경", "검증 결과", "원인 분석", "PS-200 보고"):	높음 제목들.
+assert page_weight(title, on).weight == 1.0 and page_weight(title, on).reason == "기본(높음)"	1.0.
+pw = page_weight("품질 현황", on)	낮음.
+assert pw.weight == 0.4 and pw.relevance == "낮음" and pw.reason == "낮음 키워드 '현황'"	0.4.
+cfg2 = Config(page_weight_enabled=True, low_relevance_patterns=["Action\\s*Plan", "KPI"], high_relevance_patterns=["KPI\\s*개선"], low_relevance_weight=0.2)	사용자 패턴.
+assert page_weight("KPI 현황", cfg2).weight == 0.2 and page_weight("KPI 개선 구조", cfg2).weight == 1.0	낮음·높음 우선.
+assert page_weight("품질 현황", Config()).reason == "가중치 끔"                 # 기본(끔)	끔이면 '가중치 끔'.
+assert page_weight("품질 현황", Config(page_weight_enabled=True, low_relevance_patterns=["(", "현황"])).relevance == "낮음"   # 잘못된 정규식은 무시	잘못된 정규식 무시.
+def test_old_config_keys_are_migrated(tmp_path):	옛 설정 이전 테스트.
+f = tmp_path / "ip_finder.toml"	파일.
+f.write_text('mode = "cascade"\nmodel = "qwen3"\nrequire_korean = true\nshort_line_chars = 12\n', encoding="utf-8")	옛 키들.
+c = Config.load(f)	읽기.
+assert c.rule_require_korean is True and c.short_line_chars == 12 and c.classifier == "proto"	이전됨.
+def test_state_paths_are_inside_install_folder(tmp_path):	경로 테스트.
+from ip_finder.config import app_root	설치 폴더.
+root = app_root()	루트.
+c = Config()	설정.
+assert c.cache_file() == root / "data" / "cache.sqlite" and c.history_dir() == root / "data" / "history"	캐시·이력.
+assert c.classifier_file() == root / "data" / "classifiers" / "proto.npz" and c.classifier_file("knn").name == "knn.npz"	분류기 파일.
+cfg_file = tmp_path / "ip_finder.toml"	설정 파일.
+cfg_file.write_text('cache_path = "data/c.sqlite"\nhistory_path = ""\n', encoding="utf-8")	상대 경로.
+loaded = Config.load(cfg_file)	읽기.
+assert loaded.cache_file() == tmp_path / "data" / "c.sqlite" and loaded.history_dir() is None and loaded.base_dir == tmp_path	설정 파일 폴더 기준.
+assert not (Path.home() / ".ip_finder" / "history").exists()	홈에 안 만듦.
+saved = Config(rule_short_line=True, classifier="knn").save(tmp_path / "s.toml")	저장.
+again = Config.load(saved)	다시 읽기.
+assert again.rule_short_line is True and again.classifier == "knn" and again.layout_analysis is False	값 유지.

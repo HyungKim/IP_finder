@@ -13,14 +13,16 @@ CHANGE_KINDS = {
     "gone": "사라진 문장",
 }
 
+from ..switches import SWITCHES
+
 _SETTING_NAMES = {
-    "model": "LLM 모델", "prompt_variant": "프롬프트 판", "mode": "판정 모드", "embed_model": "임베딩 모델",
-    "group_max_chars": "묶음 글자 수", "group_by": "묶음 기준", "target_grades": "추출 등급", "page_weight_enabled": "페이지 가중치 적용",
-    "low_relevance_patterns": "관련성 낮음 키워드", "high_relevance_patterns": "관련성 높음 키워드", "low_relevance_weight": "관련성 낮음 가중치",
-    "accept_score": "목록 점수 기준", "short_line_chars": "짧은 줄 기준(글자수)", "require_korean": "한글 없는 줄 제외", "split_len": "분할 길이", "repeated_line_min_pages": "반복 문구 기준",
+    "version": "프로그램 버전", "reader_version": "읽기 방식(리더 판)", "classifier": "분류기", "classifier_desc": "분류기 상세",
+    "embed_model": "임베딩 모델", "knn_k": "k-NN 이웃 수", "target_grades": "추출 등급", "accept_score": "목록 점수 기준",
+    "short_line_chars": "짧은 줄 기준(글자수)", "split_len": "분할 길이", "repeated_line_min_pages": "반복 문구 기준",
     "stoplist": "수동 제거 목록", "page_exclude_patterns": "페이지 제외 패턴", "cover_max_lines": "표지 기준",
-    "title_fix": "제목 보정", "safety_net": "안전장치", "prompt_version": "프롬프트 버전", "classifier": "분류기",
-    "version": "프로그램 버전", "gold": "골드(반영 문장)", "use_gold": "골드 반영", "reader_version": "읽기 방식(리더 판)",
+    "low_relevance_patterns": "관련성 낮음 키워드", "high_relevance_patterns": "관련성 높음 키워드", "low_relevance_weight": "관련성 낮음 가중치",
+    "gold": "골드(반영 문장)", "use_gold": "골드 반영",
+    **{s.field: f"스위치 {s.label}" for s in SWITCHES},
 }
 
 
@@ -101,7 +103,7 @@ def change_rows(diff: dict, labeled: list[LabeledLine]) -> list[dict]:
             desc = "이전 실행에 있던 문장이 없어짐"
         rows.append({"kind": kind, "page": int(page) if page.isdigit() else page, "line": int(idx) if idx.isdigit() else idx,
                      "text": ll.text if ll else "", "old": old, "new": new, "in_list": "목록" if it.get("in") else "",
-                     "desc": desc, "source": ({"clf": "분류기", "llm": "LLM", "verified": "분류기+LLM"}.get(ll.source, ll.source) if ll else "")})
+                     "desc": desc, "source": ({"clf": "분류기", "gold": "골드"}.get(ll.source, ll.source) if ll else "")})
     order = {"entered": 0, "left": 1, "grade": 2, "score": 3, "text": 4, "new": 5, "gone": 6}
     kinds_rev = {v: k for k, v in CHANGE_KINDS.items()}
     rows.sort(key=lambda r: (order.get(kinds_rev.get(r["kind"], ""), 9), r["page"] if isinstance(r["page"], int) else 0, r["line"] if isinstance(r["line"], int) else 0))

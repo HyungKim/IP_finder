@@ -1,0 +1,126 @@
+# tests/test_compare.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""비교 도구: 문장 맞추기, 결과 기록(Excel 왕복), 두 실행 비교, 골드 지표, 분류기 비교, 사다리."""	파일 설명.
+from pathlib import Path	경로.
+from openpyxl import load_workbook	Excel 읽기.
+from ip_finder.compare import (KIND_ORDER, Step, compare_classifiers, compare_records, default_ladder, gold_metrics, ladder_markdown,	비교 도구(첫 줄).
+load_ladder, load_record, load_records, match_texts, norm_key, pair_records, record_from_result, run_ladder,	이어짐.
+step_config, write_classifier_compare, write_ladder, write_runs_compare, runs_markdown, classifiers_markdown)	이어짐.
+from ip_finder.compare.records import KIND_ENTER, KIND_GONE, KIND_LEAVE, KIND_MERGED, KIND_NEW, KIND_SPLIT, KIND_STATUS, RunRecord, Unit	변경 종류 상수와 Unit·RunRecord.
+from ip_finder.config import Config	설정.
+from ip_finder.eval import make_gold_sheet	골드 시트.
+from ip_finder.goldmap import load_gold	골드 읽기.
+from ip_finder.pipeline import extract	실행.
+from ip_finder.post import STATUS_CLF_OUT, STATUS_PREP_OUT, STATUS_REVIEW	상태 상수.
+from ip_finder.switches import SWITCHES	스위치.
+def test_match_texts_three_levels():	맞추기 세 단계 테스트.
+a = ["접착제를 저탄성 실리콘계로", "변경하여 응력 저감", "조립 수율 92.1% 향상", "대외비", "삭제될 문장"]	A 목록.
+b = ["접착제를 저탄성 실리콘계로 변경하여 응력 저감", "조립 수율 92.1 % 향상", "대외비", "완전히 새 문장", "조립 수율 92.1% 향상이 확인됨 추가"]	B 목록.
+m = match_texts(a, b, [1] * 5, [1] * 5)	맞추기(모두 1쪽).
+kinds = m.kind_of()	종류 사전.
+assert kinds[(2, 1)] == "동일" and kinds[(3, 2)] == "동일"                 # 공백 차이는 동일	공백 차이는 동일.
+assert kinds[(0, 0)] == "포함" and kinds[(1, 0)] == "포함"                 # 두 줄이 한 문단에 포함(합쳐짐)	두 줄이 한 문단에 포함.
+assert m.unmatched_a == [4] and 3 in m.unmatched_b	짝 없는 것.
+m2 = match_texts(["접착제를 저탄성 실리콘계로 변경하여 응력 저감"], ["접착제를 저탄성 실리콘계로", "변경하여 응력 저감"], [1], [1, 1])	한 문장이 두 줄로.
+assert sorted(m2.pairs) == [(0, 0, "포함"), (0, 1, "포함")]                   # 한 문장이 두 줄로 나뉨	둘 다 포함 짝.
+m3 = match_texts(["냉각 유로를 이중 구조로 변경하여 열 분산"], ["냉각 유로를 이중 구조로 바꾸어 열 분산"], [2], [2])	비슷한 문장.
+assert m3.pairs == [(0, 0, "유사")]	유사.
+assert match_texts(["같은 글"], ["같은 글"], [1], [2]).pairs == [(0, 0, "동일")]  # 동일은 쪽이 달라도	동일은 쪽이 달라도.
+assert norm_key(" 접착제  변경 ") == "접착제변경"	열쇠 함수.
+def _unit(text, status=STATUS_REVIEW, grade="A", score=0.9, page=1):	Unit 도우미.
+return Unit(page, 1, text, status, grade, score, 1.0, 0.8)	생성.
+def test_compare_records_kinds():	비교 종류 테스트.
+a = RunRecord("r.pdf", "", [_unit("가 문장 하나"), _unit("나 문장 둘", STATUS_CLF_OUT, "X"), _unit("다 문장 셋"), _unit("라 사라짐"),	A 기록(첫 줄).
+_unit("마 앞부분의 긴 줄 내용", STATUS_REVIEW), _unit("마 뒷부분의 긴 줄 내용", STATUS_REVIEW)], {"rule_short_line": False})	이어짐.
+b = RunRecord("r.pdf", "", [_unit("가 문장 하나", STATUS_PREP_OUT, ""), _unit("나 문장 둘", STATUS_REVIEW, "B"), _unit("다 문장 셋", STATUS_REVIEW, "B"),	B 기록(첫 줄).
+_unit("바 새로움"), _unit("마 앞부분의 긴 줄 내용 마 뒷부분의 긴 줄 내용")], {"rule_short_line": True})	이어짐.
+d = compare_records(a, b)	비교.
+c = d.counts()	종류별 수.
+assert c[KIND_LEAVE] == 1 and c[KIND_ENTER] == 1 and c["등급 변경"] == 1 and c[KIND_GONE] == 1 and c[KIND_NEW] == 1 and c[KIND_MERGED] == 2	이탈·진입·등급·사라짐·새·합쳐짐 수.
+assert any("짧은 줄 제외" in s for s in d.settings_diff)	설정 차이.
+rows = d.summary_rows()	요약 행.
+assert rows[0][0] == STATUS_REVIEW and rows[0][1] == 5 and rows[0][2] == 4	검토 목록 5 → 4.
+assert [ch["kind"] for ch in d.changes] == sorted([ch["kind"] for ch in d.changes], key=KIND_ORDER.index)	종류 순서대로 정렬됨.
+md = runs_markdown([d], "A", "B")	Markdown.
+assert "검토 목록 진입" in md and "| 검토 목록 | 5 | 4 | -1 |" in md	표 내용.
+def test_record_roundtrip_through_excel(sample_dir, cfg_all, fake_embedder, tmp_path):	Excel 왕복 테스트.
+out, res = extract(sample_dir / "sample_report.pptx", cfg_all, tmp_path, embedder=fake_embedder)	실행.
+mem = record_from_result(res, cfg_all, out)	메모리 기록.
+disk = load_record(out)	파일 기록.
+assert disk.name == "sample_report.pptx" and disk.pages == 12 and len(disk.units) == len(mem.units)	이름·쪽 수·단위 수 일치.
+assert dict(disk.by_status()) == dict(mem.by_status()) and disk.settings["rule_short_line"] in (True, "True")	상태별 수 일치, 설정 읽힘.
+assert [u.text for u in disk.review()] == [u.text for u in mem.review()]	검토 목록 문장 일치.
+assert load_records(tmp_path)[0].path == str(out)	폴더 읽기.
+d = compare_records(mem, disk)	같은 것끼리 비교.
+assert d.counts()["total"] if False else sum(d.counts().values()) == 0        # 같은 결과 → 변화 없음	변화 0.
+def test_gold_metrics_with_matching(sample_dir, cfg, fake_embedder, tmp_path):	골드 지표 테스트.
+gold = make_gold_sheet(sample_dir / "sample_report.pptx", cfg, tmp_path / "g.xlsx", embedder=fake_embedder)	골드 시트.
+rows = load_gold(gold)	골드 행.
+out, res = extract(sample_dir / "sample_report.pptx", cfg, tmp_path, embedder=fake_embedder, use_gold=False)	실행(골드 반영 끔).
+rec = record_from_result(res, cfg, out)	기록.
+m = gold_metrics(rec, rows)	지표.
+assert m["gold_rows"] == len(rows) and m["matched"] == len(rows) and m["recall"] == 1.0 and m["precision"] == 1.0 and m["review_unscored"] == 0	전부 맞춰지고 재현율·정밀도 1.
+cfg.layout_analysis = True                                                  # 문장 단위가 달라져도 포함·유사로 맞춘다	레이아웃 켬(문장 단위 변화).
+out2, res2 = extract(sample_dir / "sample_report.pptx", cfg, tmp_path / "l", embedder=fake_embedder, use_gold=False)	실행.
+m2 = gold_metrics(record_from_result(res2, cfg, out2), rows)	지표.
+assert m2["matched"] >= 0.8 * len(rows) and m2["recall"] is not None	80% 이상 맞춰짐.
+def test_compare_classifiers_on_fake_gold(sample_dir, cfg, fake_embedder, tmp_path):	분류기 비교 테스트.
+gold = make_gold_sheet(sample_dir / "sample_report.pptx", cfg, tmp_path / "g.xlsx", embedder=fake_embedder)	골드 시트.
+rows = load_gold(gold)	행.
+result = compare_classifiers(rows, cfg, fake_embedder, k=3, repeats=2)	비교(3겹 2회).
+reps = {r.name: r for r in result["reports"]}	이름 → 성적표.
+assert set(reps) == {"proto", "knn", "centroid", "softmax", "ovr", "cue", "ngram"}	7종 모두.
+assert reps["proto"].accuracy == 1.0 and not reps["proto"].trainable and reps["proto"].acc_std is None	proto 100%, 학습 없음, 표준편차 없음.
+assert all(r.accuracy is not None and len(r.preds) == len(rows) for r in reps.values() if not r.skipped)	모두 채점됨.
+assert len(reps["knn"].repeat_acc) == 2 and reps["knn"].acc_std is not None	knn 반복 2회.
+out = write_classifier_compare(result, tmp_path / "cmp.xlsx")	Excel.
+wb = load_workbook(str(out))	열기.
+assert wb.sheetnames == ["요약", "등급별", "혼동 행렬", "문장별", "불일치", "실행 정보"] and wb["요약"].max_row >= 8	시트 이름.
+md = classifiers_markdown(result)	Markdown.
+assert "| 원형 문장 코사인 (제로샷) |" in md	표 행.
+skipped = compare_classifiers(rows, cfg, None, ["proto", "cue"])	임베더 없이.
+assert skipped["reports"][0].skipped and skipped["reports"][1].accuracy is not None   # 임베더 없음 → proto 건너뜀, cue 는 동작	proto 건너뜀, cue 동작.
+def test_ladder_cumulative_and_single(sample_dir, cfg, fake_embedder, tmp_path):	사다리 테스트.
+gold = make_gold_sheet(sample_dir / "sample_report.pptx", cfg, tmp_path / "g.xlsx", embedder=fake_embedder)	골드 시트.
+rows = load_gold(gold)	행.
+ladder = default_ladder(["layout", "short_line", "repeated"])	세 칸 사다리.
+res = run_ladder([sample_dir / "sample_report.pptx", sample_dir / "sample_report.pdf"], cfg, ladder, tmp_path / "lad", rows,	실행(두 파일, 골드).
+embedders={"fake-embed": fake_embedder})	가짜 임베더.
+assert [s.title for s in res.steps] == ["기준선", "1. 레이아웃 분석", "2. 짧은 줄 제외", "3. 반복·고정 문구 제외"]	칸 제목.
+assert len(res.diffs) == 3 and res.diffs[2][0] is res.steps[2]                # 누적: 직전 칸과 비교	비교 3개, 누적은 직전 칸.
+assert res.steps[0].cfg.layout_analysis is False and res.steps[1].cfg.layout_analysis is True and res.steps[2].cfg.rule_short_line is True	칸 설정.
+assert res.steps[2].totals()[STATUS_PREP_OUT] > 0 and res.gold_used and res.steps[0].gold["recall"] is not None	전처리 제외 있음, 골드 지표.
+assert all(s.cfg.use_gold is False and s.cfg.history_path == "" for s in res.steps)	실험은 골드·이력 끔.
+assert sorted(p.name for p in (tmp_path / "lad").iterdir()) == ["step-00-baseline", "step-01-layout", "step-02-short_line", "step-03-repeated"]	폴더 이름.
+assert len(list((tmp_path / "lad" / "step-01-layout").glob("*_검토후보.xlsx"))) == 2	칸마다 파일 2개.
+out = write_ladder(res, tmp_path / "lad" / "사다리.xlsx")	Excel.
+wb = load_workbook(str(out))	열기.
+assert wb.sheetnames == ["사다리 요약", "칸별 변화", "변경 종류별", "파일별", "칸 설정"] and wb["사다리 요약"].max_row >= 5	시트 이름.
+md = ladder_markdown(res)	Markdown.
+assert "| 기준선 |" in md and "3. 반복·고정 문구 제외" in md	내용.
+single = default_ladder(["short_line", "repeated"], mode="single")	단독 사다리.
+res2 = run_ladder([sample_dir / "sample_report.pdf"], cfg, single, tmp_path / "single", None, embedders={"fake-embed": fake_embedder})	실행(골드 없음).
+assert res2.diffs[1][0] is res2.steps[0] and res2.steps[2].cfg.rule_short_line is False   # 단독: 기준선과 비교, 다른 칸은 끔	기준선과 비교, 다른 칸 끔.
+assert not res2.gold_used	골드 안 씀.
+def test_ladder_toml_and_arbitrary_settings(tmp_path):	TOML 사다리 테스트.
+f = tmp_path / "l.toml"	파일.
+f.write_text('name = "clf"\nmode = "single"\n[[step]]\nname = "layout"\n[[step]]\nlabel = "k-NN"\nset = { classifier = "knn", knn_k = 3 }\n', encoding="utf-8")	내용(스위치 칸 + set 칸).
+lad = load_ladder(f)	읽기.
+assert lad.name == "clf" and lad.mode == "single" and [s.label for s in lad.steps] == ["레이아웃 분석", "k-NN"]	이름·방식·칸 이름.
+base = Config()	기준 설정.
+c1 = step_config(base, lad, 1)	둘째 칸 설정.
+assert c1.classifier == "knn" and c1.knn_k == 3 and c1.layout_analysis is False and c1.use_gold is False	knn·k=3, 레이아웃 끔, 골드 끔.
+assert step_config(base, lad, -1).classifier == "proto"	기준선 설정.
+import pytest	pytest.
+with pytest.raises(ValueError):	없는 필드면
+Step("x", "x", {"no_such_field": 1}).apply(base)	오류.
+def test_write_runs_compare_and_pairing(sample_dir, cfg, cfg_all, fake_embedder, tmp_path):	실행 비교 Excel 테스트.
+outs_a = [extract(sample_dir / f, cfg, tmp_path / "a", embedder=fake_embedder, with_ext=True)[0] for f in ("sample_report.pdf", "sample_report.pptx")]	기준선 결과 둘.
+outs_b = [extract(sample_dir / f, cfg_all, tmp_path / "b", embedder=fake_embedder, with_ext=True)[0] for f in ("sample_report.pdf", "sample_report.pptx")]	전부 켬 결과 둘.
+a, b = load_records(tmp_path / "a"), load_records(tmp_path / "b")	읽기.
+pairs = pair_records(a, b)	짝짓기.
+assert len(pairs) == 2 and all(x.name == y.name for x, y in pairs)	둘 다 같은 이름.
+diffs = [compare_records(x, y) for x, y in pairs]	비교.
+out = write_runs_compare(diffs, tmp_path / "cmp.xlsx", "기준선", "전부 켬")	Excel.
+wb = load_workbook(str(out))	열기.
+assert wb.sheetnames == ["요약", "설정 차이", "변경 문장", "페이지별", "실행 정보"]	시트 이름.
+assert wb["변경 문장"].max_row > 1 and any("스위치" in str(r[1]) for r in wb["설정 차이"].iter_rows(min_row=2, values_only=True))	변경 문장 있음, 설정 차이에 스위치.

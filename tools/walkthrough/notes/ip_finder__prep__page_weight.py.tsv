@@ -1,0 +1,45 @@
+# ip_finder/prep/page_weight.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""페이지 제목으로 관련성(높음/낮음)과 가중치를 정한다.	파일 설명: 관련성과 가중치.
+두 분류뿐이다. 제목이 '관련성 낮음' 키워드(현황·실적·고객·클레임·영업·회의 등)에 걸리면 낮음(가중치 low_relevance_weight, 기본 0.4),	두 분류(높음·낮음)와 낮음 가중치.
+아니면 높음(1.0). '관련성 높음' 키워드는 낮음보다 우선해 특정 제목을 강제로 높음으로 둔다.	높음 키워드가 우선.
+문장 점수 = 판정 신뢰도 × 페이지 가중치이고, 점수가 accept_score 미만이면 검토 목록 대신 보류 시트로 간다.	점수와 보류의 관계.
+page_weight_enabled = false 면 모든 페이지가 1.0 이다. 낮음 가중치를 0 으로 두면 낮음 페이지는 아예 판정하지 않는다."""	끄기와 가중치 0 의 뜻.
+from __future__ import annotations	새 문법 호환.
+import re	정규식.
+from dataclasses import dataclass	dataclass.
+from ..config import Config	설정.
+HIGH, LOW = "높음", "낮음"	관련성 문자열 상수 두 개.
+@dataclass	@dataclass.
+class PageWeight:	가중치 판정 결과.
+weight: float	가중치 값.
+reason: str       # "낮음 키워드 '현황'" / "높음 키워드 '개선'" / "기본(높음)" / "가중치 끔"	근거 문장.
+relevance: str    # 높음 | 낮음	관련성.
+def _compile(patterns: list[str]) -> list[re.Pattern]:	문자열 패턴들을 정규식 객체로 바꾸는 함수.
+out = []	결과.
+for p in patterns:	패턴마다
+try:	잘못된 정규식 대비 try.
+out.append(re.compile(str(p), re.IGNORECASE))	대소문자 무시로 컴파일.
+except re.error:	잘못된 패턴은
+continue	건너뛴다 (사용자가 설정에 오타를 내도 멈추지 않게).
+return out	목록.
+def page_weight(title: str, cfg: Config) -> PageWeight:	제목으로 가중치를 정하는 함수. PageWeight(가중치, 근거, 관련성) 를 돌려준다.
+title = title or ""	제목이 None 이면 빈 문자열로.
+if not cfg.page_weight_enabled:	가중치 기능이 꺼져 있으면
+return PageWeight(1.0, "가중치 끔", HIGH)	모두 1.0, 근거 '가중치 끔', 높음.
+for rx in _compile(cfg.high_relevance_patterns):	높음 키워드 정규식마다
+m = rx.search(title)	제목에서 찾아
+if m:	걸리면
+return PageWeight(1.0, f"높음 키워드 '{m.group(0).strip()}'", HIGH)	1.0, 근거 '높음 키워드 ○○', 높음. 낮음보다 먼저 보므로 우선한다.
+low = max(0.0, min(1.0, float(cfg.low_relevance_weight)))	낮음 가중치 값을 0~1 로 묶는다.
+for rx in _compile(cfg.low_relevance_patterns):	낮음 키워드마다
+m = rx.search(title)	찾아
+if m:	걸리면
+return PageWeight(low, f"낮음 키워드 '{m.group(0).strip()}'", LOW)	낮음 가중치(기본 0.4), 근거 '낮음 키워드 ○○', 낮음.
+return PageWeight(1.0, "기본(높음)", HIGH)	아무것에도 안 걸리면 1.0, '기본(높음)'.
+def apply_page_weights(doc, cfg: Config) -> None:	모든 페이지에 가중치를 적는 함수.
+"""모든 페이지에 weight / weight_reason / relevance 를 채우고, 가중치 0인 페이지는 제외 처리한다."""	설명.
+for page in doc.pages:	페이지마다
+pw = page_weight(page.title, cfg)	제목으로 판정.
+page.weight, page.weight_reason, page.relevance = float(pw.weight), pw.reason, pw.relevance	가중치·근거·관련성을 페이지에 적는다.
+if page.excluded_reason is None and pw.weight <= 0.0:	제외되지 않았는데 가중치가 0 이면
+page.excluded_reason = f"관련성 낮음, 가중치 0 ({pw.reason})"	'관련성 낮음, 가중치 0' 으로 제외한다.

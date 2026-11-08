@@ -32,3 +32,7 @@ tools/kure/*.gguf
 
 # Claude Code personal settings (permission rules)
 .claude/settings.local.json
+
+# 코드 리뷰 페이지 빌드 산출물 (아티팩트로 발행)
+tools/walkthrough/out/
+tools/walkthrough/todo/

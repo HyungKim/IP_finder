@@ -1,0 +1,83 @@
+# tests/test_classify.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+import numpy as np	numpy.
+import pytest	pytest.
+from ip_finder.classify import ORDER, REGISTRY, Batch, build, load_classifier, load_file, load_prototypes	분류기 묶음.
+from ip_finder.classify.cv import out_of_fold_predict, stratified_folds	교차 검증.
+from ip_finder.classify.features import ngram_matrix, with_cues	특성.
+from ip_finder.config import Config	설정.
+from ip_finder.cues import FEATURE_NAMES	단서 이름.
+from ip_finder.prep.page_type import page_type	페이지 유형.
+def _synthetic(n_per=20, dim=16, seed=0):	합성 데이터 생성 도우미.
+rng = np.random.default_rng(seed)	난수.
+labels = ["A", "B", "C", "D", "X"]	등급.
+centers = rng.normal(size=(5, dim))	등급별 중심.
+X, y, texts = [], [], []	목록.
+for i, lab in enumerate(labels):	등급마다
+for j in range(n_per):	n_per 개.
+X.append(centers[i] + 0.3 * rng.normal(size=dim))	중심 + 잡음.
+y.append(lab)	정답.
+texts.append({"A": "접착제를 변경하여 적용", "B": "수율 15% 향상", "C": "응력 발생 원인", "D": "적용 예정 계획", "X": "일정 비용 담당"}[lab] + f" {j}")	등급에 맞는 가짜 문장.
+return Batch(texts, np.asarray(X, dtype=np.float32), ["general"] * len(y)), y	Batch 와 정답.
+def test_page_type():	페이지 유형 테스트.
+assert page_type("원인 분석")[0] == "problem"	problem.
+assert page_type("검증 결과")[0] == "result"	result.
+assert page_type("문제점 및 개선 방안") == ("general", None)      # 유형이 섞이면 힌트 없음	섞이면 general.
+def test_registry_has_seven_classifiers():	등록부 테스트.
+assert ORDER == ["proto", "knn", "centroid", "softmax", "ovr", "cue", "ngram"]	순서.
+assert {n: (c.trainable, c.needs_embedding) for n, c in REGISTRY.items()} == {	학습·임베딩 속성(첫 줄).
+"proto": (False, True), "knn": (True, True), "centroid": (True, True), "softmax": (True, True), "ovr": (True, True),	이어짐.
+"cue": (False, False), "ngram": (True, False)}	이어짐.
+def test_zero_shot_with_fake_embedder(fake_embedder):	제로샷 테스트.
+clf = build("proto", Config())	proto.
+clf.prepare(fake_embedder)	원형 임베딩.
+texts = ["접착제를 저탄성 실리콘계로 변경하여 응력 저감", "조립 수율 92.1% → 97.8%로 향상", "3분기 파일럿 라인 적용 일정 조정", "차기 모델에 신규 방식 적용 예정"]	문장 넷.
+preds = clf.predict(Batch(texts, fake_embedder.embed(texts)))	판정.
+assert [p.label for p in preds][:2] == ["A", "B"]	앞 둘은 A, B.
+assert all(0.65 <= p.confidence <= 0.9 for p in preds) and set(preds[0].scores) == {"A", "B", "C", "D", "X"}	신뢰도 범위와 점수 키.
+assert len(load_prototypes()["A"]) >= 5	원형 문장 수.
+def test_cue_rules():	규칙 분류기 테스트.
+clf = build("cue")	cue.
+preds = clf.predict(Batch(["접착제를 변경하여 응력 저감", "수율 15% 향상", "진동으로 체결부가 풀리는 현상 발생", "차기 모델 적용 예정", "설비 투자 비용 2억 원", "그냥 문장"]))	판정.
+assert [p.label for p in preds] == ["A", "B", "C", "D", "X", "X"]	등급.
+assert preds[0].confidence == 0.7 and preds[-1].confidence == 0.55	신뢰도.
+@pytest.mark.parametrize("name", ["knn", "centroid", "softmax", "ovr", "ngram"])	학습형 다섯 가지 매개변수화.
+def test_trainable_classifiers_fit_predict_roundtrip(name, tmp_path):	학습·판정·저장·복원 테스트.
+batch, y = _synthetic()	합성 데이터.
+clf = build(name, Config(knn_k=3))	분류기(k=3).
+clf.fit(batch, y)	학습.
+preds = clf.predict(batch)	판정.
+acc = sum(p.label == g for p, g in zip(preds, y)) / len(y)	정확도.
+assert acc > 0.9 and all(0.0 <= p.confidence <= 1.0 for p in preds) and clf.labels == ["A", "B", "C", "D", "X"]	90% 이상, 신뢰도 범위, 등급 목록.
+clf.meta = {"embed_model": "fake-embed", "n": len(y)}	메타.
+path = clf.save(tmp_path / f"{name}.npz")	저장.
+loaded = load_file(path, Config(knn_k=3))	복원.
+assert loaded.name == name and loaded.labels == clf.labels and loaded.meta["n"] == len(y)	이름·등급·메타.
+again = loaded.predict(batch.subset([0, 25, 50]))	일부 판정.
+assert [p.label for p in again] == [preds[0].label, preds[25].label, preds[50].label]	같은 결과.
+assert "학습" in loaded.describe()	설명에 '학습'.
+def test_cross_validation_helpers():	교차 검증 도우미 테스트.
+batch, y = _synthetic(n_per=10)	작은 합성.
+folds = stratified_folds(y, k=5, seed=1)	5겹.
+assert len(folds) == 5 and sorted(i for f in folds for i in f) == list(range(len(y)))	모든 인덱스가 한 번씩.
+assert all(len({y[i] for i in f}) == 5 for f in folds)                 # 층화: 겹마다 등급 다섯 개	층화.
+preds = out_of_fold_predict(build("centroid"), batch, y, k=5)	밖 판정.
+assert all(p is not None for p in preds) and sum(p.label == g for p, g in zip(preds, y)) / len(y) > 0.8	모두 판정되고 80% 이상.
+def test_feature_builders():	특성 테스트.
+X = with_cues(np.zeros((2, 4), np.float32), ["접착제 변경", "일정 조정"], ["means", "general"])	임베딩 + 단서.
+assert X.shape == (2, 4 + len(FEATURE_NAMES))	모양.
+N = ngram_matrix(["접착제 변경", "접착제 변경", "완전히 다른 글"])	n-gram.
+assert N.shape[0] == 3 and np.allclose(N[0], N[1]) and float(N[0] @ N[2]) < 0.5 and abs(float(np.linalg.norm(N[0])) - 1.0) < 1e-5	같은 글은 같은 벡터, 다른 글은 멀고, 길이 1.
+def test_load_classifier_checks_embed_model(tmp_path, fake_embedder):	임베딩 모델 검사 테스트.
+batch, y = _synthetic()	합성.
+cfg = Config(classifier="knn", classifier_dir=str(tmp_path), embed_model="fake-embed")	knn 설정.
+clf = build("knn", cfg)	분류기.
+clf.fit(batch, y)	학습.
+clf.meta = {"embed_model": "other-model"}	다른 모델로 표시.
+clf.save(cfg.classifier_file())	저장.
+with pytest.raises(ValueError):	로드하면
+load_classifier(cfg, fake_embedder)	오류.
+clf.meta = {"embed_model": "fake-embed"}	같은 모델.
+clf.save(cfg.classifier_file())	저장.
+assert load_classifier(cfg, fake_embedder).name == "knn"	로드 성공.
+cfg.classifier = "proto"	proto.
+assert load_classifier(cfg, fake_embedder).P is not None	원형 준비됨.

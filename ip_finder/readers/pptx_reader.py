@@ -243,7 +243,10 @@ def layout_report(path: Path, pages: set[int] | None = None) -> list[str]:
     return out
 
 
-def read_pptx(path: Path) -> Document:
+def read_pptx(path: Path, layout: bool = True) -> Document:
+    """layout=True: 읽기 순서·제목 추정·표·SmartArt·차트 제목까지 읽는다. layout=False: 원시 읽기(_read_raw)."""
+    if not layout:
+        return _read_raw(path)
     prs = Presentation(str(path))
     slide_height = prs.slide_height or 0
     pages: list[Page] = []
@@ -309,3 +312,46 @@ def read_pptx(path: Path) -> Document:
     if charts:
         notes.append(f"차트 {charts}개는 제목만 읽음 (데이터·범례 제외)")
     return Document(path=Path(path), kind="pptx", pages=pages, title=pages[0].title if pages else "", notes=notes)
+
+
+def _read_raw(path: Path) -> Document:
+    """레이아웃 분석 없는 원시 읽기(기준선). 도형을 XML 순서(만든 순서) 그대로 돌며 글상자의 문단과 표의 셀을 한 줄씩 Line 으로 만든다.
+    그룹은 안으로 들어가되 좌표는 보지 않는다. SmartArt·차트 제목은 읽지 않는다(python-pptx 기본 기능 밖).
+    제목은 파일이 제목 자리(placeholder)로 표시한 것만 쓰고, 없으면 첫 줄."""
+    prs = Presentation(str(path))
+    pages: list[Page] = []
+
+    def walk(shapes, lines: list[Line]) -> bool:
+        graphics = False
+        for sh in shapes:
+            if isinstance(sh, GroupShape):
+                graphics = walk(sh.shapes, lines) or graphics
+            elif getattr(sh, "has_table", False) and sh.has_table:
+                for row in sh.table.rows:
+                    for cell in row.cells:
+                        t = clean(cell.text)
+                        if t:
+                            lines.append(Line(idx=0, text=t, source="table"))
+            elif getattr(sh, "has_text_frame", False) and sh.has_text_frame:
+                for para in sh.text_frame.paragraphs:
+                    t = clean(para.text)
+                    if t:
+                        lines.append(Line(idx=0, text=t, level=para.level or 0))
+            elif sh._element.tag == P + "pic" or sh.shape_type in _GRAPHIC_TYPES:
+                graphics = True
+        return graphics
+
+    for sno, slide in enumerate(prs.slides, 1):
+        title, title_source = "", "없음"
+        ts = slide.shapes.title
+        if ts is not None and ts.has_text_frame and ts.text_frame.text.strip():
+            title, title_source = _shape_text(ts), "placeholder"
+        lines: list[Line] = []
+        has_graphics = walk(slide.shapes, lines)
+        if title:
+            lines = [ln for ln in lines if ln.text != title] if lines else lines      # 제목 자리의 글은 본문에서 뺀다
+        elif lines:
+            title, lines, title_source = lines[0].text, lines[1:], "raw"
+        pages.append(Page(no=sno, title=title, lines=lines, has_graphics=has_graphics, title_source=title_source))
+    return Document(path=Path(path), kind="pptx", pages=pages, title=pages[0].title if pages else "",
+                    notes=["원시 읽기(레이아웃 분석 끔): 도형 순서 그대로, SmartArt·차트 제목 없음"], reader="raw")

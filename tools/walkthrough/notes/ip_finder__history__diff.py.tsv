@@ -1,0 +1,99 @@
+# ip_finder/history/diff.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""두 실행 스냅샷의 비교와 설정 차이의 설명."""	파일 설명.
+from __future__ import annotations	새 문법 호환.
+from ..models import LabeledLine	모델.
+CHANGE_KINDS = {	변경 종류 코드 → 한글 이름.
+"entered": "목록 진입",	목록에 새로 들어옴.
+"left": "목록 이탈",	목록에서 빠짐.
+"grade": "등급 변경",	라벨이 바뀜.
+"score": "점수 변경",	점수가 0.1 이상 움직임.
+"text": "문장 변경",	같은 자리의 글이 바뀜.
+"new": "새 문장",	전에 없던 문장.
+"gone": "사라진 문장",	전에 있던 문장이 없어짐.
+}	사전 끝.
+from ..switches import SWITCHES	스위치 목록을 가져와 설정 이름표를 만든다.
+_SETTING_NAMES = {	설정 키 → 한글 이름.
+"version": "프로그램 버전", "reader_version": "읽기 방식(리더 판)", "classifier": "분류기", "classifier_desc": "분류기 상세",	설정 키 → 한글 이름: 버전·리더 판·분류기.
+"embed_model": "임베딩 모델", "knn_k": "k-NN 이웃 수", "target_grades": "추출 등급", "accept_score": "목록 점수 기준",	임베딩·knn·등급·점수 기준.
+"short_line_chars": "짧은 줄 기준(글자수)", "split_len": "분할 길이", "repeated_line_min_pages": "반복 문구 기준",	짧은 줄·분할·반복 기준.
+"stoplist": "수동 제거 목록", "page_exclude_patterns": "페이지 제외 패턴", "cover_max_lines": "표지 기준",	수동 제거 목록, 페이지 제외 패턴, 표지 기준.
+"low_relevance_patterns": "관련성 낮음 키워드", "high_relevance_patterns": "관련성 높음 키워드", "low_relevance_weight": "관련성 낮음 가중치",	낮음·높음 키워드, 낮음 가중치.
+"gold": "골드(반영 문장)", "use_gold": "골드 반영",	골드 관련.
+**{s.field: f"스위치 {s.label}" for s in SWITCHES},	스위치 필드마다 '스위치 <한글 이름>'.
+}	사전 끝.
+def _fmt(v) -> str:	값을 사람이 읽을 문자열로 바꾸는 함수.
+if v is None:	None 이면
+return "기본값"	'기본값'.
+if isinstance(v, bool):	참/거짓이면
+return "켬" if v else "끔"	'켬'/'끔'.
+if isinstance(v, (list, dict)):	리스트·사전이면
+return f"{len(v)}개 항목"	'N개 항목'.
+return str(v)	그 밖은 문자열로.
+def settings_diff(prev: dict, cur: dict) -> list[str]:	설정 차이를 사람이 읽을 문장 목록으로 만드는 함수.
+out = []	결과 목록.
+for k in list(cur.keys()) + [k for k in prev.keys() if k not in cur]:	현재 키들 + 이전에만 있던 키들.
+a, b = prev.get(k), cur.get(k)	이전 값과 현재 값.
+if a == b:	같으면
+continue	건너뛴다.
+name = _SETTING_NAMES.get(k, k)	한글 이름으로 (없으면 키 그대로).
+if isinstance(a, (list, dict)) or isinstance(b, (list, dict)):	리스트나 사전이면
+out.append(f"{name} 변경 ({_fmt(a)} → {_fmt(b)})")	'관련성 낮음 키워드 변경 (2개 항목 → 3개 항목)' 꼴.
+else:	아니면
+out.append(f"{name}: {_fmt(a)} → {_fmt(b)}")	'프롬프트 판: compact → full' 꼴.
+return out	돌려준다.
+def diff_runs(prev: dict, cur: dict, score_step: float = 0.1) -> dict:	두 스냅샷의 문장을 비교하는 함수. score_step 은 '점수 변경' 으로 볼 최소 차이.
+"""lines = {key: {"h": 해시, "label": 등급, "score": 점수, "in": 목록 여부}}"""	설명: 문장 사전의 형태.
+P, C = prev.get("lines", {}), cur.get("lines", {})	이전(P)과 현재(C)의 문장 사전.
+items: list[dict] = []	변경 항목 목록.
+for key, c in C.items():	현재 문장마다
+p = P.get(key)	같은 키의 이전 문장.
+if p is None:	없으면
+items.append({"key": key, "kind": "new", "old": "", "new": c["label"], "in": c["in"]})	'새 문장' (new).
+continue	다음으로.
+if p.get("h") != c.get("h"):	글 해시가 다르면
+items.append({"key": key, "kind": "text", "old": p["label"], "new": c["label"], "in": c["in"]})	'문장 변경' (text). 전처리가 달라져 글이 바뀐 경우.
+continue	다음으로.
+if c["in"] and not p["in"]:	지금은 목록에 있는데 전에는 없었으면
+items.append({"key": key, "kind": "entered", "old": p["label"], "new": c["label"], "in": True})	'목록 진입' (entered).
+elif p["in"] and not c["in"]:	전에는 있었는데 지금은 없으면
+items.append({"key": key, "kind": "left", "old": p["label"], "new": c["label"], "in": False})	'목록 이탈' (left).
+elif p["label"] != c["label"]:	라벨이 다르면
+items.append({"key": key, "kind": "grade", "old": p["label"], "new": c["label"], "in": c["in"]})	'등급 변경' (grade).
+elif abs(float(p.get("score", 0)) - float(c.get("score", 0))) >= score_step:	점수가 0.1 이상 움직였으면
+items.append({"key": key, "kind": "score", "old": f"{p.get('score', 0):.2f}", "new": f"{c.get('score', 0):.2f}", "in": c["in"]})	'점수 변경' (score), 값은 소수 둘째 자리.
+for key, p in P.items():	이전 문장마다
+if key not in C:	현재에 없으면
+items.append({"key": key, "kind": "gone", "old": p["label"], "new": "", "in": False})	'사라진 문장' (gone).
+counts = {k: sum(1 for it in items if it["kind"] == k) for k in CHANGE_KINDS}	종류별 수.
+counts["total"] = len(items)	총수.
+return {"items": items, "counts": counts}	항목 목록과 수를 돌려준다.
+def change_rows(diff: dict, labeled: list[LabeledLine]) -> list[dict]:	변경 항목을 엑셀 행으로 바꾸는 함수. 현재 실행의 문장 목록으로 발췌를 채운다.
+"""Excel '변경 사항' 시트용. 현재 실행의 문장으로 발췌를 채운다 (사라진 문장은 발췌 없음)."""	설명.
+by_key = {f"{ll.page_no}:{ll.line_idx}": ll for ll in labeled}	'페이지:줄' → 현재 LabeledLine.
+rows = []	결과 행들.
+for it in diff.get("items", []):	변경 항목마다
+ll = by_key.get(it["key"])	해당 문장 (사라진 문장은 None).
+page, _, idx = it["key"].partition(":")	키를 '페이지' 와 '줄' 로 나눈다 (partition 은 첫 ':' 기준 세 조각).
+kind = CHANGE_KINDS.get(it["kind"], it["kind"])	종류의 한글 이름.
+old, new = it["old"], it["new"]	이전·현재 값.
+if it["kind"] == "entered":	목록 진입이면
+desc = f"이전 실행에서는 목록에 없었음 (이전 {old or '-'})"	'이전 실행에서는 목록에 없었음 (이전 B)'.
+elif it["kind"] == "left":	목록 이탈이면
+desc = ("보류: " + ll.hold_reason) if ll and ll.hold_reason else f"이전 {old} → 현재 {new or '-'}"	보류 사유가 있으면 '보류: …', 아니면 '이전 A → 현재 C'.
+elif it["kind"] == "grade":	등급 변경이면
+desc = f"{old} → {new}"	'A → B'.
+elif it["kind"] == "score":	점수 변경이면
+desc = f"점수 {old} → {new}"	'점수 0.65 → 1.00'.
+elif it["kind"] == "text":	문장 변경이면
+desc = "전처리 결과가 달라져 문장이 바뀜"	전처리가 달라졌다는 설명.
+elif it["kind"] == "new":	새 문장이면
+desc = "이전 실행에 없던 문장"	설명.
+else:	그 밖(사라진 문장)은
+desc = "이전 실행에 있던 문장이 없어짐"	설명.
+rows.append({"kind": kind, "page": int(page) if page.isdigit() else page, "line": int(idx) if idx.isdigit() else idx,	행 사전: 종류, 페이지(숫자면 정수로), 줄,
+"text": ll.text if ll else "", "old": old, "new": new, "in_list": "목록" if it.get("in") else "",	발췌(현재 글), 이전, 현재, 목록 여부,
+"desc": desc, "source": ({"clf": "분류기", "gold": "골드"}.get(ll.source, ll.source) if ll else "")})	판정 주체 이름: 분류기 또는 골드.
+order = {"entered": 0, "left": 1, "grade": 2, "score": 3, "text": 4, "new": 5, "gone": 6}	종류별 정렬 순서.
+kinds_rev = {v: k for k, v in CHANGE_KINDS.items()}	한글 이름 → 코드 (정렬용 역방향 사전).
+rows.sort(key=lambda r: (order.get(kinds_rev.get(r["kind"], ""), 9), r["page"] if isinstance(r["page"], int) else 0, r["line"] if isinstance(r["line"], int) else 0))	종류 순서, 페이지, 줄 순으로 정렬.
+return rows	돌려준다.

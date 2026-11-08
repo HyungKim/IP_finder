@@ -1,0 +1,68 @@
+# ip_finder/classify/neighbors.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""골드 문장의 임베딩을 그대로 기억해 쓰는 분류기 둘. 학습이 빠르고(저장만 한다) 골드가 늘면 바로 반영된다.	파일 설명 첫 줄.
+- KNNClassifier: 가장 가까운 k 개 골드 문장이 많이 가진 등급. 신뢰도 = 1위 등급의 (유사도 가중) 투표 비율.	설명: kNN.
+- CentroidClassifier: 등급마다 골드 임베딩의 평균 벡터를 두고 가장 가까운 평균의 등급. 신뢰도 = 코사인에 소프트맥스(온도 20)를 씌운 확률."""	설명: centroid.
+from __future__ import annotations	새 문법 호환 선언.
+import numpy as np	numpy.
+from .base import Batch, Classifier, Prediction, label_indices, normalize_rows, predictions_from_scores, present_labels, softmax	공통 틀의 도우미들.
+class KNNClassifier(Classifier):	k-NN 클래스.
+name = "knn"	이름.
+label = "최근접 이웃 k-NN"	한글 이름.
+needs_embedding = True	임베딩 필요.
+trainable = True	학습형.
+def __init__(self, cfg=None):	생성자.
+super().__init__(cfg)	부모 생성자.
+self.k = int(getattr(cfg, "knn_k", 5) or 5)	이웃 수(설정 knn_k, 기본 5).
+self.X: np.ndarray | None = None	골드 벡터(학습 후).
+self.y_idx: np.ndarray | None = None	골드 등급 번호(학습 후).
+def fit(self, batch: Batch, y: list[str]) -> None:	학습 = 저장.
+self.labels = present_labels(y)	골드에 있는 등급.
+self.X = normalize_rows(batch.vectors)	골드 벡터를 길이 1 로 저장.
+self.y_idx = label_indices(y, self.labels)	등급 번호.
+self.meta["k"] = self.k	k 를 메타에(복원용).
+def predict(self, batch: Batch) -> list[Prediction]:	판정.
+if len(batch) == 0:	빈 배치면
+return []	빈 목록.
+if self.X is None:	학습 안 됐으면
+raise RuntimeError("knn: 학습되지 않은 분류기 (ip-finder train --classifier knn)")	오류.
+k = max(1, min(self.k, len(self.y_idx)))	k 는 골드 수를 넘지 않게.
+S = normalize_rows(batch.vectors) @ self.X.T                       # n × 골드 수 (코사인)	문장 × 골드 코사인.
+scores = np.zeros((len(batch), len(self.labels)), dtype=np.float32)	문장 × 등급 점수 행렬.
+for r in range(len(batch)):	문장마다
+nn = np.argpartition(-S[r], k - 1)[:k]	상위 k 개 골드 인덱스(부분 정렬).
+w = np.maximum(S[r, nn], 1e-6)                                 # 유사도 가중 투표 (음수는 거의 없지만 바닥을 둔다)	유사도 가중치(바닥 1e-6).
+for j, wt in zip(self.y_idx[nn], w):	이웃마다
+scores[r, j] += wt	그 등급에 가중치를 더한다.
+scores[r] /= scores[r].sum()                                   # 투표 비율 → 확률처럼 읽힌다	합이 1 이 되게 나눈다.
+return predictions_from_scores(scores, self.labels)	Prediction 목록(신뢰도 = 1위 비율).
+def _arrays(self):	저장할 배열.
+return {"X": self.X, "y_idx": self.y_idx}	골드 벡터와 등급 번호.
+def _restore(self, a):	복원.
+self.X, self.y_idx = a["X"], a["y_idx"]	배열 되돌리기.
+self.k = int(self.meta.get("k", self.k))	k 복원.
+class CentroidClassifier(Classifier):	등급 평균 벡터 클래스.
+name = "centroid"	이름.
+label = "등급 평균 벡터"	한글 이름.
+needs_embedding = True	임베딩 필요.
+trainable = True	학습형.
+temperature = 20.0           # 코사인 차이(0.05 단위)가 확률 차이로 보이도록 키우는 배수	소프트맥스 온도(코사인 차이를 확률 차이로 키움).
+def __init__(self, cfg=None):	생성자.
+super().__init__(cfg)	부모 생성자.
+self.C: np.ndarray | None = None	등급별 평균 벡터(학습 후).
+def fit(self, batch: Batch, y: list[str]) -> None:	학습.
+self.labels = present_labels(y)	골드에 있는 등급.
+X = normalize_rows(batch.vectors)	길이 1 벡터.
+idx = label_indices(y, self.labels)	등급 번호.
+self.C = normalize_rows(np.stack([X[idx == i].mean(axis=0) for i in range(len(self.labels))]))	등급마다 평균을 내고 다시 길이 1 로.
+def predict(self, batch: Batch) -> list[Prediction]:	판정.
+if len(batch) == 0:	빈 배치면
+return []	빈 목록.
+if self.C is None:	학습 안 됐으면
+raise RuntimeError("centroid: 학습되지 않은 분류기 (ip-finder train --classifier centroid)")	오류.
+sims = normalize_rows(batch.vectors) @ self.C.T	문장 × 등급 코사인.
+probs = softmax(sims * self.temperature)	온도를 곱해 소프트맥스 → 확률.
+return predictions_from_scores(sims, self.labels, probs.max(axis=1))	점수는 코사인, 신뢰도는 최대 확률.
+def _arrays(self):	저장할 배열.
+return {"C": self.C}	평균 행렬.
+def _restore(self, a):	복원.
+self.C = a["C"]	되돌리기.

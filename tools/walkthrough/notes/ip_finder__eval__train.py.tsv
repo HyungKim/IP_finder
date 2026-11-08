@@ -1,0 +1,51 @@
+# ip_finder/eval/train.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""골드 세트로 학습형 분류기(knn, centroid, softmax, ovr, ngram)를 학습해 classifier_dir/<이름>.npz 로 저장한다.	파일 설명 첫 줄.
+교차 검증 정확도를 함께 내고 이력에 남긴다. 임베딩이 필요한 분류기는 골드 문장을 먼저 임베딩한다(캐시 사용)."""	설명 이어짐.
+from __future__ import annotations	새 문법 호환.
+from collections import Counter	개수 세는 사전.
+from datetime import datetime	현재 시각.
+from pathlib import Path	경로.
+from ..classify import REGISTRY, Batch, build	분류기 등록부·배치·생성 함수.
+from ..classify.cv import cv_accuracy	교차 검증 정확도 함수.
+from ..config import Config	설정.
+from ..history import History	이력.
+from ..prep.page_type import page_type	페이지 유형.
+from ..goldmap import load_gold	골드 읽기.
+MIN_ROWS = 20	학습에 필요한 최소 문장 수.
+def gold_batch(rows: list[dict], embedder=None, need_embedding: bool = True) -> tuple[Batch, list[str]]:	골드 행을 분류기 입력(Batch)과 정답으로 바꾸는 함수.
+"""골드 행 → (Batch, 정답). 제목으로 페이지 유형을 복원한다."""	설명 문자열.
+texts = [str(r["문장"]) for r in rows]	문장들.
+y = [r["정답"] for r in rows]	정답들.
+page_types = [page_type(str(r.get("제목") or ""))[0] for r in rows]	제목으로 페이지 유형 (특성용).
+vectors = embedder.embed(texts) if need_embedding else None	임베딩이 필요하면 문장을 임베딩(캐시 사용).
+return Batch(texts, vectors, page_types), y	Batch 와 정답 목록.
+def train_classifier(gold_paths: list[Path], cfg: Config, out: Path | None = None, embedder=None,	학습 함수. name 으로 어떤 분류기든 학습.
+history: History | None = None, name: str | None = None) -> dict:	이어짐: 이력과 분류기 이름.
+name = name or cfg.classifier	이름이 없으면 설정의 분류기.
+cls = REGISTRY.get(name)	등록부에서 클래스.
+if cls is None:	없으면
+raise ValueError(f"모르는 분류기: {name}")	오류.
+if not cls.trainable:	학습하지 않는 분류기면
+raise ValueError(f"{name} 은 학습하지 않는 분류기입니다 (proto, cue 는 그냥 쓰면 됩니다)")	오류(proto·cue).
+rows: list[dict] = []	골드 행 목록.
+for g in gold_paths:	골드 파일마다
+rows.extend(load_gold(g))	행을 모은다.
+if len(rows) < MIN_ROWS:	문장이 적으면
+raise ValueError(f"학습에는 정답이 적힌 문장이 최소 {MIN_ROWS}개 필요합니다 (현재 {len(rows)}).")	오류.
+if cls.needs_embedding and embedder is None:	임베딩이 필요한데 임베더가 없으면
+raise ValueError(f"{name} 분류기 학습에는 임베더가 필요합니다")	오류.
+batch, y = gold_batch(rows, embedder, cls.needs_embedding)	배치와 정답.
+cv = cv_accuracy(build(name, cfg), batch, y, k=5)	먼저 5겹 교차 검증 정확도(새 분류기 객체로).
+trained_at = datetime.now().isoformat(timespec="seconds")	학습 시각.
+clf = build(name, cfg)	실제로 저장할 분류기 객체.
+clf.fit(batch, y)	전체 골드로 학습.
+clf.meta = {"embed_model": cfg.embed_model if cls.needs_embedding else None, "n": len(y), "trained_at": trained_at,	메타: 임베딩 모델(필요 없으면 None), 문장 수, 시각,
+"sources": [p.name for p in gold_paths], "counts": dict(Counter(y))}	골드 파일 이름, 등급별 수.
+preds = clf.predict(batch)	학습 데이터로 다시 판정(학습 정확도).
+train_acc = sum(p.label == g for p, g in zip(preds, y)) / len(y)	학습 데이터 정확도 (과적합 참고용).
+out = out or cfg.classifier_file(name)	저장 경로(기본 classifier_dir/<이름>.npz).
+clf.save(out)	파일로 저장.
+stats = {"classifier": name, "n": len(y), "counts": dict(Counter(y)), "cv_accuracy": cv, "train_accuracy": train_acc,	통계: 분류기, 수, 등급별, 교차 검증, 학습 정확도,
+"out": str(out), "embed_model": clf.meta["embed_model"], "trained_at": trained_at, "sources": [str(p) for p in gold_paths]}	경로, 임베딩, 시각, 골드 파일.
+(history or History(cfg.history_dir())).log_train(stats)	이력의 train.jsonl 에 기록.
+return stats	돌려준다.

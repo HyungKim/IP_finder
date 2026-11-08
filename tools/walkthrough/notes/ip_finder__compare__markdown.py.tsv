@@ -1,0 +1,75 @@
+# ip_finder/compare/markdown.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""보고서에 바로 붙일 Markdown 요약. Excel 과 같은 숫자를 표로 적는다 (문장은 넣지 않는다)."""	파일 설명.
+from __future__ import annotations	새 문법 호환 선언.
+from collections import Counter	Counter.
+from ..post import STATUSES	상태 목록.
+from .records import KIND_ORDER, RunDiff	변경 종류와 RunDiff.
+def _pct(v) -> str:	비율 → 글.
+return "-" if v is None else f"{v:.1%}"	None 은 -.
+def _table(headers: list[str], rows: list[list]) -> str:	Markdown 표 만들기.
+out = ["| " + " | ".join(headers) + " |", "|" + "|".join("---" for _ in headers) + "|"]	머리와 구분선.
+out += ["| " + " | ".join(str(c) for c in r) + " |" for r in rows]	행들.
+return "\n".join(out)	줄로 잇기.
+def runs_markdown(diffs: list[RunDiff], title_a: str = "A", title_b: str = "B", gold: list[tuple[dict, dict]] | None = None) -> str:	실행 비교 요약.
+total: dict[str, list[int]] = {s: [0, 0] for s in STATUSES}	상태별 합계.
+for d in diffs:	비교마다
+sa, sb = d.a.by_status(), d.b.by_status()	상태별 수.
+for s in STATUSES:	상태마다
+total[s][0] += sa[s]	A 합.
+total[s][1] += sb[s]	B 합.
+rows = [[s, a, b, (f"{b - a:+d}" if b != a else "0")] for s, (a, b) in total.items()]	표 행(증감 부호).
+kinds: Counter = Counter()	종류별.
+for d in diffs:	비교마다
+kinds.update(d.counts())	더한다.
+lines = [f"## 실행 비교: {title_a} → {title_b}", "",	제목.
+f"파일 {len(diffs)}개. 문장 맞추기: 동일(공백 무시) → 포함(합쳐짐·나뉨) → 유사(0.6 이상).", "",	파일 수와 맞추기 설명.
+"### 상태별 문장 수", "", _table(["상태", title_a, title_b, "증감"], rows), "",	상태별 표.
+"### 변경 종류", "", _table(["종류", "건수"], [[k, kinds.get(k, 0)] for k in KIND_ORDER]), ""]	변경 종류 표.
+sd = sorted({s for d in diffs for s in d.settings_diff})	달라진 설정(중복 제거).
+lines += ["### 달라진 설정", ""] + ([f"- {s}" for s in sd] or ["- 없음"]) + [""]	목록으로.
+if gold:	골드가 있으면
+grows = []	행.
+for d, (ma, mb) in zip(diffs, gold):	비교마다
+grows.append([d.a.name, _pct((ma or {}).get("recall")), _pct((mb or {}).get("recall")),	재현율 둘,
+_pct((ma or {}).get("precision")), _pct((mb or {}).get("precision"))])	정밀도 둘.
+lines += ["### 골드 지표", "", _table(["파일", f"재현율 {title_a}", f"재현율 {title_b}", f"정밀도 {title_a}", f"정밀도 {title_b}"], grows), ""]	골드 표.
+return "\n".join(lines)	합치기.
+def classifiers_markdown(result: dict) -> str:	분류기 비교 요약.
+rows = []	행.
+for r in result["reports"]:	성적표마다
+c = r.candidates or {}	후보 지표.
+rows.append([r.label, "O" if r.trainable else "X", "O" if r.needs_embedding else "X", _pct(r.accuracy),	이름·학습·임베딩·정확도,
+_pct(r.acc_std) if r.acc_std is not None else "-", _pct(r.macro_f1), _pct(c.get("recall")) if c else "-",	표준편차·F1·재현율,
+_pct(c.get("precision")) if c else "-", f"{r.fit_sec + r.predict_sec:.1f}", r.skipped or ""])	정밀도·시간·비고.
+return "\n".join([	합치기.
+"## 1차 분류기 비교", "",	제목.
+f"골드 {result['n']}문장 (등급별 {result['gold_counts']}), 학습형은 층화 {result['k']}겹 교차 검증 × {result['repeats']}회, 임베딩 {result['embed_model'] or '-'}.", "",	골드와 방식.
+_table(["분류기", "학습", "임베딩", "등급 정확도", "±표준편차", "거시 F1", "A·B 재현율", "A·B 정밀도", "시간(초)", "비고"], rows), "",	표.
+"표준편차보다 작은 정확도 차이는 겹 나누기에 따른 잡음으로 본다.", ""])	주의.
+def ladder_markdown(result) -> str:	사다리 요약.
+steps = result.steps	칸들.
+mode_ko = "누적(직전 칸과 비교)" if result.ladder.mode == "cumulative" else "단독(기준선과 비교)"	방식 글.
+rows = []	행.
+prev = None	직전.
+for sr in steps:	칸마다
+tot = sr.totals()	합계.
+review = tot.get("검토 목록", 0)	검토 목록.
+base = steps[0] if result.ladder.mode == "single" else prev	기준 칸.
+delta = "" if base is None else (f"{review - base.totals().get('검토 목록', 0):+d}" if review != base.totals().get('검토 목록', 0) else "0")	증감.
+row = [sr.title, sum(tot.values()), review, tot.get("보류", 0), tot.get("분류기 제외", 0), tot.get("전처리 제외", 0) + tot.get("페이지 제외", 0), delta, f"{sr.elapsed:.0f}"]	행 값.
+if result.gold_used:	골드면
+g = sr.gold or {}	지표.
+row += [_pct(g.get("recall")), _pct(g.get("precision"))]	추가.
+rows.append(row)	행 추가.
+prev = sr	직전 갱신.
+heads = ["칸", "문장 단위", "검토 목록", "보류", "분류기 제외", "전처리·페이지 제외", "증감", "초"] + (["A·B 재현율", "A·B 정밀도"] if result.gold_used else [])	머리.
+kind_rows = []	종류별 행.
+for base, sr, dl in result.diffs:	비교마다
+c: Counter = Counter()	합계.
+for d in dl:	더한다.
+c.update(d.counts())	이어짐.
+kind_rows.append([sr.title] + [c.get(k, 0) for k in KIND_ORDER])	행.
+return "\n".join([	합치기.
+f"## 사다리 실행: {result.ladder.name} ({mode_ko})", "",	제목.
+f"입력 {len(result.inputs)}개 파일, 칸 {len(result.ladder.steps)}개. 칸마다 모든 파일을 다시 실행했다.", "",	입력·칸 수.
+_table(heads, rows), "", "### 칸별 변경 종류", "", _table(["칸"] + KIND_ORDER, kind_rows), ""])	표 둘.

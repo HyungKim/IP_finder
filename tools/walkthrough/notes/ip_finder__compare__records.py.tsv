@@ -1,0 +1,295 @@
+# ip_finder/compare/records.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""실행 결과를 비교 가능한 형태(RunRecord)로 만들고 두 결과를 비교한다.	파일 설명 첫 줄.
+RunRecord 는 실행 직후의 Result 에서도, 저장된 결과 Excel 에서도 만들 수 있다. 그래서 회사 PC 에 이미 있는 결과 파일 두 개를	설명: Excel 에서도 만들 수 있다.
+그대로 비교할 수 있다 (ip-finder compare-runs A.xlsx B.xlsx). 문장 단위의 '상태'는 검토 목록 / 보류 / 분류기 제외 / 후처리 제외 /	설명: compare-runs 와 상태 여섯 가지.
+전처리 제외 / 페이지 제외 여섯 가지다."""	이어짐.
+from __future__ import annotations	새 문법 호환 선언.
+from collections import Counter	Counter.
+from dataclasses import dataclass, field	dataclass.
+from pathlib import Path	경로.
+from openpyxl import load_workbook	Excel 읽기.
+from ..history.diff import settings_diff	설정 차이 설명 함수(이력 모듈 재사용).
+from ..post import STATUS_CLF_OUT, STATUS_HOLD, STATUS_PAGE_OUT, STATUS_POST_OUT, STATUS_PREP_OUT, STATUS_REVIEW, STATUSES, status_of	상태 상수와 status_of.
+from .matching import Matches, match_texts, norm_key	맞추기.
+LINE_SHEETS = {"검토 목록": STATUS_REVIEW, "보류": STATUS_HOLD, "분류기 제외 (참고)": STATUS_CLF_OUT, "후처리 제외": STATUS_POST_OUT,	문장 시트 이름 → 상태(옛 이름 포함).
+"1차 제외 (참고)": STATUS_CLF_OUT, "2차 제외": STATUS_POST_OUT}      # 뒤 둘은 0.x 결과 파일	이어짐.
+PREP_SHEET = STATUS_PREP_OUT	전처리 제외 시트 이름.
+INFO_SHEET = "실행 정보"	실행 정보 시트 이름.
+SETTING_PREFIX = "설정 "	설정 행 접두어.
+RESULT_SUFFIX = "_검토후보.xlsx"	결과 파일 접미사.
+@dataclass	@dataclass.
+class Unit:	문장 단위 하나.
+page: int	쪽.
+line: int	줄 번호(제외 줄은 0).
+text: str	글.
+status: str	상태(여섯 가지 중 하나).
+grade: str = ""	등급.
+score: float | None = None	점수.
+weight: float | None = None	가중치.
+conf: float | None = None	확신.
+source: str = ""	판정 주체.
+notes: str = ""	비고.
+reason: str = ""          # 보류 사유 / 전처리 규칙 / 쪽 제외 사유	사유.
+@property	속성.
+def key(self) -> str:	비교 열쇠.
+return norm_key(self.text)	norm_key.
+@property	속성.
+def in_review(self) -> bool:	검토 목록인지.
+return self.status == STATUS_REVIEW	상태 비교.
+@dataclass	@dataclass.
+class RunRecord:	한 실행의 기록.
+name: str                 # 보고서 파일 이름	보고서 이름.
+path: str                 # 결과 Excel 경로 (메모리에서 만들었으면 "")	결과 Excel 경로.
+units: list[Unit]	문장 단위 목록.
+settings: dict = field(default_factory=dict)	설정 지문.
+info: dict = field(default_factory=dict)	실행 정보 항목.
+pages: int = 0	쪽 수.
+elapsed: float = 0.0	소요 시간.
+def by_status(self) -> Counter:	상태별 수.
+c = Counter(u.status for u in self.units)	세기.
+for s in STATUSES:	모든 상태에
+c.setdefault(s, 0)	0 을 기본으로.
+return c	반환.
+def review(self) -> list[Unit]:	검토 목록 문장들.
+return [u for u in self.units if u.in_review]	거르기.
+def grade_counts(self) -> Counter:	검토 목록의 등급별 수.
+return Counter(u.grade for u in self.review())	세기.
+@property	속성.
+def label(self) -> str:	표시 이름.
+return Path(self.path).name if self.path else self.name	파일 이름 또는 보고서 이름.
+def _num(v):	숫자로 바꾸는 도우미.
+try:	try.
+return float(v) if v not in (None, "") else None	비어 있지 않으면 float.
+except (TypeError, ValueError):	변환 실패는
+return None	None.
+def record_from_result(res, cfg=None, path: str | Path = "") -> RunRecord:	Result → RunRecord.
+"""파이프라인 Result → RunRecord. 판정 문장 + 전처리·페이지 규칙에 걸린 줄."""	설명 문자열.
+units: list[Unit] = []	빈 목록.
+for ll in res.labeled:	판정 문장마다
+units.append(Unit(ll.page_no, ll.line_idx, ll.text, status_of(ll), ll.label, ll.score, ll.page_weight, ll.clf_conf,	Unit 으로(상태는 status_of).
+ll.source, ", ".join(ll.notes), ll.hold_reason))	이어짐.
+for p in res.doc.pages:	쪽마다
+for ln in p.lines:	줄마다
+if not ln.text.strip():	빈 줄은
+continue	건너뜀.
+if ln.removed_by:                       # 줄 규칙이 먼저 (규칙에 걸려 쪽이 비어 제외된 경우 규칙 이름이 더 정확하다)	줄 규칙에 걸렸으면
+units.append(Unit(p.no, 0, ln.text, STATUS_PREP_OUT, reason=ln.removed_by))	전처리 제외 Unit(사유 = 규칙).
+elif p.excluded_reason is not None:	쪽이 제외됐으면
+units.append(Unit(p.no, 0, ln.text, STATUS_PAGE_OUT, reason=p.excluded_reason))	페이지 제외 Unit(사유 = 쪽 제외 사유).
+settings = dict(cfg.fingerprint()) if cfg is not None else {}	설정 지문(cfg 가 있으면).
+settings["classifier_desc"] = res.info.classifier	분류기 설명 추가.
+info = {"입력 파일": res.info.source, "실행 ID": res.info.run_id, "1차 분류기": res.info.classifier, "임베딩 모델": res.info.embed_model}	실행 정보 몇 가지.
+return RunRecord(Path(res.info.source).name, str(path), units, settings, info, res.info.pages_total, res.info.elapsed_sec)	RunRecord 생성.
+def _sheet_rows(ws) -> list[dict]:	시트를 열 이름 사전 목록으로 읽는 도우미.
+it = ws.iter_rows(values_only=True)	행 반복자.
+try:	try.
+header = [str(h) if h is not None else "" for h in next(it)]	머리 행.
+except StopIteration:	빈 시트면
+return []	빈 목록.
+out = []	결과.
+for r in it:	행마다
+if r is None:	None 이면
+continue	건너뜀.
+d = {h: r[i] for i, h in enumerate(header) if h}	열 이름 → 값.
+out.append(d)	추가.
+return out	반환.
+def load_record(xlsx: Path) -> RunRecord:	Excel → RunRecord.
+"""저장된 결과 Excel → RunRecord. 열은 이름으로 찾는다."""	설명 문자열.
+xlsx = Path(xlsx)	Path 로.
+wb = load_workbook(str(xlsx), read_only=True, data_only=True)	읽기 전용으로 연다.
+try:	try.
+units: list[Unit] = []	빈 목록.
+for sheet, status in LINE_SHEETS.items():	문장 시트마다
+if sheet not in wb.sheetnames:	없으면
+continue	건너뜀.
+for r in _sheet_rows(wb[sheet]):	행마다
+text = r.get("발췌")	발췌.
+if text in (None, "") or r.get("페이지") in (None, ""):	발췌나 쪽이 비었으면(안내 행)
+continue	건너뜀.
+units.append(Unit(int(r.get("페이지") or 0), int(r.get("줄") or 0), str(text), status, str(r.get("등급") or ""),	Unit 생성: 쪽·줄·글·상태·등급,
+_num(r.get("점수")), _num(r.get("가중치")), _num(r.get("확신")), str(r.get("판정") or ""),	점수·가중치·확신·판정,
+str(r.get("비고") or ""), str(r.get("보류 사유") or "")))	비고·보류 사유.
+if PREP_SHEET in wb.sheetnames:	전처리 제외 시트가 있으면
+for r in _sheet_rows(wb[PREP_SHEET]):	행마다
+text = r.get("발췌")	발췌.
+if text in (None, "") or r.get("페이지") in (None, ""):	비었으면
+continue	건너뜀.
+units.append(Unit(int(r.get("페이지") or 0), 0, str(text), str(r.get("상태") or STATUS_PREP_OUT), reason=str(r.get("사유") or "")))	Unit(상태 열, 사유 열).
+info: dict = {}	실행 정보 사전.
+settings: dict = {}	설정 사전.
+if INFO_SHEET in wb.sheetnames:	실행 정보 시트가 있으면
+for r in wb[INFO_SHEET].iter_rows(min_row=2, values_only=True):	둘째 행부터
+if not r or r[0] in (None, ""):	빈 행은
+continue	건너뜀.
+k = str(r[0])	항목 이름.
+if k.startswith(SETTING_PREFIX):	'설정 ' 으로 시작하면
+settings[k[len(SETTING_PREFIX):]] = r[1]	설정 사전에.
+else:	아니면
+info[k] = r[1]	실행 정보에.
+name = Path(str(info.get("입력 파일") or xlsx.stem.replace("_검토후보", ""))).name	보고서 이름(입력 파일 항목, 없으면 파일 이름에서).
+pages = int(_num(info.get("페이지 수")) or 0)	쪽 수.
+elapsed = _num(info.get("소요 시간(초)")) or 0.0	소요 시간.
+if "1차 분류기" in info:	분류기 설명이 있으면
+settings.setdefault("classifier_desc", str(info["1차 분류기"]))	설정에도 넣는다(비교용).
+return RunRecord(name, str(xlsx), units, settings, info, pages, elapsed)	RunRecord.
+finally:	끝나면
+wb.close()	닫기.
+def find_result_files(path: Path) -> list[Path]:	결과 파일 찾기.
+"""결과 파일 하나, 또는 폴더 안의 *_검토후보.xlsx (하위 폴더 포함)."""	설명 문자열.
+path = Path(path)	Path.
+if path.is_file():	파일이면
+return [path]	그것 하나.
+return sorted(f for f in path.rglob(f"*{RESULT_SUFFIX}") if not f.name.startswith("~$"))	폴더면 하위까지 *_검토후보.xlsx (임시 파일 제외).
+def load_records(path: Path) -> list[RunRecord]:	여러 결과 파일을 RunRecord 목록으로.
+return [load_record(f) for f in find_result_files(path)]	변환.
+# ------------------------------------------------------------------ 두 실행 비교	절 주석: 두 실행 비교.
+KIND_ENTER, KIND_LEAVE, KIND_GRADE, KIND_SCORE, KIND_STATUS = "검토 목록 진입", "검토 목록 이탈", "등급 변경", "점수 변경", "상태 변경"	변경 종류 이름 다섯.
+KIND_MERGED, KIND_SPLIT, KIND_SIMILAR, KIND_NEW, KIND_GONE = "문장 합쳐짐", "문장 나뉨", "문장 변경", "새 문장", "사라진 문장"	다섯 더.
+KIND_ORDER = [KIND_ENTER, KIND_LEAVE, KIND_GRADE, KIND_SCORE, KIND_STATUS, KIND_MERGED, KIND_SPLIT, KIND_SIMILAR, KIND_NEW, KIND_GONE]	표시 순서.
+@dataclass	@dataclass.
+class RunDiff:	두 실행의 비교 결과.
+a: RunRecord	A.
+b: RunRecord	B.
+matches: Matches	맞추기 결과.
+changes: list[dict]	변경 행 목록.
+settings_diff: list[str]	설정 차이 설명.
+def counts(self) -> Counter:	종류별 건수.
+c = Counter(ch["kind"] for ch in self.changes)	세기.
+for k in KIND_ORDER:	모든 종류에
+c.setdefault(k, 0)	0 기본.
+return c	반환.
+def summary_rows(self) -> list[tuple[str, int, int, int]]:	요약 행.
+"""(상태, A 수, B 수, 증감)"""	설명 문자열.
+sa, sb = self.a.by_status(), self.b.by_status()	상태별 수 둘.
+rows = [(s, sa[s], sb[s], sb[s] - sa[s]) for s in STATUSES]	상태마다 (이름, A, B, 증감).
+rows.append(("전체 문장 단위", len(self.a.units), len(self.b.units), len(self.b.units) - len(self.a.units)))	전체 문장 단위 행.
+return rows	반환.
+def _unit_desc(u: Unit) -> str:	Unit 을 짧은 글로.
+bits = [u.status]	상태부터.
+if u.grade:	등급이 있으면
+bits.append(u.grade)	추가.
+if u.score is not None:	점수가 있으면
+bits.append(f"{u.score:.2f}")	추가.
+if u.reason:	사유가 있으면
+bits.append(u.reason)	추가.
+return " / ".join(bits)	' / ' 로 잇는다.
+def compare_records(a: RunRecord, b: RunRecord, score_step: float = 0.1) -> RunDiff:	두 기록 비교 함수.
+"""A(이전·기준) → B(이후·비교) 로 무엇이 달라졌는지 문장 단위로."""	설명 문자열.
+m = match_texts([u.text for u in a.units], [u.text for u in b.units], [u.page for u in a.units], [u.page for u in b.units])	문장 맞추기(쪽 정보 포함).
+changes: list[dict] = []	변경 행 목록.
+def row(kind: str, ua: Unit | None, ub: Unit | None, desc: str) -> dict:	변경 행 하나를 만드는 안쪽 함수.
+return {"kind": kind, "page": (ub or ua).page, "a_text": ua.text if ua else "", "a_status": ua.status if ua else "",	종류, 쪽, A 글·상태,
+"a_grade": ua.grade if ua else "", "a_score": ua.score if ua else None, "b_text": ub.text if ub else "",	A 등급·점수, B 글,
+"b_status": ub.status if ub else "", "b_grade": ub.grade if ub else "", "b_score": ub.score if ub else None, "desc": desc}	B 상태·등급·점수, 설명.
+for i, j, kind in m.pairs:	짝마다
+ua, ub = a.units[i], b.units[j]	두 Unit.
+if kind == "동일":	동일 짝이면
+if ub.in_review and not ua.in_review:	B 만 검토 목록이면
+changes.append(row(KIND_ENTER, ua, ub, f"이전 {_unit_desc(ua)} → 현재 검토 목록 {ub.grade}"))	진입.
+elif ua.in_review and not ub.in_review:	A 만 검토 목록이면
+changes.append(row(KIND_LEAVE, ua, ub, f"이전 검토 목록 {ua.grade} → 현재 {_unit_desc(ub)}"))	이탈.
+elif ua.status != ub.status:	상태가 다르면
+changes.append(row(KIND_STATUS, ua, ub, f"{_unit_desc(ua)} → {_unit_desc(ub)}"))	상태 변경.
+elif ua.grade != ub.grade and (ua.grade or ub.grade):	등급이 다르면
+changes.append(row(KIND_GRADE, ua, ub, f"{ua.grade or '-'} → {ub.grade or '-'}"))	등급 변경.
+elif ua.score is not None and ub.score is not None and abs(ua.score - ub.score) >= score_step:	점수가 기준 이상 다르면
+changes.append(row(KIND_SCORE, ua, ub, f"점수 {ua.score:.2f} → {ub.score:.2f}"))	점수 변경.
+elif kind == "포함":	포함 짝이면
+merged = len(norm_key(ub.text)) > len(norm_key(ua.text))	B 가 더 길면 합쳐짐.
+k = KIND_MERGED if merged else KIND_SPLIT	종류 결정.
+changes.append(row(k, ua, ub, ("이전 줄이 현재 문장 안에 포함됨" if merged else "이전 문장의 일부가 현재 줄로 나뉨") + f": {_unit_desc(ua)} → {_unit_desc(ub)}"))	설명과 함께 행 추가.
+else:	유사 짝이면
+changes.append(row(KIND_SIMILAR, ua, ub, f"비슷한 문장으로 바뀜: {_unit_desc(ua)} → {_unit_desc(ub)}"))	문장 변경.
+for j in m.unmatched_b:	짝 없는 B 마다
+ub = b.units[j]	Unit.
+changes.append(row(KIND_NEW, None, ub, f"이전 실행에 없던 문장 → {_unit_desc(ub)}"))	새 문장.
+for i in m.unmatched_a:	짝 없는 A 마다
+ua = a.units[i]	Unit.
+changes.append(row(KIND_GONE, ua, None, f"이전 {_unit_desc(ua)} 였던 문장이 현재 실행에 없음"))	사라진 문장.
+order = {k: n for n, k in enumerate(KIND_ORDER)}	종류 순서.
+changes.sort(key=lambda r: (order.get(r["kind"], 99), r["page"]))	종류 → 쪽 순으로 정렬.
+return RunDiff(a, b, m, changes, settings_diff(a.settings, b.settings))	RunDiff(설정 차이 포함).
+def pair_records(a_list: list[RunRecord], b_list: list[RunRecord]) -> list[tuple[RunRecord, RunRecord]]:	두 결과 목록을 보고서 이름으로 짝짓는 함수.
+"""두 폴더의 결과를 보고서 이름으로 짝짓는다. 이름이 완전히 같은 것 먼저, 남는 것은 확장자를 뺀 이름으로. 하나씩이면 이름이 달라도 짝."""	설명 문자열.
+if len(a_list) == 1 and len(b_list) == 1:	하나씩이면
+return [(a_list[0], b_list[0])]	그냥 짝.
+pairs: list[tuple[RunRecord, RunRecord]] = []	짝 목록.
+rest_b = list(b_list)	남은 B.
+rest_a = []	남은 A.
+for ra in a_list:	A 마다
+rb = next((r for r in rest_b if r.name.lower() == ra.name.lower()), None)	이름이 완전히 같은 B.
+if rb is None:	없으면
+rest_a.append(ra)	남은 A 에.
+else:	있으면
+pairs.append((ra, rb))	짝.
+rest_b.remove(rb)	B 에서 뺀다.
+stem = lambda r: Path(r.name).stem.lower()	확장자 뺀 이름.
+for ra in rest_a:	남은 A 마다
+rb = next((r for r in rest_b if stem(r) == stem(ra)), None)	줄기 이름이 같은 B.
+if rb is not None:	있으면
+pairs.append((ra, rb))	짝.
+rest_b.remove(rb)	B 에서 뺀다.
+return pairs	반환.
+# ------------------------------------------------------------------ 골드 지표	절 주석: 골드 지표.
+def gold_rows_for(rec: RunRecord, gold_rows: list[dict]) -> list[dict]:	이 보고서의 골드 행 고르기.
+"""이 보고서의 골드 행. '파일' 열이 보고서 이름과 같은 행, 없으면 전체(이름이 바뀐 경우)."""	설명 문자열.
+stem = Path(rec.name).stem.lower()	보고서 줄기 이름.
+mine = [r for r in gold_rows if Path(str(r.get("파일") or "")).stem.lower() == stem]	'파일' 열이 같은 행.
+return mine or gold_rows	없으면 전체.
+def gold_metrics(rec: RunRecord, gold_rows: list[dict], targets: tuple[str, ...] = ("A", "B")) -> dict:	골드 지표 함수.
+"""골드 문장을 실행 결과의 문장과 맞춰(matching) 채점한다.	설명 첫 줄.
+재현율 = 정답이 대상 등급(A·B)인 골드 문장 중 검토 목록에 있는 비율. 정밀도 = 골드와 맞춰진 검토 목록 문장 중 정답이 대상 등급인 비율.	설명: 재현율·정밀도.
+골드와 맞춰지지 않은 검토 목록 문장은 '미채점'으로 따로 센다. 등급 정확도 = 맞춰진 골드 문장 중 등급까지 같은 비율(제외된 줄은 X 로 본다)."""	설명: 미채점·등급 정확도.
+rows = gold_rows_for(rec, gold_rows)	이 보고서의 골드 행.
+if not rows:	없으면
+return {}	빈 사전.
+gtexts = [str(r.get("문장") or "") for r in rows]	골드 문장들.
+gpages = [r.get("페이지") if isinstance(r.get("페이지"), int) else None for r in rows]	골드 쪽 번호(정수가 아니면 None).
+m = match_texts(gtexts, [u.text for u in rec.units], gpages, [u.page for u in rec.units])	골드 ↔ 결과 문장 맞추기.
+matched: dict[int, list[Unit]] = {}	골드 인덱스 → 맞춰진 Unit 목록.
+for i, j, _ in m.pairs:	짝마다
+matched.setdefault(i, []).append(rec.units[j])	모은다.
+hit = pos = cand_hit = cand_tot = exact = 0	집계 변수 다섯.
+review_matched: set[int] = set()	검토 목록 중 골드와 맞춰진 것의 id.
+for i, r in enumerate(rows):	골드 행마다
+g = str(r.get("정답") or "").upper()	정답.
+us = matched.get(i, [])	맞춰진 Unit 들.
+if not us:	없으면
+continue	건너뜀(미맞춤).
+in_review = any(u.in_review for u in us)	하나라도 검토 목록이면 후보로 본다.
+pred = next((u.grade for u in us if u.in_review), None) or next((u.grade for u in us if u.grade), "X")	예측 등급: 검토 목록의 등급, 없으면 첫 등급, 없으면 X.
+if g in targets:	정답이 대상 등급이면
+pos += 1	양성 수.
+if in_review:	후보면
+hit += 1	맞힘.
+if in_review:	후보면
+cand_tot += 1	후보 수.
+if g in targets:	정답이 대상이면
+cand_hit += 1	후보 적중.
+if (pred or "X") == g or (g == "X" and pred in ("X", "X?", "")):	등급까지 같으면(X 계열은 X 로 통일)
+exact += 1	정확.
+for u in us:	맞춰진 Unit 중
+if u.in_review:	검토 목록인 것의
+review_matched.add(id(u))	id 기록.
+n_review = len(rec.review())	검토 목록 수.
+n_matched = len(matched)	맞춰진 골드 수.
+return {"gold_rows": len(rows), "matched": n_matched, "positives": pos, "hits": hit,	결과 사전: 골드 수, 맞춤, 양성, 적중,
+"recall": hit / pos if pos else None, "precision": cand_hit / cand_tot if cand_tot else None,	재현율·정밀도(분모 0 이면 None),
+"review": n_review, "review_unscored": n_review - len(review_matched),	검토 목록 수와 골드 밖 수,
+"grade_accuracy": exact / n_matched if n_matched else None}	등급 정확도.
+def aggregate_gold(metrics: list[dict]) -> dict:	여러 보고서의 지표 합치기.
+"""여러 보고서의 골드 지표를 합쳐 하나로 (비율은 합계에서 다시 계산)."""	설명 문자열.
+ms = [m for m in metrics if m]	빈 것 제외.
+if not ms:	없으면
+return {}	빈 사전.
+pos = sum(m["positives"] for m in ms)	양성 합.
+hit = sum(m["hits"] for m in ms)	적중 합.
+rv = sum(m["review"] for m in ms)	검토 목록 합.
+un = sum(m["review_unscored"] for m in ms)	미채점 합.
+cand_tot = rv - un	채점된 후보 수.
+cand_hit = sum(round((m["precision"] or 0) * (m["review"] - m["review_unscored"])) for m in ms)	후보 적중 수를 정밀도에서 되살린다.
+matched = sum(m["matched"] for m in ms)	맞춤 합.
+exact = sum(round((m["grade_accuracy"] or 0) * m["matched"]) for m in ms)	정확 수를 정확도에서 되살린다.
+return {"gold_rows": sum(m["gold_rows"] for m in ms), "matched": matched, "positives": pos, "hits": hit,	결과 사전.
+"recall": hit / pos if pos else None, "precision": cand_hit / cand_tot if cand_tot else None,	비율 다시 계산.
+"review": rv, "review_unscored": un, "grade_accuracy": exact / matched if matched else None}	이어짐.

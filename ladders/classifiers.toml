@@ -1,0 +1,24 @@
+# 사다리 설정: 실제 보고서 위에서 1차 분류기를 바꿔 가며 비교 (single: 기준선=proto 와 각각 비교).
+# 학습형(knn, centroid, softmax, ovr, ngram)은 먼저 ip-finder train --classifier <이름> 으로 data\classifiers\<이름>.npz 를 만들어 둔다.
+# 실행: ip-finder ladder 보고서폴더 --ladder ladders\classifiers.toml --out results\ladder_classifiers
+name = "classifiers"
+mode = "single"
+
+[[step]]
+label = "단서어 규칙 (기준선)"
+set = { classifier = "cue" }
+[[step]]
+label = "글자 n-gram + 소프트맥스"
+set = { classifier = "ngram" }
+[[step]]
+label = "최근접 이웃 k-NN"
+set = { classifier = "knn" }
+[[step]]
+label = "등급 평균 벡터"
+set = { classifier = "centroid" }
+[[step]]
+label = "소프트맥스 회귀"
+set = { classifier = "softmax" }
+[[step]]
+label = "일대다 로지스틱"
+set = { classifier = "ovr" }

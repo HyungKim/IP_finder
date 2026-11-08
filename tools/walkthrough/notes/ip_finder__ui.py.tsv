@@ -1,0 +1,1059 @@
+# ip_finder/ui.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""IP Finder 데스크톱 UI (Tkinter). 추가 설치 없이 동작한다.	파일 설명: Tkinter UI, 추가 설치 없음.
+실행: python -m ip_finder.ui  /  ip-finder ui  /  윈도우 ui.bat	실행 방법 세 가지.
+탭 1 '추출': 파일·폴더 선택 → 옵션(1차 분류기, 임베딩 모델, 점수 기준) → 스위치(읽기·전처리·후처리 규칙 하나하나) → 실행 → 진행 로그 → 결과 미리보기 → Excel 열기	설명: 추출 탭.
+탭 2 '페이지 가중치': 마지막 실행의 페이지별 제목·관련성·가중치 표, 낮음·높음 키워드와 낮음 가중치·점수 기준 편집, 설정 저장	설명: 페이지 가중치 탭.
+탭 3 '정확도 관리': 골드 시트 만들기 → 결과 Excel 피드백 가져오기 → 분류기 학습 → 채점 → 분류기 비교	설명: 정확도 관리 탭.
+탭 4 '실험': 사다리 실행(스위치를 한 칸씩 켜며 비교), 결과 비교(결과 파일·폴더 둘을 문장 단위로 비교)	설명: 실험 탭.
+탭 5 '변경 추적': 실행 이력(설정 차이, 직전 대비 변경), 마지막 실행의 변경 행, 피드백·학습 이력"""	설명: 변경 추적 탭.
+from __future__ import annotations	새 문법 호환.
+import contextlib	with 블록으로 출력을 가로채는 도구 (채점 결과를 글 상자에 넣을 때).
+import io	문자열 버퍼.
+import os	운영체제 기능 (파일 열기).
+import queue	스레드 간 메시지 큐.
+import subprocess	외부 프로그램 실행 (파일 열기).
+import sys	플랫폼·종료 코드.
+import threading	스레드.
+import traceback	오류 추적 정보.
+from pathlib import Path	경로.
+try:	Tk 가 없을 수 있어 try.
+import tkinter as tk	Tkinter (표준 GUI).
+from tkinter import filedialog, messagebox, ttk	파일 대화상자, 메시지 상자, 테마 위젯.
+except ImportError as e:  # pragma: no cover	없으면
+raise SystemExit("tkinter 를 찾을 수 없습니다. 윈도우 python.org 설치본에는 기본 포함되며, macOS Homebrew 는 'brew install python-tk' 가 필요합니다.") from e	안내문과 함께 종료 (맥 Homebrew 파이썬은 python-tk 별도 설치).
+from . import STAGE, __version__	단계와 버전.
+from .cancel import CancelToken, Cancelled	중지 토큰과 예외.
+from .config import CLASSIFIER_NAMES, CONFIG_NAME, Config, app_root	분류기 이름표·설정.
+from .models import LabeledLine	모델.
+from .post import STATUS_CLF_OUT, STATUS_HOLD, STATUS_POST_OUT, STATUS_REVIEW, in_hold_list, in_review_list, is_stage1_out, is_stage2_out	상태 상수와 판정 함수.
+from .readers import SUPPORTED	지원 확장자.
+from .switches import GROUPS, SWITCHES, describe as describe_switches	스위치 묶음·목록·설명 함수.
+GRADE_FILL = {"A": "#FFE0B2", "B": "#FFF9C4", "C": "#DCEDC8", "D": "#BBDEFB"}	미리보기 표의 등급별 배경색 (엑셀과 같은 색).
+HOLD_FILL = "#EEEEEE"	보류·제외 행 배경색.
+SOURCE_NAME = {"clf": "분류기", "gold": "골드"}	판정 주체 이름.
+VIEWS = [STATUS_REVIEW, "A", "B", "C", "D", STATUS_HOLD, STATUS_CLF_OUT, STATUS_POST_OUT]	미리보기 '보기' 선택지(상태 이름).
+GRADE_CHOICES = [("A,B", "A·B  —  수단·효과만 (기본)"), ("A,B,C,D", "A·B·C·D  —  과제·계획까지")]	등급 선택지.
+CLASSIFIER_CHOICES = [(k, f"{k}  —  {v}") for k, v in CLASSIFIER_NAMES.items()]	분류기 선택지(키 — 한글 이름).
+USER_CONFIG = app_root() / CONFIG_NAME     # 설치 폴더의 ip_finder.toml (설치본마다 따로)	설치 폴더의 설정 파일 경로.
+def open_path(path: Path) -> None:	파일이나 폴더를 기본 프로그램으로 여는 함수.
+"""기본 프로그램으로 파일이나 폴더 열기."""	설명.
+try:	오류 대비.
+if sys.platform == "win32":	윈도우면
+os.startfile(str(path))  # type: ignore[attr-defined]	os.startfile (윈도우 전용).
+elif sys.platform == "darwin":	맥이면
+subprocess.Popen(["open", str(path)])	open 명령.
+else:	리눅스면
+subprocess.Popen(["xdg-open", str(path)])	xdg-open.
+except Exception as e:	실패하면
+messagebox.showerror("열기 실패", f"{path}\n{e}")	오류 상자.
+def parse_patterns(text: str) -> list[str]:	글 상자의 정규식 목록을 파싱하는 함수. 한 줄에 하나.
+"""제목 정규식, 한 줄에 하나. # 으로 시작하면 주석. 잘못된 정규식은 오류."""	설명: # 주석, 잘못된 정규식은 오류.
+import re	정규식 (함수 안에서 가져옴).
+out = []	결과.
+for raw in text.splitlines():	줄마다
+line = raw.strip()	양끝 공백 제거.
+if not line or line.startswith("#"):	빈 줄이나 주석이면
+continue	건너뛴다.
+try:	컴파일 오류 대비.
+re.compile(line)	정규식으로 컴파일해 본다.
+except re.error as e:	잘못됐으면
+raise ValueError(f"정규식 오류: {line} ({e})") from None	어느 줄이 문제인지 담아 ValueError (from None 은 원래 오류 숨김).
+out.append(line)	모은다.
+return out	돌려준다.
+def patterns_text(patterns: list[str]) -> str:	정규식 목록을 글 상자용 문자열로.
+return "\n".join(patterns)	줄바꿈으로 잇는다.
+class App(tk.Tk):	메인 창 클래스 (Tk 창을 상속).
+def __init__(self, cfg: Config | None = None):	생성자. 설정은 선택.
+super().__init__()	Tk 창 초기화.
+self.cfg = cfg or Config.load()	설정 (없으면 파일·기본값에서).
+self.title(f"IP Finder {__version__}  —  특허 검토 후보 추출 (온디바이스)  |  {STAGE}")	창 제목에 단계 표시.
+self.geometry("1220x860")	창 크기.
+self.minsize(980, 680)	최소 크기.
+self.q: queue.Queue = queue.Queue()	워커 → 메인 스레드 메시지 큐.
+self.worker: threading.Thread | None = None	현재 워커 스레드.
+self._cancel = CancelToken()	중지 토큰.
+self.last_outputs: list[Path] = []	마지막 실행의 엑셀 경로들.
+self.last_labeled: list[LabeledLine] = []	마지막 실행의 문장들 (미리보기).
+self.last_result = None	마지막 결과 객체.
+self.gold_files: list[Path] = []	학습 목록의 골드 파일들.
+self.last_gold: Path | None = None	마지막으로 만든 골드 시트.
+self.last_experiment: Path | None = None	마지막 실험 결과 경로.
+self.runs: list[dict] = []	이력 탭의 실행 목록.
+self.switch_vars: dict[str, tk.BooleanVar] = {s.name: tk.BooleanVar(value=bool(getattr(self.cfg, s.field))) for s in SWITCHES}	스위치마다 체크박스 변수(설정 값으로 초기화).
+style = ttk.Style(self)	ttk 스타일.
+if "vista" in style.theme_names():	윈도우의 vista 테마가 있으면
+style.theme_use("vista")	그것을,
+elif "clam" in style.theme_names() and sys.platform != "darwin":	아니면 맥이 아닐 때 clam 테마를
+style.theme_use("clam")	쓴다.
+self._build()	화면을 만든다.
+self.after(100, self._poll)	100ms 뒤 큐 폴링 시작.
+self.after(400, self.check_env)	400ms 뒤 환경 점검 (Ollama 연결).
+self.after(600, self.refresh_history)	600ms 뒤 이력 읽기.
+self.after(700, self.load_gold_folder)	700ms 뒤 골드 폴더 읽기.
+self.protocol("WM_DELETE_WINDOW", self._on_close)	창 닫기 버튼에 _on_close 연결.
+# ------------------------------------------------------------------ 화면 구성	주석: 화면 구성.
+def _build(self) -> None:	전체 화면을 만드는 메서드.
+nb = self.nb = ttk.Notebook(self)	탭 묶음(Notebook).
+nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))	창 전체를 채우게 배치.
+self.tab_extract = ttk.Frame(nb)	추출 탭 틀.
+self.tab_weights = ttk.Frame(nb)	페이지 가중치 탭 틀.
+self.tab_quality = ttk.Frame(nb)	정확도 관리 탭 틀.
+self.tab_experiment = ttk.Frame(nb)	실험 탭 프레임.
+self.tab_history = ttk.Frame(nb)	변경 추적 탭 틀.
+nb.add(self.tab_extract, text="  추출  ")	탭 추가: 추출.
+nb.add(self.tab_weights, text="  페이지 가중치  ")	페이지 가중치.
+nb.add(self.tab_quality, text="  정확도 관리  ")	정확도 관리.
+nb.add(self.tab_experiment, text="  실험  ")	탭 추가.
+nb.add(self.tab_history, text="  변경 추적  ")	변경 추적.
+self._build_extract(self.tab_extract)	추출 탭 내용.
+self._build_weights(self.tab_weights)	가중치 탭 내용.
+self._build_quality(self.tab_quality)	정확도 탭 내용.
+self._build_experiment(self.tab_experiment)	실험 탭 구성.
+self._build_history(self.tab_history)	이력 탭 내용.
+bar = ttk.Frame(self)	아래 상태 표시줄 틀.
+bar.pack(fill="x", padx=8, pady=6)	가로로 채워 배치.
+self.status_var = tk.StringVar(value="환경 점검 중...")	상태 문구 변수.
+ttk.Label(bar, textvariable=self.status_var).pack(side="left")	상태 라벨 (왼쪽).
+ttk.Button(bar, text="환경 점검", command=self.check_env).pack(side="right")	환경 점검 버튼 (오른쪽).
+def _text_with_scroll(self, parent, height=7, wrap="word", row=0, col=0):	스크롤바 달린 글 상자를 만드는 도우미.
+t = tk.Text(parent, height=height, wrap=wrap, state="disabled", font=("TkFixedFont", 10))	읽기 전용 글 상자 (고정폭 글꼴).
+t.grid(row=row, column=col, sticky="nsew", padx=(8, 0), pady=6)	격자 배치 (늘어남).
+sb = ttk.Scrollbar(parent, command=t.yview)	세로 스크롤바.
+sb.grid(row=row, column=col + 1, sticky="ns", pady=6)	오른쪽 옆에 배치.
+t.configure(yscrollcommand=sb.set)	스크롤 연결.
+return t	글 상자를 돌려준다.
+def _tree(self, parent, cols, widths, height=8, row=0, col=0, stretch=()):	표(Treeview)를 만드는 도우미. cols 열 이름, widths 너비, stretch 는 늘어날 열.
+tree = ttk.Treeview(parent, columns=cols, show="headings", height=height)	열 제목만 보이는 표.
+for c, w in zip(cols, widths):	열마다
+tree.heading(c, text=c)	제목.
+tree.column(c, width=w, anchor="w", stretch=(c in stretch))	너비·왼쪽 정렬·늘어남 여부.
+tree.grid(row=row, column=col, sticky="nsew", padx=(8, 0), pady=6)	격자 배치.
+sb = ttk.Scrollbar(parent, command=tree.yview)	세로 스크롤바.
+sb.grid(row=row, column=col + 1, sticky="ns", pady=6)	배치.
+tree.configure(yscrollcommand=sb.set)	연결.
+return tree	표를 돌려준다.
+def _build_extract(self, root: ttk.Frame) -> None:	추출 탭을 만드는 메서드.
+root.columnconfigure(0, weight=1)	가로로 늘어나게.
+root.rowconfigure(4, weight=1)	출력 상자 행이 늘어남.
+root.rowconfigure(5, weight=2)	결과 미리보기 행이 더 늘어난다.
+f_in = ttk.LabelFrame(root, text=" 1. 입력 파일  (PDF, PPTX, PPT. 폴더는 하위 폴더까지) ")	1 입력 파일 틀.
+f_in.grid(row=0, column=0, sticky="ew", padx=6, pady=(8, 4))	배치.
+f_in.columnconfigure(0, weight=1)	목록이 가로로 늘어나게.
+self.files_list = tk.Listbox(f_in, height=4, selectmode="extended")	파일 목록 상자 (여러 개 선택 가능).
+self.files_list.grid(row=0, column=0, sticky="ew", padx=(8, 4), pady=6)	배치.
+btns = ttk.Frame(f_in)	버튼 묶음 틀.
+btns.grid(row=0, column=1, sticky="n", padx=(0, 8), pady=6)	오른쪽 위.
+ttk.Button(btns, text="파일 추가...", command=self.add_files_dialog, width=14).pack(fill="x", pady=1)	파일 추가 버튼.
+ttk.Button(btns, text="폴더 추가...", command=self.add_folder_dialog, width=14).pack(fill="x", pady=1)	폴더 추가 버튼.
+ttk.Button(btns, text="선택 제거", command=self.remove_selected, width=14).pack(fill="x", pady=1)	선택 제거 버튼.
+ttk.Button(btns, text="모두 지우기", command=lambda: self.files_list.delete(0, "end"), width=14).pack(fill="x", pady=1)	모두 지우기 버튼 (람다로 바로 목록 비움).
+f_opt = ttk.LabelFrame(root, text=" 2. 옵션 ")	2 옵션 틀.
+f_opt.grid(row=1, column=0, sticky="ew", padx=6, pady=4)	배치.
+for c in (1, 3, 5):	1·3·5열이
+f_opt.columnconfigure(c, weight=1)	늘어나게.
+ttk.Label(f_opt, text="1차 분류기").grid(row=0, column=0, sticky="w", padx=8, pady=4)	'1차 분류기' 라벨.
+self.clf_var = tk.StringVar(value=next((d for k, d in CLASSIFIER_CHOICES if k == self.cfg.classifier), CLASSIFIER_CHOICES[0][1]))	분류기 변수(설정 값에 맞는 표시 글).
+ttk.Combobox(f_opt, textvariable=self.clf_var, values=[d for _, d in CLASSIFIER_CHOICES], state="readonly", width=44).grid(row=0, column=1, columnspan=3, sticky="w", padx=4)	읽기 전용 콤보.
+ttk.Label(f_opt, text="임베딩 모델").grid(row=0, column=4, sticky="e", padx=8)	'임베딩 모델' 라벨.
+self.embed_var = tk.StringVar(value=self.cfg.embed_model)	임베딩 변수.
+self.embed_box = ttk.Combobox(f_opt, textvariable=self.embed_var, values=[self.cfg.embed_model], width=18)	임베딩 선택 상자.
+self.embed_box.grid(row=0, column=5, sticky="w", padx=4)	임베딩 콤보 배치.
+ttk.Label(f_opt, text="추출 등급").grid(row=1, column=0, sticky="w", padx=8, pady=4)	'추출 등급' 라벨.
+cur = ",".join(self.cfg.targets())	현재 추출 등급 문자열.
+self.grades_var = tk.StringVar(value=next((d for k, d in GRADE_CHOICES if k == cur), GRADE_CHOICES[0][1]))	등급 변수.
+ttk.Combobox(f_opt, textvariable=self.grades_var, values=[d for _, d in GRADE_CHOICES], state="readonly", width=30).grid(row=1, column=1, sticky="w", padx=4)	등급 콤보.
+ttk.Label(f_opt, text="목록 점수 기준").grid(row=1, column=2, sticky="e", padx=8)	'목록 점수 기준' 라벨.
+self.accept_var = tk.StringVar(value=str(self.cfg.accept_score))	점수 기준 변수 (문자열).
+ttk.Entry(f_opt, textvariable=self.accept_var, width=8).grid(row=1, column=3, sticky="w", padx=4)	점수 입력.
+ttk.Label(f_opt, text="(신뢰도×가중치, 미만은 보류)").grid(row=1, column=3, sticky="w", padx=(70, 0))	설명 라벨.
+self.cache_var = tk.BooleanVar(value=self.cfg.use_cache)	캐시 체크 변수.
+ttk.Checkbutton(f_opt, text="임베딩 캐시 사용", variable=self.cache_var).grid(row=1, column=4, columnspan=2, sticky="w", padx=8)	캐시 체크.
+ttk.Label(f_opt, text="결과 위치").grid(row=2, column=0, sticky="w", padx=8, pady=4)	'결과 위치' 라벨.
+self.out_mode = tk.StringVar(value="beside")	출력 방식 변수 (beside 원본 옆 / folder 지정 폴더).
+ttk.Radiobutton(f_opt, text="원본 옆에 저장", variable=self.out_mode, value="beside").grid(row=2, column=1, sticky="w", padx=4)	원본 옆 라디오.
+ttk.Radiobutton(f_opt, text="지정 폴더:", variable=self.out_mode, value="folder").grid(row=2, column=2, sticky="e", padx=8)	지정 폴더 라디오.
+self.out_dir_var = tk.StringVar(value="")	폴더 경로 변수.
+ttk.Entry(f_opt, textvariable=self.out_dir_var, width=40).grid(row=2, column=3, columnspan=3, sticky="ew", padx=4)	폴더 입력.
+ttk.Button(f_opt, text="찾기...", command=self.pick_out_dir).grid(row=2, column=6, sticky="w", padx=4)	찾기 단추.
+f_sw = ttk.LabelFrame(root, text=" 3. 스위치  —  읽기·전처리·후처리 규칙을 하나씩 켜고 끕니다. 전부 끄면 기준선(아무 규칙도 없음) ")	스위치 묶음 프레임(제목에 설명).
+f_sw.grid(row=2, column=0, sticky="ew", padx=6, pady=4)	배치.
+for gi, group in enumerate(GROUPS):	묶음마다
+col = ttk.Frame(f_sw)	세로 열 프레임.
+col.grid(row=0, column=gi, sticky="nw", padx=10, pady=4)	배치.
+ttk.Label(col, text=group, font=("TkDefaultFont", 9, "bold")).pack(anchor="w")	묶음 이름(굵게).
+for s in SWITCHES:	스위치마다
+if s.group == group:	이 묶음이면
+ttk.Checkbutton(col, text=s.label, variable=self.switch_vars[s.name]).pack(anchor="w")	체크박스(변수 연결).
+sb = ttk.Frame(f_sw)	오른쪽 단추 열.
+sb.grid(row=0, column=len(GROUPS), sticky="ne", padx=10, pady=4)	배치.
+ttk.Button(sb, text="전부 켬", command=lambda: self.set_switches(True), width=10).pack(fill="x", pady=1)	전부 켬 단추.
+ttk.Button(sb, text="전부 끔 (기준선)", command=lambda: self.set_switches(False), width=14).pack(fill="x", pady=1)	전부 끔 단추.
+self.short_var = tk.StringVar(value=str(self.cfg.short_line_chars))	짧은 줄 기준 변수.
+f_short = ttk.Frame(sb)	짧은 줄 기준 변수.
+f_short.pack(anchor="w", pady=(6, 0))	작은 프레임.
+ttk.Label(f_short, text="짧은 줄 기준").pack(side="left")	라벨.
+ttk.Entry(f_short, textvariable=self.short_var, width=4).pack(side="left", padx=3)	입력.
+ttk.Label(f_short, text="자 이하").pack(side="left")	라벨.
+self.pw_var = self.switch_vars["page_weight"]     # 페이지 가중치 탭과 같은 변수	페이지 가중치 탭과 같은 변수를 공유한다.
+f_run = ttk.Frame(root)	실행 줄 틀.
+f_run.grid(row=3, column=0, sticky="ew", padx=6, pady=4)	실행 줄 배치(행 3).
+self.run_btn = ttk.Button(f_run, text="▶  실행", command=self.start_extract, width=14)	실행 버튼.
+self.run_btn.pack(side="left", padx=(8, 4))	배치.
+self.stop_btn = ttk.Button(f_run, text="중지", command=self.cancel, width=8, state="disabled")	중지 버튼 (처음엔 잠김).
+self.stop_btn.pack(side="left", padx=4)	배치.
+self.prog = ttk.Progressbar(f_run, mode="indeterminate", length=220)	진행 막대 (끝을 모르는 방식).
+self.prog.pack(side="left", padx=12)	배치.
+self.open_xlsx_btn = ttk.Button(f_run, text="결과 Excel 열기", command=self.open_last_output, state="disabled")	결과 엑셀 열기 버튼 (처음엔 잠김).
+self.open_xlsx_btn.pack(side="right", padx=(4, 8))	오른쪽 배치.
+self.open_dir_btn = ttk.Button(f_run, text="결과 폴더 열기", command=self.open_last_folder, state="disabled")	결과 폴더 열기 버튼.
+self.open_dir_btn.pack(side="right", padx=4)	배치.
+f_log = ttk.LabelFrame(root, text=" 4. 진행 ")	진행 프레임(번호 4).
+f_log.grid(row=4, column=0, sticky="nsew", padx=6, pady=4)	배치.
+f_log.columnconfigure(0, weight=1)	늘어나게.
+f_log.rowconfigure(0, weight=1)	늘어나게.
+self.log = self._text_with_scroll(f_log, height=5)	로그 창(높이 5).
+f_res = ttk.LabelFrame(root, text=" 5. 결과 미리보기  —  '분류기 제외'는 분류기가 대상 등급 밖으로 본 문장, '전처리 제외'는 Excel 시트에서 봅니다. 피드백은 Excel 에서 ")	미리보기 프레임(번호 5, 설명).
+f_res.grid(row=5, column=0, sticky="nsew", padx=6, pady=(4, 8))	배치.
+f_res.columnconfigure(0, weight=1)	늘어나게.
+f_res.rowconfigure(1, weight=1)	표 행이 늘어나게.
+top = ttk.Frame(f_res)	위 줄 틀.
+top.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=(6, 0))	배치.
+self.res_title = tk.StringVar(value="아직 결과가 없습니다.")	결과 제목 변수.
+ttk.Label(top, textvariable=self.res_title).pack(side="left")	라벨.
+ttk.Label(top, text="보기").pack(side="right", padx=(8, 4))	'보기' 라벨.
+self.filter_var = tk.StringVar(value=STATUS_REVIEW)	보기 기본값 검토 목록.
+fb = ttk.Combobox(top, textvariable=self.filter_var, values=VIEWS, state="readonly", width=14)	보기 콤보(상태 이름).
+fb.pack(side="right")	배치.
+fb.bind("<<ComboboxSelected>>", lambda e: self.fill_results())	선택이 바뀌면 표를 다시 채운다.
+cols = ("번호", "섹션", "페이지", "등급", "발췌", "점수", "가중치", "확신", "판정", "비고")	열: 확신·판정 추가, 1차/2차 제거.
+self.tree = self._tree(f_res, cols, (46, 100, 50, 46, 420, 50, 50, 50, 60, 220), height=8, row=1, stretch=("발췌", "비고"))	표 생성.
+for g, color in GRADE_FILL.items():	등급마다
+self.tree.tag_configure(g, background=color)	배경색 태그.
+self.tree.tag_configure("hold", background=HOLD_FILL)	보류 태그.
+def _build_weights(self, root: ttk.Frame) -> None:	페이지 가중치 탭을 만드는 메서드.
+root.columnconfigure(0, weight=3)	왼쪽 열 3,
+root.columnconfigure(1, weight=2)	오른쪽 열 2 비율.
+root.rowconfigure(1, weight=1)	둘째 행이 늘어남.
+ttk.Label(root, text="페이지 제목으로 관련성을 '높음' 또는 '낮음' 둘 중 하나로 정합니다(페이지 가중치 스위치를 켰을 때). 제목이 '낮음 키워드'에 걸리면 낮음(가중치 아래 값), 아니면 높음(1.0). "	설명 라벨(가중치 스위치 언급).
+"문장 점수 = 판정 신뢰도 × 페이지 가중치이고, 점수가 '목록 점수 기준' 미만이면 보류 시트로 갑니다. 낮음 가중치 0은 그 페이지를 판정하지 않습니다.",	점수·보류 관계.
+wraplength=1100, justify="left").grid(row=0, column=0, columnspan=2, sticky="w", padx=12, pady=(10, 4))	배치 (줄바꿈 폭 1100).
+f_pages = ttk.LabelFrame(root, text=" 마지막 실행(또는 미리 보기)의 페이지 ")	페이지 표 틀.
+f_pages.grid(row=1, column=0, sticky="nsew", padx=(6, 3), pady=4)	배치.
+f_pages.columnconfigure(0, weight=1)	늘어나게.
+f_pages.rowconfigure(0, weight=1)	늘어나게.
+cols = ("페이지", "제목", "관련성", "가중치", "근거", "상태", "목록", "보류", "분류기 제외", "후처리 제외")	페이지 표 열(분류기 제외·후처리 제외).
+self.page_tree = self._tree(f_pages, cols, (50, 280, 55, 55, 120, 140, 45, 45, 70, 70), height=14, stretch=("제목", "상태"))	표.
+self.page_tree.tag_configure("low", background=HOLD_FILL)	낮음 페이지 배경색 태그.
+pb = ttk.Frame(f_pages)	아래 버튼 틀.
+pb.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))	배치.
+ttk.Button(pb, text="보고서 골라 미리 보기 (분류기 없음)", command=self.start_preview_pages).pack(side="left")	미리 보기 단추(분류기 없음).
+ttk.Label(pb, text="  제목·관련성·가중치·제외 여부만 계산합니다. 키워드나 스위치를 고친 뒤 다시 눌러 확인하세요.").pack(side="left")	안내.
+f_rules = ttk.LabelFrame(root, text=" 규칙 ")	규칙 틀.
+f_rules.grid(row=1, column=1, sticky="nsew", padx=(3, 6), pady=4)	배치.
+f_rules.columnconfigure(0, weight=1)	늘어나게.
+f_rules.rowconfigure(2, weight=2)	낮음 키워드 상자 행이 더 늘어남.
+f_rules.rowconfigure(4, weight=1)	높음 키워드 상자 행.
+f_sw = ttk.Frame(f_rules)	스위치 줄 틀.
+f_sw.grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 2))	배치.
+ttk.Checkbutton(f_sw, text="페이지 가중치 적용", variable=self.pw_var).pack(side="left")	가중치 적용 체크 (추출 탭과 같은 변수).
+ttk.Label(f_sw, text="    관련성 낮음 가중치").pack(side="left")	'관련성 낮음 가중치' 라벨.
+self.low_var = tk.StringVar(value=str(self.cfg.low_relevance_weight))	낮음 가중치 변수.
+ttk.Entry(f_sw, textvariable=self.low_var, width=6).pack(side="left", padx=4)	입력 칸.
+ttk.Label(f_sw, text="(0 = 판정 안 함)").pack(side="left")	안내.
+ttk.Label(f_rules, text="관련성 낮음 제목 키워드 (정규식, 한 줄에 하나)").grid(row=1, column=0, sticky="w", padx=8, pady=(6, 0))	낮음 키워드 라벨.
+self.low_text = tk.Text(f_rules, height=6, wrap="none", font=("TkFixedFont", 10))	낮음 키워드 글 상자.
+self.low_text.grid(row=2, column=0, sticky="nsew", padx=8, pady=4)	배치.
+self.low_text.insert("1.0", patterns_text(self.cfg.low_relevance_patterns))	설정의 목록으로 채움.
+ttk.Label(f_rules, text="관련성 높음으로 강제할 제목 키워드 (낮음보다 우선, 비워도 됨)").grid(row=3, column=0, sticky="w", padx=8, pady=(6, 0))	높음 키워드 라벨.
+self.high_text = tk.Text(f_rules, height=3, wrap="none", font=("TkFixedFont", 10))	높음 키워드 글 상자.
+self.high_text.grid(row=4, column=0, sticky="nsew", padx=8, pady=4)	배치.
+self.high_text.insert("1.0", patterns_text(self.cfg.high_relevance_patterns))	채움.
+f_apply = ttk.Frame(f_rules)	적용·저장 버튼 틀.
+f_apply.grid(row=5, column=0, sticky="ew", padx=8, pady=(4, 8))	배치.
+ttk.Button(f_apply, text="규칙 적용 (이번 세션)", command=self.apply_rules).pack(side="left")	규칙 적용 버튼 (이번 실행 동안만).
+ttk.Button(f_apply, text="설정 저장...", command=self.save_config).pack(side="left", padx=6)	설정 저장 버튼 (파일로).
+ttk.Button(f_apply, text="기본값으로", command=self.reset_rules).pack(side="left")	기본값 버튼.
+self.rules_status = tk.StringVar(value=f"설정 파일: {self.cfg.config_path or '없음 (기본값 사용)'}")	규칙 상태 문구 변수 (설정 파일 경로).
+ttk.Label(f_rules, textvariable=self.rules_status, wraplength=380, justify="left").grid(row=6, column=0, sticky="w", padx=8, pady=(0, 6))	라벨.
+def _build_quality(self, root: ttk.Frame) -> None:	정확도 관리 탭을 만드는 메서드.
+root.columnconfigure(0, weight=1)	늘어나게.
+root.rowconfigure(4, weight=1)	출력 상자 행이 늘어남.
+f1 = ttk.LabelFrame(root, text=" 1. 골드 시트 만들기  —  보고서를 고르면 분류기 초안 라벨이 채워진 엑셀이 생깁니다. '정답' 열에서 틀린 것만 고치세요 ")	골드 시트 프레임.
+f1.grid(row=0, column=0, sticky="ew", padx=6, pady=(8, 4))	배치.
+ttk.Button(f1, text="보고서 선택 → 골드 시트 생성", command=self.start_gold_sheet).pack(side="left", padx=8, pady=8)	생성 버튼.
+self.gold_open_btn = ttk.Button(f1, text="방금 만든 골드 시트 열기", command=self.open_last_gold, state="disabled")	방금 만든 골드 열기 버튼 (잠김).
+self.gold_open_btn.pack(side="left", padx=4)	배치.
+f1b = ttk.LabelFrame(root, text=" 2. 결과 Excel 의 피드백 가져오기  —  검토 목록·보류·제외 시트의 '피드백' 열(O / X / A~D)을 골드 시트로 합칩니다 ")	피드백 프레임.
+f1b.grid(row=1, column=0, sticky="ew", padx=6, pady=4)	배치.
+ttk.Button(f1b, text="결과 Excel 선택 → 골드 시트에 반영", command=self.start_feedback).pack(side="left", padx=8, pady=8)	가져오기 버튼.
+self.confirm_var = tk.BooleanVar(value=False)	빈 행 확인 변수.
+ttk.Checkbutton(f1b, text="검토 목록에서 피드백이 빈 행도 '맞음'으로 간주 (목록을 끝까지 검토했을 때만)", variable=self.confirm_var).pack(side="left", padx=4)	체크 상자.
+f2 = ttk.LabelFrame(root, text=" 3. 분류기 학습·비교  —  골드 폴더(data\\gold)의 골드 시트는 자동으로 올라옵니다 ")	학습·비교 프레임.
+f2.grid(row=2, column=0, sticky="ew", padx=6, pady=4)	배치.
+f2.columnconfigure(0, weight=1)	늘어나게.
+self.gold_list = tk.Listbox(f2, height=4, selectmode="extended")	골드 파일 목록 상자.
+self.gold_list.grid(row=0, column=0, sticky="ew", padx=(8, 4), pady=6)	배치.
+b2 = ttk.Frame(f2)	버튼 틀.
+b2.grid(row=0, column=1, sticky="n", padx=(0, 8), pady=6)	배치.
+ttk.Button(b2, text="골드 파일 추가...", command=self.add_gold_dialog, width=18).pack(fill="x", pady=1)	골드 추가 단추.
+ttk.Button(b2, text="골드 폴더 열기", command=lambda: open_path(self.cfg.gold_dir()) if self.cfg.gold_dir().exists() else messagebox.showinfo("골드 폴더", f"아직 없습니다: {self.cfg.gold_dir()}"), width=18).pack(fill="x", pady=1)	골드 폴더 열기 단추.
+ttk.Button(b2, text="선택 제거", command=self.remove_gold_selected, width=18).pack(fill="x", pady=1)	선택 제거 단추.
+f_tr = ttk.Frame(f2)	학습 줄 프레임.
+f_tr.grid(row=1, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))	배치.
+ttk.Label(f_tr, text="학습할 분류기").pack(side="left")	라벨.
+trainable = [(k, d) for k, d in CLASSIFIER_CHOICES if k in ("knn", "centroid", "softmax", "ovr", "ngram")]	학습형 분류기 선택지.
+self.train_var = tk.StringVar(value=trainable[0][1])	변수.
+ttk.Combobox(f_tr, textvariable=self.train_var, values=[d for _, d in trainable], state="readonly", width=40).pack(side="left", padx=4)	콤보.
+ttk.Button(f_tr, text="학습 실행", command=self.start_train).pack(side="left", padx=8)	학습 실행 단추.
+ttk.Button(f_tr, text="분류기 7종 비교 (교차 검증) → Excel", command=self.start_compare_classifiers).pack(side="left", padx=8)	분류기 비교 단추.
+self.clf_status = tk.StringVar(value="")	상태 변수.
+ttk.Label(f2, textvariable=self.clf_status).grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))	라벨.
+f3 = ttk.LabelFrame(root, text=" 4. 채점  —  골드 시트로 현재 설정(추출 탭의 분류기·스위치)의 등급 정확도와 검토 목록 정밀도를 잽니다 ")	채점 프레임(모드 선택 없음).
+f3.grid(row=3, column=0, sticky="ew", padx=6, pady=4)	배치.
+ttk.Button(f3, text="골드 시트 선택 → 채점", command=self.start_eval).pack(side="left", padx=12, pady=8)	채점 단추.
+self.stored_var = tk.BooleanVar(value=False)	저장된 라벨만 채점 변수.
+ttk.Checkbutton(f3, text="다시 판정하지 않고 시트에 저장된 라벨만 채점", variable=self.stored_var).pack(side="left")	체크 상자.
+f4 = ttk.LabelFrame(root, text=" 출력 ")	출력 틀.
+f4.grid(row=4, column=0, sticky="nsew", padx=6, pady=(4, 8))	배치.
+f4.columnconfigure(0, weight=1)	늘어나게.
+f4.rowconfigure(0, weight=1)	늘어나게.
+self.qlog = self._text_with_scroll(f4, height=8, wrap="none")	정확도 탭 로그 글 상자 (줄바꿈 없음).
+def _build_experiment(self, root: ttk.Frame) -> None:	실험 탭 구성 함수.
+root.columnconfigure(0, weight=1)	늘어나게.
+root.rowconfigure(3, weight=1)	진행 로그 행이 세로로 늘어남 (가중치 1).
+ttk.Label(root, text="개량 전후를 사람이 보기 쉽게 비교하는 도구입니다. 결과는 Excel 과 보고서에 붙일 Markdown 요약으로 나옵니다. 실험은 골드 정답 반영과 실행 이력 저장을 끄고 돌립니다.",	설명 라벨(첫 줄).
+wraplength=1100, justify="left").grid(row=0, column=0, sticky="w", padx=12, pady=(10, 4))	배치.
+f1 = ttk.LabelFrame(root, text=" 사다리 실행  —  추출 탭의 입력 파일을, 스위치를 한 칸씩 켜 가며 반복 실행하고 칸마다 무엇이 달라졌는지 비교합니다 ")	사다리 프레임.
+f1.grid(row=1, column=0, sticky="ew", padx=6, pady=4)	배치.
+r1 = ttk.Frame(f1)	첫 줄 프레임.
+r1.pack(fill="x", padx=8, pady=6)	배치.
+ttk.Label(r1, text="방식").pack(side="left")	'방식' 라벨.
+self.ladder_mode = tk.StringVar(value="누적  —  직전 칸과 비교 (이 스위치를 켜니 무엇이 변했나)")	방식 변수(기본 누적).
+ttk.Combobox(r1, textvariable=self.ladder_mode, state="readonly", width=52,	방식 콤보(첫 줄).
+values=["누적  —  직전 칸과 비교 (이 스위치를 켜니 무엇이 변했나)", "단독  —  기준선에 한 칸만 켜고 기준선과 비교 (독립 기여)"]).pack(side="left", padx=6)	선택지 둘.
+self.ladder_gold = tk.BooleanVar(value=True)	골드 지표 체크 변수.
+ttk.Checkbutton(r1, text="골드가 있으면 재현율·정밀도도 계산", variable=self.ladder_gold).pack(side="left", padx=8)	체크박스.
+r2 = ttk.Frame(f1)	둘째 줄.
+r2.pack(fill="x", padx=8, pady=(0, 6))	배치.
+ttk.Label(r2, text="칸 순서(스위치 영문 이름, 쉼표. 비우면 전부 기본 순서)").pack(side="left")	칸 순서 라벨.
+self.ladder_steps = tk.StringVar(value="")	칸 순서 변수.
+ttk.Entry(r2, textvariable=self.ladder_steps, width=60).pack(side="left", padx=6)	입력.
+ttk.Button(r2, text="사다리 실행 → 결과 폴더 선택", command=self.start_ladder).pack(side="left", padx=8)	실행 단추.
+f2 = ttk.LabelFrame(root, text=" 결과 비교  —  결과 Excel(또는 결과 폴더) 둘을 문장 단위로 맞춰 무엇이 진입·이탈·변경됐는지 봅니다 ")	결과 비교 프레임.
+f2.grid(row=2, column=0, sticky="ew", padx=6, pady=4)	배치.
+r = ttk.Frame(f2)	안쪽 프레임.
+r.pack(fill="x", padx=8, pady=6)	배치.
+self.cmp_a = tk.StringVar(value="")	A 경로 변수.
+self.cmp_b = tk.StringVar(value="")	B 경로 변수.
+ttk.Label(r, text="A (이전·기준)").grid(row=0, column=0, sticky="w")	A 라벨.
+ttk.Entry(r, textvariable=self.cmp_a, width=70).grid(row=0, column=1, padx=4)	A 입력.
+ttk.Button(r, text="파일...", command=lambda: self._pick_result(self.cmp_a, False)).grid(row=0, column=2)	A 파일 단추.
+ttk.Button(r, text="폴더...", command=lambda: self._pick_result(self.cmp_a, True)).grid(row=0, column=3, padx=(4, 0))	A 폴더 단추.
+ttk.Label(r, text="B (이후·비교)").grid(row=1, column=0, sticky="w", pady=(4, 0))	B 라벨.
+ttk.Entry(r, textvariable=self.cmp_b, width=70).grid(row=1, column=1, padx=4, pady=(4, 0))	B 입력.
+ttk.Button(r, text="파일...", command=lambda: self._pick_result(self.cmp_b, False)).grid(row=1, column=2, pady=(4, 0))	B 파일 단추.
+ttk.Button(r, text="폴더...", command=lambda: self._pick_result(self.cmp_b, True)).grid(row=1, column=3, padx=(4, 0), pady=(4, 0))	B 폴더 단추.
+ttk.Button(r, text="비교 → Excel 저장", command=self.start_compare_runs).grid(row=0, column=4, rowspan=2, padx=12)	비교 단추.
+self.exp_open_btn = ttk.Button(r, text="마지막 실험 결과 열기", command=self.open_last_experiment, state="disabled")	마지막 실험 열기 단추.
+self.exp_open_btn.grid(row=0, column=5, rowspan=2, padx=4)	배치.
+f3 = ttk.LabelFrame(root, text=" 출력 (Markdown 요약은 결과 Excel 옆 .md 파일에도 저장됩니다) ")	출력 프레임.
+f3.grid(row=3, column=0, sticky="nsew", padx=6, pady=(4, 8))	배치.
+f3.columnconfigure(0, weight=1)	열 늘어남.
+f3.rowconfigure(0, weight=1)	행 늘어남.
+self.elog = self._text_with_scroll(f3, height=10, wrap="none")	출력 로그 창.
+def _build_history(self, root: ttk.Frame) -> None:	변경 추적 탭을 만드는 메서드.
+root.columnconfigure(0, weight=1)	늘어나게.
+root.rowconfigure(0, weight=2)	실행 목록 행 2,
+root.rowconfigure(1, weight=2)	상세 행 2,
+root.rowconfigure(2, weight=1)	이력 로그 행 1 비율.
+f_runs = ttk.LabelFrame(root, text=" 실행 이력  —  행을 고르면 아래에 직전 실행과 달라진 설정과 변경 요약이 나옵니다 ")	실행 이력 틀.
+f_runs.grid(row=0, column=0, sticky="nsew", padx=6, pady=(8, 4))	배치.
+f_runs.columnconfigure(0, weight=1)	늘어나게.
+f_runs.rowconfigure(0, weight=1)	늘어나게.
+cols = ("시각", "파일", "분류기", "임베딩", "스위치", "목록", "A", "B", "C", "D", "보류", "진입", "이탈", "등급변경", "설정 변경")	이력 표 열(분류기·임베딩·스위치).
+self.run_tree = self._tree(f_runs, cols, (120, 180, 80, 90, 60, 45, 35, 35, 35, 35, 45, 45, 45, 60, 240), height=7, stretch=("파일", "설정 변경"))	표.
+self.run_tree.bind("<<TreeviewSelect>>", lambda e: self.show_run())	행을 고르면 상세 표시.
+rb = ttk.Frame(f_runs)	버튼 줄 틀.
+rb.grid(row=1, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 6))	배치.
+ttk.Button(rb, text="새로 고침", command=self.refresh_history).pack(side="left")	새로 고침 버튼.
+ttk.Button(rb, text="이력 폴더 열기", command=lambda: self.cfg.history_dir() and open_path(self.cfg.history_dir())).pack(side="left", padx=6)	이력 폴더 열기 버튼.
+self.hist_status = tk.StringVar(value="")	이력 상태 변수.
+ttk.Label(rb, textvariable=self.hist_status).pack(side="left", padx=8)	라벨.
+f_detail = ttk.LabelFrame(root, text=" 선택한 실행의 상세  /  마지막 실행의 변경된 문장 (전체는 결과 Excel '변경 사항' 시트) ")	상세 틀.
+f_detail.grid(row=1, column=0, sticky="nsew", padx=6, pady=4)	배치.
+f_detail.columnconfigure(0, weight=1)	늘어나게.
+f_detail.rowconfigure(1, weight=1)	변경 표 행이 늘어남.
+self.detail_var = tk.StringVar(value="")	상세 문구 변수.
+ttk.Label(f_detail, textvariable=self.detail_var, wraplength=1100, justify="left").grid(row=0, column=0, columnspan=2, sticky="w", padx=8, pady=(6, 0))	라벨.
+cols = ("변경", "페이지", "줄", "발췌", "이전", "현재", "판정", "설명")	변경 표 열.
+self.change_tree = self._tree(f_detail, cols, (80, 50, 40, 400, 50, 50, 80, 300), height=6, row=1, stretch=("발췌", "설명"))	변경 표.
+f_fb = ttk.LabelFrame(root, text=" 피드백·학습 이력 ")	피드백·학습 이력 틀.
+f_fb.grid(row=2, column=0, sticky="nsew", padx=6, pady=(4, 8))	배치.
+f_fb.columnconfigure(0, weight=1)	늘어나게.
+f_fb.rowconfigure(0, weight=1)	늘어나게.
+self.fb_log = self._text_with_scroll(f_fb, height=5, wrap="none")	이력 로그 글 상자.
+# ------------------------------------------------------------------ 공통	주석: 공통.
+def _log(self, msg: str, where: str = "log") -> None:	로그 메시지를 큐에 넣는 메서드 (워커 스레드에서 안전).
+self.q.put(("log", where, msg))	('log', 어느 상자, 내용).
+def _append(self, widget: tk.Text, msg: str) -> None:	글 상자에 한 줄 덧붙이는 메서드 (메인 스레드).
+widget.configure(state="normal")	잠금 해제.
+widget.insert("end", msg + "\n")	끝에 추가.
+widget.see("end")	끝으로 스크롤.
+widget.configure(state="disabled")	다시 읽기 전용.
+def _set_text(self, widget: tk.Text, msg: str) -> None:	글 상자 내용을 바꾸는 메서드.
+widget.configure(state="normal")	잠금 해제.
+widget.delete("1.0", "end")	비우고
+widget.insert("end", msg)	넣고
+widget.configure(state="disabled")	읽기 전용.
+def _widget_for(self, where: str) -> tk.Text:	로그 위치 이름 → 위젯.
+return {"log": self.log, "q": self.qlog, "e": self.elog}.get(where, self.log)	log/q/e.
+def _poll(self) -> None:	큐를 비워 화면에 반영하는 함수. 메인 스레드에서 주기적으로 돈다.
+try:	큐가 비면 예외가 나므로 try.
+while True:	쌓인 것을 전부 꺼낼 때까지 반복.
+kind, *rest = self.q.get_nowait()	get_nowait() 은 기다리지 않고 꺼낸다. 첫 값은 종류(kind), 나머지는 rest 리스트로.
+if kind == "log":	로그 메시지면
+where, msg = rest	어느 창(log 또는 qlog)에 적을지와 내용.
+self._append(self._widget_for(where), msg)	해당 위젯에 추가.
+elif kind == "status":	상태 메시지면
+self.status_var.set(rest[0])	상태 표시줄 변수에 넣는다.
+elif kind == "models":	설치된 모델 목록이 왔으면
+if rest[0]:	모델 목록이 오면
+self.embed_box["values"] = rest[0]	임베딩 콤보 선택지 갱신.
+elif kind == "history":	이력 데이터면
+self._fill_history(*rest)	이력 탭을 채운다 (*rest 는 리스트를 풀어 인자로).
+elif kind == "done":	작업 종료면
+self._finish(*rest)	_finish 로 결과·오류·중지를 처리한다.
+except queue.Empty:	큐가 비어서 난 예외는
+pass	그냥 넘어간다.
+self.after(120, self._poll)	120ms 뒤에 자기 자신을 다시 부른다. Tk 의 after 가 타이머 역할.
+def _busy(self) -> bool:	작업 중인지 확인하는 메서드.
+if self.worker is not None and self.worker.is_alive():	워커가 살아 있으면
+messagebox.showinfo("실행 중", "작업이 끝난 뒤 다시 시도하세요.")	안내 상자.
+return True	바쁨.
+return False	아님.
+def _start(self, target, *args) -> None:	작업을 시작하는 공통 함수. target 은 실제로 돌릴 함수, *args 는 그 인자들.
+self._cancel.reset()	중지 토큰을 초기화 (이전에 중지했더라도 다시 돌게).
+self.run_btn.configure(state="disabled")	실행 버튼을 잠근다.
+self.stop_btn.configure(state="normal")	중지 버튼을 연다.
+self.prog.start(12)	진행 막대 애니메이션 시작 (12ms 간격).
+self.worker = threading.Thread(target=self._guard, args=(target, *args), daemon=True)	새 스레드를 만든다. 돌릴 함수는 _guard, 인자는 (target, 나머지). daemon=True 는 창이 닫히면 같이 끝나게.
+self.worker.start()	스레드 시작. 여기서 바로 돌아오므로 화면이 멈추지 않는다.
+def _guard(self, target, *args) -> None:	스레드 안에서 target 을 감싸 실행하는 함수.
+try:	오류를 잡기 위해 try.
+result = target(*args)	실제 작업 실행 (예: _extract_job).
+self.q.put(("done", "ok", result))	정상 종료: 큐에 ('done', 'ok', 결과) 를 넣는다. 화면 스레드가 꺼내 처리한다.
+except Cancelled:	중지 예외면
+self.q.put(("done", "cancelled", None))	('done', 'cancelled', None) 을 넣는다.
+except Exception as e:	그 밖의 오류면
+self.q.put(("done", "error", f"{e}\n\n{traceback.format_exc()}"))	오류 메시지와 추적 정보를 넣는다. 화면에 그대로 보여 준다.
+def _finish(self, state: str, payload) -> None:	작업이 끝났을 때 결과를 반영하는 메서드 (메인 스레드).
+self.prog.stop()	진행 막대 정지.
+self.run_btn.configure(state="normal")	실행 버튼 열기.
+self.stop_btn.configure(state="disabled")	중지 버튼 잠금.
+if state == "error":	오류면
+self._append(self.log, f"[오류] {payload.splitlines()[0]}")	로그에 첫 줄.
+messagebox.showerror("오류", payload.split("\n\n")[0])	오류 상자 (추적 정보 앞부분).
+elif state == "cancelled":	중지면
+self._append(self.log, "중지됨. 진행 중이던 임베딩 호출을 끊었고, 끝난 문장의 임베딩은 캐시에 남아 다음 실행에서 재사용됩니다.")	중지 안내(임베딩 호출).
+if not (payload and isinstance(payload, dict)):	결과 사전이 없으면
+return	끝.
+kind = payload.get("kind")	결과 종류.
+if kind == "extract":	추출이면
+self.last_outputs = payload["outputs"]	엑셀 경로들 기억.
+self.last_labeled = payload["labeled"]	문장들 기억.
+self.last_result = payload["result"]	결과 기억.
+self.res_title.set(f"최근 결과: {payload['last_name']}  ({payload['summary']})")	결과 제목 갱신.
+self.fill_results()	미리보기 표 채움.
+self.fill_pages(payload["result"].doc, payload["labeled"])	페이지 표 채움.
+self.fill_changes(payload["result"])	변경 표 채움.
+self.open_xlsx_btn.configure(state="normal" if self.last_outputs else "disabled")	엑셀 열기 버튼 열기.
+self.open_dir_btn.configure(state="normal" if self.last_outputs else "disabled")	폴더 열기 버튼 열기.
+self.refresh_history()	이력 새로 고침.
+elif kind == "preview":	미리 보기면
+self.fill_pages(payload["doc"], [])	페이지 표만 채우고 (문장 없음)
+self.nb.select(self.tab_weights)	가중치 탭으로 이동.
+elif kind == "gold":	골드 시트면
+self.last_gold = payload["path"]	경로 기억.
+self.gold_open_btn.configure(state="normal")	열기 버튼 열기.
+self._add_gold(self.last_gold)	학습 목록에 추가.
+elif kind == "feedback":	피드백이면
+self._add_gold(Path(payload["gold"]))	골드 파일을 학습 목록에 추가.
+self.refresh_history()	이력 새로 고침.
+elif kind == "train":	학습이면
+self.check_env()	환경 점검 (분류기 상태 갱신).
+self.refresh_history()	이력 새로 고침.
+elif kind in ("ladder", "compare", "compare_clf"):	실험 결과가 끝나면
+self.last_experiment = Path(payload["out"])	경로 보관.
+self.exp_open_btn.configure(state="normal")	열기 단추 활성.
+def cancel(self) -> None:	중지 버튼이 부르는 메서드.
+self._cancel.cancel()          # 진행 중인 Ollama 요청의 소켓을 끊어 즉시 멈춘다	토큰에 중지 요청 → 진행 중인 요청의 소켓이 끊긴다.
+self._append(self.log, "중지 요청: 진행 중인 호출을 끊습니다.")	로그에 안내.
+def _check_cancel(self) -> None:	워커가 진행 콜백 안에서 부르는 확인.
+self._cancel.check()	중지 요청이 있으면 Cancelled 예외.
+def _on_close(self) -> None:	창을 닫을 때.
+if self.worker is not None and self.worker.is_alive():	작업 중이면
+if not messagebox.askyesno("종료", "작업이 진행 중입니다. 종료할까요?"):	확인 상자에서 아니오를 고르면
+return	닫지 않는다.
+self.destroy()	창 파괴.
+# ------------------------------------------------------------------ 설정 조립	주석: 설정 조립.
+def set_switches(self, on: bool) -> None:	스위치 전부 켜기/끄기.
+for v in self.switch_vars.values():	변수마다
+v.set(on)	값 설정.
+def current_rules(self) -> tuple[list[str], list[str], float, float]:	가중치 탭의 입력값을 읽는 메서드. (낮음 목록, 높음 목록, 낮음 가중치, 점수 기준).
+low = parse_patterns(self.low_text.get("1.0", "end"))	낮음 키워드 파싱 (오류면 ValueError).
+high = parse_patterns(self.high_text.get("1.0", "end"))	높음 키워드 파싱.
+low_w = max(0.0, min(1.0, float(self.low_var.get().strip() or 0.4)))	낮음 가중치 (0~1 로 묶음, 비면 0.4).
+accept = float(self.accept_var.get().strip() or 0.5)	점수 기준 (비면 0.5).
+return low, high, low_w, accept	돌려준다.
+def short_chars(self) -> int:	짧은 줄 기준 입력값을 정수로.
+v = self.short_var.get().strip()	문자열.
+if not v.isdigit():	숫자가 아니면
+raise ValueError(f"짧은 줄 기준은 0 이상의 정수여야 합니다: {v!r}")	짧은 줄 기준 오류 메시지.
+return int(v)	정수.
+def classifier_key(self) -> str:	콤보 표시 글 → 분류기 키.
+return next((k for k, d in CLASSIFIER_CHOICES if d == self.clf_var.get()), "proto")	찾기(기본 proto).
+def build_cfg(self) -> Config:	화면 값으로 Config 만들기.
+"""화면의 값으로 Config 를 만든다. Tk 변수는 메인 스레드에서만 읽는다."""	설명 문자열.
+low, high, low_w, accept = self.current_rules()	규칙 값들.
+grades = next((k for k, d in GRADE_CHOICES if d == self.grades_var.get()), "A,B")	추출 등급 값 (문구로 찾기, 기본 A,B).
+cfg = Config.load(self.cfg.config_path or None, classifier=self.classifier_key(), embed_model=self.embed_var.get().strip() or None,	Config.load 에 분류기·임베딩,
+use_cache=self.cache_var.get(), low_relevance_patterns=low, high_relevance_patterns=high,	캐시·키워드,
+low_relevance_weight=low_w, accept_score=accept, target_grades=grades, short_line_chars=self.short_chars(),	가중치·점수·등급·짧은 줄,
+gold_paths=self.cfg.gold_paths, use_gold=self.cfg.use_gold, history_path=self.cfg.history_path,	골드 경로·반영·이력 경로는 기존 설정 그대로,
+cache_path=self.cfg.cache_path, classifier_dir=self.cfg.classifier_dir)	캐시·분류기 폴더.
+for s in SWITCHES:	스위치마다
+setattr(cfg, s.field, bool(self.switch_vars[s.name].get()))	체크박스 값을 필드에.
+return cfg	반환.
+def apply_rules(self) -> None:	'규칙 적용' 버튼.
+try:	오류 대비.
+low, high, low_w, accept = self.current_rules()	입력값 읽기.
+except ValueError as e:	잘못됐으면
+messagebox.showerror("규칙 오류", str(e))	오류 상자.
+return	끝.
+self.cfg.low_relevance_patterns, self.cfg.high_relevance_patterns = low, high	메모리의 설정에 키워드 반영.
+self.cfg.low_relevance_weight, self.cfg.accept_score, self.cfg.page_weight_enabled = low_w, accept, self.pw_var.get()	가중치·점수 기준·적용 여부 반영.
+self.rules_status.set(f"적용됨: 낮음 키워드 {len(low)}개, 높음 키워드 {len(high)}개, 낮음 가중치 {low_w}, 점수 기준 {accept}, "	상태 문구: 적용된 수와 값,
+f"가중치 {'켬' if self.pw_var.get() else '끔'}. 다음 실행부터 반영됩니다 (저장하지 않으면 종료 시 사라짐).")	저장하지 않으면 사라진다는 안내.
+if self.last_result is not None:	마지막 결과가 있으면
+self.start_preview_pages(Path(self.last_result.info.source))	같은 파일로 페이지 미리 보기를 다시 돌린다.
+def save_config(self) -> None:	'설정 저장' 버튼.
+try:	오류 대비.
+cfg = self.build_cfg()	화면값으로 설정.
+except ValueError as e:	잘못됐으면
+messagebox.showerror("규칙 오류", str(e))	오류 상자.
+return	끝.
+target = Path(self.cfg.config_path) if self.cfg.config_path else USER_CONFIG	기본 저장 위치: 읽은 설정 파일, 없으면 설치 폴더의 ip_finder.toml.
+p = filedialog.asksaveasfilename(title="설정 저장", initialdir=str(target.parent), initialfile=target.name,	저장 대화상자 (폴더·파일 이름 제안,
+defaultextension=".toml", filetypes=[("TOML", "*.toml")])	확장자 .toml).
+if not p:	취소하면
+return	끝.
+cfg.config_path = ""	config_path 는 저장하지 않게 비운다.
+out = cfg.save(p)	TOML 로 저장.
+self.cfg = Config.load(out)	저장한 파일을 다시 읽어 현재 설정으로.
+self.rules_status.set(f"저장: {out}. 설치 폴더의 ip_finder.toml 은 UI 와 명령줄이 자동으로 읽고, 다른 위치는 ip-finder --config 로 지정합니다. 스위치 상태도 함께 저장됩니다.")	저장 안내(스위치 포함).
+def reset_rules(self) -> None:	'기본값으로' 버튼.
+base = Config()	기본 설정 객체.
+self.low_text.delete("1.0", "end")	낮음 키워드 상자 비우고
+self.low_text.insert("1.0", patterns_text(base.low_relevance_patterns))	기본 목록 채움.
+self.high_text.delete("1.0", "end")	높음 키워드 비움.
+self.low_var.set(str(base.low_relevance_weight))	낮음 가중치 기본값.
+self.accept_var.set(str(base.accept_score))	점수 기준 기본값.
+self.short_var.set(str(base.short_line_chars))	짧은 줄 기본값.
+# ------------------------------------------------------------------ 환경 점검	주석: 환경 점검.
+def check_env(self) -> None:	환경 점검 메서드 (Ollama 연결·모델·분류기).
+try:	오류 대비.
+cfg = self.build_cfg()	화면값으로 설정.
+except ValueError:	잘못됐으면
+cfg = Config.load()	파일·기본 설정.
+def work(cfg=cfg):	스레드에서 돌릴 함수 (cfg 를 기본값으로 묶어 둠).
+from .classify import REGISTRY	등록부.
+from .ollama import assert_local, installed_models, server_available	Ollama 함수.
+parts = []	상태 조각들.
+try:	생성 오류 대비 (호스트 검사).
+assert_local(cfg.host)	로컬 검사.
+except Exception as e:	오류면
+self.q.put(("status", f"설정 오류: {e}"))	상태에 표시하고
+return	끝.
+if server_available(cfg.host):	서버 응답하면
+names = installed_models(cfg.host)	모델 목록.
+embeds = [n for n in names if any(k in n.lower() for k in ("embed", "bge", "e5", "kure", "minilm"))] or names	임베딩 계열만(없으면 전부).
+self.q.put(("models", embeds))	콤보 갱신 요청.
+has = cfg.embed_model in names or f"{cfg.embed_model}:latest" in names	임베딩 모델 유무.
+parts.append("Ollama 연결 ✓")	'Ollama 연결 ✓'.
+parts.append(f"임베딩 {cfg.embed_model} {'✓' if has else '✗ (ollama pull 필요)'}")	임베딩 상태.
+else:	연결 안 되면
+parts.append(f"Ollama 연결 ✗ ({cfg.host})  임베딩을 쓰는 분류기는 동작하지 않습니다 (cue·ngram 은 동작)")	연결 안 됨 안내.
+cls = REGISTRY[cfg.classifier]	분류기 클래스.
+if cls.trainable:	학습형이면
+f = cfg.classifier_file()	파일.
+parts.append(f"분류기 {cfg.classifier}: " + (f"학습 파일 있음 ({f.name})" if f.exists() else "학습 파일 없음 → 정확도 관리 탭에서 학습"))	파일 유무 안내.
+else:	그 밖(검토 목록 또는 등급 하나)이면
+parts.append(f"분류기 {cfg.classifier} (학습 없음)")	학습 없음.
+parts.append(f"스위치: {describe_switches(cfg)}")	스위치 상태.
+self.q.put(("status", "   |   ".join(parts)))	상태 표시줄에.
+threading.Thread(target=work, daemon=True).start()	스레드로 실행.
+# ------------------------------------------------------------------ 추출 탭 동작	주석: 추출 탭 동작.
+def add_files(self, paths) -> None:	파일들을 목록에 추가하는 메서드.
+existing = set(self.files_list.get(0, "end"))	이미 있는 항목들.
+for p in paths:	경로마다
+p = str(p)	문자열로.
+if p and p not in existing and Path(p).suffix.lower() in SUPPORTED:	비어 있지 않고 중복이 아니고 지원 확장자면
+self.files_list.insert("end", p)	목록에 넣고
+existing.add(p)	기억.
+def add_files_dialog(self) -> None:	'파일 추가' 버튼.
+paths = filedialog.askopenfilenames(title="보고서 선택", filetypes=[("보고서", "*.pdf *.pptx *.ppt"), ("PDF", "*.pdf"), ("PowerPoint", "*.pptx *.ppt"), ("모든 파일", "*.*")])	열기 대화상자 (여러 파일).
+self.add_files(paths)	추가.
+def add_folder_dialog(self) -> None:	'폴더 추가' 버튼.
+d = filedialog.askdirectory(title="보고서 폴더 선택")	폴더 대화상자.
+if d:	골랐으면
+existing = set(self.files_list.get(0, "end"))	기존 항목.
+if d not in existing:	중복이 아니면
+self.files_list.insert("end", d)	추가.
+def remove_selected(self) -> None:	'선택 제거' 버튼.
+for i in reversed(self.files_list.curselection()):	선택된 번호를 뒤에서부터 (앞에서 지우면 번호가 밀리므로)
+self.files_list.delete(i)	지운다.
+def pick_out_dir(self) -> None:	'찾기' 버튼 (결과 폴더).
+d = filedialog.askdirectory(title="결과 폴더 선택")	폴더 대화상자.
+if d:	골랐으면
+self.out_dir_var.set(d)	경로 변수에 넣고
+self.out_mode.set("folder")	지정 폴더 방식으로.
+def _inputs(self) -> list[Path]:	입력 목록 도우미.
+return [Path(p) for p in self.files_list.get(0, "end")]	Path 목록.
+def _cfg_or_error(self) -> Config | None:	Config 만들기 또는 오류 대화상자.
+try:	오류 대비.
+return self.build_cfg()	만들기.
+except ValueError as e:	잘못됐으면
+messagebox.showerror("옵션 오류", f"점수 기준·낮음 가중치는 숫자, 키워드는 올바른 정규식이어야 합니다.\n{e}")	오류 상자.
+return None	실패 시 None.
+def start_extract(self) -> None:	'실행' 버튼.
+if self._busy():	작업 중이면
+return	끝.
+inputs = self._inputs()	입력.
+if not inputs:	없으면
+messagebox.showinfo("입력 없음", "먼저 보고서 파일이나 폴더를 추가하세요.")	안내 상자,
+return	끝.
+cfg = self._cfg_or_error()	설정.
+if cfg is None:	오류면
+return	끝.
+out_dir = Path(self.out_dir_var.get()) if self.out_mode.get() == "folder" and self.out_dir_var.get().strip() else None	지정 폴더 방식이고 경로가 있으면 그 폴더, 아니면 None(원본 옆).
+self._start(self._extract_job, inputs, cfg, out_dir)	워커 스레드로 추출 작업 시작.
+def _services(self, cfg: Config, cache):	임베더·분류기 준비 도우미.
+"""임베더(필요할 때)와 분류기를 한 번 만든다. 중지 토큰에 임베더를 등록한다."""	설명 문자열.
+from .classify import load_classifier, needs_embedding	로더.
+from .pipeline import make_embedder	임베더 함수.
+emb = None	임베더 없음.
+if needs_embedding(cfg.classifier):	필요하면
+emb = make_embedder(cfg, cache)	임베더.
+self._cancel.register(emb)	중지 토큰에 등록.
+if not emb.available():	임베딩 모델이 없으면
+raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 ({cfg.host}). Ollama 실행과 'ollama pull {cfg.embed_model}' 을 확인하세요.")	모델 없으면 오류.
+return emb, load_classifier(cfg, emb)	임베더와 분류기.
+def _extract_job(self, inputs: list[Path], cfg: Config, out_dir: Path | None) -> dict:	UI 의 추출 작업. 워커 스레드에서 돈다. 입력 경로들, 설정, 출력 폴더를 받아 사전을 돌려준다.
+import time	시간 측정 모듈.
+from collections import Counter	개수 세는 사전.
+from .cache import LabelCache	캐시.
+from .cli import _summary	CLI 와 같은 요약 문구 함수를 빌려 쓴다.
+from .pipeline import extract, find_inputs, output_path	실행 함수들.
+files = find_inputs(inputs)	처리할 파일 목록.
+if not files:	없으면
+raise RuntimeError("처리할 파일이 없습니다 (.pdf, .pptx, .ppt)")	오류를 내서 _guard 가 화면에 보이게 한다.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시.
+outputs: list[Path] = []	만든 엑셀 경로 목록.
+labeled: list[LabeledLine] = []	마지막 파일의 라벨 목록 (미리보기용).
+result = None	마지막 결과.
+last_name, summary = "", ""	마지막 파일 이름과 요약 문구.
+try:	오류 대비.
+emb, clf = self._services(cfg, cache)	임베더·분류기 한 번.
+taken = Counter(output_path(f, out_dir) for f in files)	출력 경로 중복 수 (같은 이름의 pdf·pptx 구분용).
+t_all = time.time()	전체 시작 시각.
+self._log(f"== {len(files)}개 파일, 분류기 {CLASSIFIER_NAMES[cfg.classifier]}, 임베딩 {cfg.embed_model}, 추출 등급 {','.join(cfg.targets())}, "	머리 로그(분류기·임베딩·등급·점수,
+f"점수 기준 {cfg.accept_score}\n   스위치: {describe_switches(cfg)}")	스위치).
+for f in files:	파일마다
+self._check_cancel()	중지 요청이 있으면 여기서 멈춘다.
+t0 = time.time()	이 파일의 시작 시각.
+self._log(f"\n== {f.name}")	파일 이름 로그.
+def status(msg, _t0=t0):	상태 콜백.
+self._check_cancel()	중지 확인.
+self._log(f"  {msg}  {time.time() - _t0:5.1f}s")	상태 로그.
+out, res = extract(f, cfg, out_dir, with_ext=taken[output_path(f, out_dir)] > 1, status=status, embedder=emb, classifier=clf, cancel=self._cancel)	실행(임베더·분류기·중지 토큰).
+i = res.info	실행 정보.
+summary = (f"페이지 {i.pages_total} (판정 {i.pages_labeled}, 제외 {i.pages_excluded}, 이미지 {i.pages_image}) | "	요약 첫 줄.
+f"판정 {i.clf_lines}문장, 캐시 {i.cache_hits} | {i.elapsed_sec:.1f}초")	둘째 줄.
+self._log(f"  → {out}\n  {summary}\n  {_summary(res)}")	출력 경로, 요약, 목록 요약 로그.
+for s in i.settings_diff:	달라진 설정마다
+self._log(f"  달라진 설정: {s}")	로그.
+for w in i.warnings:	경고마다
+self._log(f"  안내: {w}")	안내.
+outputs.append(out)	엑셀 경로 모음.
+labeled, result, last_name = res.labeled, res, f.name	마지막 결과 기억.
+if len(files) > 1:	파일이 여럿이면
+self._log(f"\n총 {len(files)}개 파일, {time.time() - t_all:.0f}초")	총 수·시간 로그.
+finally:	finally:
+cache.close()	캐시 닫기.
+return {"kind": "extract", "outputs": outputs, "labeled": labeled, "result": result, "last_name": last_name, "summary": summary}	결과 사전: 종류 extract, 경로들, 문장들, 결과, 마지막 이름, 요약.
+def fill_results(self) -> None:	미리보기 표를 채우는 메서드.
+self.tree.delete(*self.tree.get_children())	표 비우기.
+want = self.filter_var.get()	선택된 보기.
+n = 0	행 번호.
+for ll in self.last_labeled:	마지막 문장들마다
+if want == STATUS_HOLD:	보류 보기.
+if not in_hold_list(ll):	보류 아니면 건너뜀.
+continue	건너뛰고
+tag = "hold"	회색 태그.
+elif want == STATUS_CLF_OUT:	분류기 제외 보기.
+if not is_stage1_out(ll):	아니면 건너뜀.
+continue	건너뛰고
+tag = "hold"	회색.
+elif want == STATUS_POST_OUT:	후처리 제외 보기.
+if not is_stage2_out(ll):	아니면 건너뜀.
+continue	건너뛰고
+tag = "hold"	회색.
+else:	있었으면
+if not in_review_list(ll) or (want != STATUS_REVIEW and ll.label != want):	검토 목록(등급 필터).
+continue	건너뛴다.
+tag = ll.label	등급 색 태그.
+n += 1	번호 +1.
+note = ll.hold_reason if want == STATUS_HOLD and ll.hold_reason else ", ".join(ll.notes)	비고 또는 보류 사유.
+conf = f"{ll.clf_conf:.2f}" if ll.clf_conf is not None else ""	확신 글.
+self.tree.insert("", "end", values=(n, ll.section, ll.page_no, ll.label, ll.text, f"{ll.score:.2f}", f"{ll.page_weight:.2f}",	행 추가: 번호, 섹션, 페이지, 등급, 글, 점수, 가중치,
+conf, SOURCE_NAME.get(ll.source, ll.source), note), tags=(tag,))	확신·판정·비고 열.
+def fill_pages(self, doc, labeled: list[LabeledLine]) -> None:	페이지 표를 채우는 메서드. labeled 가 비어 있으면 미리 보기.
+self.page_tree.delete(*self.page_tree.get_children())	표 비우기.
+by_page: dict[int, list[LabeledLine]] = {}	페이지 → 문장들.
+for ll in labeled:	문장마다
+by_page.setdefault(ll.page_no, []).append(ll)	모은다.
+for p in doc.pages:	페이지마다
+rows = by_page.get(p.no, [])	그 페이지 문장들.
+state = p.excluded_reason or ("판정" if labeled else f"판정 대상 {len(p.active_lines())}문장")	상태: 제외 사유, 아니면 '판정' 또는 미리 보기면 '판정 대상 N문장'.
+cnt = (lambda f: sum(1 for ll in rows if f(ll))) if labeled else (lambda f: "")	세는 함수: 결과가 있으면 조건에 맞는 수, 미리 보기면 빈칸.
+self.page_tree.insert("", "end", values=(p.no, p.title, p.relevance, f"{p.weight:.2f}", p.weight_reason, state,	행 추가: 번호, 제목, 관련성, 가중치, 근거, 상태,
+cnt(in_review_list), cnt(in_hold_list), cnt(is_stage1_out), cnt(is_stage2_out)),	쪽별 수(분류기 제외·후처리 제외).
+tags=("low",) if p.relevance == "낮음" else ())	낮음 페이지는 회색 태그.
+def start_preview_pages(self, path: Path | None = None) -> None:	'미리 보기' 버튼. 경로를 주면 대화상자 없이.
+if self._busy():	작업 중이면
+return	끝.
+if path is None:	경로가 없으면
+p = filedialog.askopenfilename(title="가중치를 미리 볼 보고서", filetypes=[("보고서", "*.pdf *.pptx *.ppt")])	파일 대화상자.
+if not p:	취소하면
+return	끝.
+path = Path(p)	경로.
+cfg = self._cfg_or_error()	설정.
+if cfg is None:	오류면
+return	끝.
+self._start(self._preview_job, path, cfg)	워커로 미리 보기 작업.
+def _preview_job(self, path: Path, cfg: Config) -> dict:	미리 보기 작업 (워커).
+from .pipeline import prepare	전처리.
+from .readers import load_document	읽기.
+doc = load_document(path, layout=cfg.layout_analysis)	레이아웃 스위치대로 읽기.
+prepare(doc, cfg)	전처리 (LLM 없음).
+return {"kind": "preview", "doc": doc}	결과 사전.
+def open_last_output(self) -> None:	'결과 Excel 열기' 버튼.
+if self.last_outputs:	결과가 있으면
+open_path(self.last_outputs[-1])	마지막 엑셀을 연다.
+def open_last_folder(self) -> None:	'결과 폴더 열기' 버튼.
+if self.last_outputs:	결과가 있으면
+open_path(self.last_outputs[-1].parent)	그 폴더를 연다.
+# ------------------------------------------------------------------ 정확도 관리 탭 동작	주석: 정확도 관리 탭 동작.
+def _add_gold(self, path: Path) -> None:	골드 파일을 학습 목록에 추가하는 메서드.
+if path not in self.gold_files:	없으면
+self.gold_files.append(path)	기억하고
+self.gold_list.insert("end", str(path))	목록 상자에.
+def load_gold_folder(self) -> None:	골드 폴더의 파일을 목록에 올리는 메서드 (시작할 때).
+"""골드 폴더의 *_gold.xlsx 를 목록에 올린다."""	설명 문자열.
+try:	오류 대비.
+for p in self.cfg.gold_files():	설정의 골드 파일마다
+self._add_gold(p)	추가.
+except Exception:	오류는
+pass	무시.
+def start_gold_sheet(self) -> None:	'골드 시트 생성' 버튼.
+if self._busy():	작업 중이면
+return	끝.
+p = filedialog.askopenfilename(title="골드 시트를 만들 보고서", filetypes=[("보고서", "*.pdf *.pptx *.ppt")])	보고서 대화상자.
+if not p:	취소하면
+return	끝.
+cfg = self._cfg_or_error()	설정.
+if cfg is None:	오류면
+return	끝.
+self._start(self._gold_job, Path(p), cfg)	워커로 골드 작업.
+def _gold_job(self, path: Path, cfg: Config) -> dict:	골드 시트 작업 (워커).
+from .cache import LabelCache	캐시.
+from .eval import make_gold_sheet	골드 시트 함수.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시.
+try:	닫기 보장.
+emb, clf = self._services(cfg, cache)	임베더·분류기.
+self._log(f"골드 시트 생성 중: {path.name} (분류기 {cfg.classifier}, 스위치 {describe_switches(cfg)})", "q")	로그.
+out = make_gold_sheet(path, cfg, None, embedder=emb, classifier=clf)	골드 시트 생성.
+finally:	finally:
+cache.close()	캐시 닫기.
+self._log(f"생성: {out}\n'라벨링' 시트의 '정답' 열에서 틀린 등급만 고친 뒤 저장하세요. 골드 폴더 안의 골드는 다음 실행부터 자동 반영됩니다 (같은 문장은 정답 그대로).", "q")	안내 로그.
+return {"kind": "gold", "path": out}	결과 사전.
+def open_last_gold(self) -> None:	'방금 만든 골드 시트 열기' 버튼.
+if self.last_gold:	있으면
+open_path(self.last_gold)	연다.
+def start_feedback(self) -> None:	'피드백 가져오기' 버튼.
+if self._busy():	작업 중이면
+return	끝.
+p = filedialog.askopenfilename(title="피드백을 적은 결과 Excel", filetypes=[("결과 Excel", "*_검토후보.xlsx"), ("Excel", "*.xlsx")])	결과 엑셀 대화상자.
+if not p:	취소하면
+return	끝.
+cfg = self._cfg_or_error()	설정.
+if cfg is None:	오류면
+return	끝.
+self._start(self._feedback_job, Path(p), cfg, self.confirm_var.get())	워커로 피드백 작업 (빈 행 확인 옵션 포함).
+def _feedback_job(self, result: Path, cfg: Config, confirm: bool) -> dict:	피드백 작업 (워커).
+from .eval import import_feedback	가져오기 함수.
+from .history import History	이력.
+rec = import_feedback(result, None, confirm_unmarked=confirm, history=History(cfg.history_dir()), gold_dir=cfg.gold_dir())	가져오기 (기본 골드 경로, 이력, 골드 폴더).
+msg = (f"피드백 {rec['feedback_rows']}행 → 골드 시트 {rec['gold']}\n  추가 {rec['added']}, 갱신 {rec['updated']}, 건너뜀 {rec['skipped']}, 골드 총 {rec['gold_rows']}행")	결과 문구: 행 수, 추가·갱신·건너뜀, 총 행.
+if rec["corrections"]:	수정 종류가 있으면
+msg += "\n  내역: " + ", ".join(f"{k} {v}" for k, v in sorted(rec["corrections"].items()))	내역.
+if rec["feedback_rows"] == 0:	피드백이 없었으면
+msg += "\n  피드백 열이 비어 있습니다. 결과 Excel 의 '피드백' 열에 O / X / A~D 를 적고 저장한 뒤 다시 하세요."	피드백 비었을 때 안내.
+else:	없으면
+msg += "\n  다음 실행부터 이 문장들은 골드 정답을 그대로 씁니다. 분류기를 갱신하려면 3번에서 학습하고, 어느 분류기가 나은지는 '분류기 7종 비교'로 보세요."	다음 단계 안내.
+self._log(msg, "q")	로그.
+return {"kind": "feedback", "gold": rec["gold"]}	결과 사전.
+def add_gold_dialog(self) -> None:	'골드 파일 추가' 버튼.
+for p in filedialog.askopenfilenames(title="골드 시트 선택", filetypes=[("Excel", "*.xlsx")]):	여러 파일 대화상자에서
+self._add_gold(Path(p))	추가.
+def remove_gold_selected(self) -> None:	'선택 제거' 버튼 (골드 목록).
+for i in reversed(self.gold_list.curselection()):	선택을 뒤에서부터
+self.gold_files.pop(i)	기억 목록에서 빼고
+self.gold_list.delete(i)	상자에서도.
+def start_train(self) -> None:	'학습 실행' 버튼.
+if self._busy():	작업 중이면
+return	끝.
+if not self.gold_files:	골드가 없으면
+messagebox.showinfo("골드 시트 없음", "먼저 정답을 채운 골드 시트를 추가하세요.")	안내 상자,
+return	끝.
+cfg = self._cfg_or_error()	설정.
+if cfg is None:	오류면
+return	끝.
+name = next((k for k, d in CLASSIFIER_CHOICES if d == self.train_var.get()), "knn")	학습할 분류기 키.
+self._start(self._train_job, list(self.gold_files), cfg, name)	학습 시작.
+def _train_job(self, golds: list[Path], cfg: Config, name: str) -> dict:	학습 작업(이름 포함).
+from .cache import LabelCache	캐시.
+from .classify import REGISTRY	등록부.
+from .eval import train_classifier	학습 함수.
+from .pipeline import make_embedder	임베더 함수.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시.
+try:	오류 대비.
+emb = None	임베더 없음.
+if REGISTRY[name].needs_embedding:	필요하면
+emb = make_embedder(cfg, cache)	임베더.
+self._cancel.register(emb)	중지 토큰 등록.
+if not emb.available():	임베딩 모델이 없으면
+raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 → ollama pull {cfg.embed_model}")	오류.
+self._log(f"학습 중: {CLASSIFIER_NAMES[name]} ← {', '.join(g.name for g in golds)}", "q")	로그.
+stats = train_classifier(golds, cfg, None, emb, name=name)	학습.
+finally:	finally:
+cache.close()	캐시 닫기.
+self._log(f"학습 문장 {stats['n']}개 (등급별 {stats['counts']})\n5겹 교차검증 정확도 {stats['cv_accuracy']:.1%}, 학습 데이터 정확도 {stats['train_accuracy']:.1%}\n"	결과 로그: 문장 수, 교차검증·학습 정확도,
+f"저장: {stats['out']}  → 추출 탭에서 1차 분류기를 '{name}' 으로 고르면 이 파일을 씁니다." +	저장 안내.
+("\n참고: 문장 100개 미만이면 교차검증 값이 크게 흔들립니다. 분류기 비교의 표준편차를 함께 보세요." if stats["n"] < 100 else ""), "q")	골드 적을 때 안내.
+return {"kind": "train"}	결과 사전.
+def start_compare_classifiers(self) -> None:	분류기 비교 시작.
+if self._busy():	작업 중이면
+return	끝.
+if not self.gold_files:	골드가 없으면
+messagebox.showinfo("골드 시트 없음", "먼저 정답을 채운 골드 시트를 추가하세요.")	안내 상자,
+return	끝.
+cfg = self._cfg_or_error()	설정.
+if cfg is None:	오류면
+return	끝.
+out = filedialog.asksaveasfilename(title="분류기 비교 결과 저장", initialfile="분류기_비교.xlsx", defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])	저장 위치 대화상자.
+if not out:	취소면
+return	끝.
+self._start(self._compare_clf_job, list(self.gold_files), cfg, Path(out))	작업 시작.
+def _compare_clf_job(self, golds: list[Path], cfg: Config, out: Path) -> dict:	분류기 비교 작업.
+from .cache import LabelCache	캐시.
+from .compare import classifiers_markdown, compare_classifiers, write_classifier_compare	비교 도구.
+from .goldmap import load_gold	골드 읽기.
+from .pipeline import make_embedder	임베더 함수.
+rows = []	행.
+for g in golds:	파일마다
+rows.extend(load_gold(g))	합친다.
+if not rows:	없으면
+raise RuntimeError("골드 시트에 정답이 적힌 문장이 없습니다.")	오류.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시.
+try:	오류 대비.
+emb = make_embedder(cfg, cache)	임베더.
+self._cancel.register(emb)	중지 토큰 등록.
+self._log(f"분류기 비교: 골드 {len(rows)}문장, 임베딩 {cfg.embed_model}", "q")	로그.
+result = compare_classifiers(rows, cfg, emb, status=lambda m: self._log("  " + m, "q"))	비교 실행(상태는 로그로).
+finally:	finally:
+cache.close()	캐시 닫기.
+write_classifier_compare(result, out)	Excel.
+md = classifiers_markdown(result)	Markdown.
+out.with_suffix(".md").write_text(md, encoding="utf-8")	.md.
+self._log(md + f"\n→ {out}\n→ {out.with_suffix('.md')}", "q")	로그에 요약.
+return {"kind": "compare_clf", "out": out}	결과.
+def start_eval(self) -> None:	'채점' 버튼.
+if self._busy():	작업 중이면
+return	끝.
+p = filedialog.askopenfilename(title="채점할 골드 시트", filetypes=[("Excel", "*.xlsx")])	골드 시트 대화상자.
+if not p:	취소하면
+return	끝.
+cfg = self._cfg_or_error()	설정.
+if cfg is None:	오류면
+return	끝.
+self._start(self._eval_job, Path(p), cfg, self.stored_var.get())	워커로 채점 작업.
+def _eval_job(self, gold: Path, cfg: Config, stored: bool) -> dict:	채점 작업 (워커).
+from .cache import LabelCache	캐시.
+from .eval import evaluate, print_report	채점·출력 함수.
+cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시.
+try:	오류 대비.
+emb = clf = None	임베더·분류기 없음.
+if not stored:	다시 돌리면
+emb, clf = self._services(cfg, cache)	다시 판정하면 준비.
+self._log(f"채점 중: {gold.name} (분류기 {cfg.classifier}{', 저장된 라벨' if stored else ''}, 점수 기준 {cfg.accept_score}, 스위치 {describe_switches(cfg)})", "q")	로그.
+rep = evaluate(gold, cfg, rerun=not stored, embedder=emb, classifier=clf)	채점.
+finally:	finally:
+cache.close()	캐시 닫기.
+buf = io.StringIO()	문자열 버퍼.
+with contextlib.redirect_stdout(buf):	print 출력을 버퍼로 돌려
+print_report(rep)	보고서를 찍는다.
+self._log(buf.getvalue(), "q")	버퍼 내용을 로그에.
+return {"kind": "eval"}	결과 사전.
+# ------------------------------------------------------------------ 실험 탭 동작	절 주석: 실험 탭.
+def _pick_result(self, var: tk.StringVar, folder: bool) -> None:	결과 파일/폴더 고르기.
+if folder:	폴더면
+p = filedialog.askdirectory(title="결과 폴더 선택")	폴더 대화상자.
+else:	없으면
+p = filedialog.askopenfilename(title="결과 Excel 선택", filetypes=[("결과 Excel", "*_검토후보.xlsx"), ("Excel", "*.xlsx")])	파일 대화상자.
+if p:	골랐으면
+var.set(p)	변수에.
+def start_ladder(self) -> None:	사다리 시작.
+if self._busy():	작업 중이면
+return	끝.
+inputs = self._inputs()	입력(추출 탭).
+if not inputs:	없으면
+messagebox.showinfo("입력 없음", "추출 탭에서 먼저 보고서 파일이나 폴더를 추가하세요.")	없으면 안내.
+return	끝.
+cfg = self._cfg_or_error()	설정.
+if cfg is None:	오류면
+return	끝.
+out = filedialog.askdirectory(title="사다리 결과를 저장할 폴더 (칸마다 하위 폴더가 생깁니다)")	결과 폴더 대화상자.
+if not out:	취소면
+return	끝.
+mode = "cumulative" if self.ladder_mode.get().startswith("누적") else "single"	방식.
+steps = [s.strip() for s in self.ladder_steps.get().split(",") if s.strip()] or None	칸 순서(비면 전부).
+self._start(self._ladder_job, inputs, cfg, Path(out), mode, steps, self.ladder_gold.get())	작업 시작.
+def _ladder_job(self, inputs: list[Path], cfg: Config, out: Path, mode: str, steps: list[str] | None, use_gold: bool) -> dict:	사다리 작업.
+from .compare import default_ladder, ladder_markdown, run_ladder, write_ladder	사다리 도구.
+from .goldmap import load_gold	골드 읽기.
+from .pipeline import find_inputs	입력 찾기.
+files = find_inputs(inputs)	처리할 파일 목록.
+if not files:	없으면
+raise RuntimeError("처리할 파일이 없습니다 (.pdf, .pptx, .ppt)")	오류를 내서 _guard 가 화면에 보이게 한다.
+ladder = default_ladder(steps, mode)	사다리.
+gold_rows = None	골드 없음.
+if use_gold:	골드를 쓰면
+gold_rows = []	행.
+for g in cfg.gold_files():	골드 파일마다
+gold_rows.extend(load_gold(g))	합친다.
+if not gold_rows:	없으면
+self._log("골드가 없어 재현율·정밀도는 생략합니다.", "e")	안내.
+gold_rows = None	None.
+self._log(f"사다리 ({'누적' if mode == 'cumulative' else '단독'}): 기준선 → " + " → ".join(s.label for s in ladder.steps) + f"\n파일 {len(files)}개 → {out}", "e")	머리 로그.
+result = run_ladder(files, cfg, ladder, out, gold_rows, status=lambda m: self._log("  " + m, "e"), cancel=self._cancel)	실행(상태는 로그, 중지 토큰).
+xlsx = write_ladder(result, out / f"사다리_{ladder.name}.xlsx")	Excel.
+md = ladder_markdown(result)	Markdown.
+xlsx.with_suffix(".md").write_text(md, encoding="utf-8")	.md.
+self._log(md + f"\n→ {xlsx}\n→ {xlsx.with_suffix('.md')}", "e")	로그.
+return {"kind": "ladder", "out": xlsx}	결과.
+def start_compare_runs(self) -> None:	결과 비교 시작.
+if self._busy():	작업 중이면
+return	끝.
+a, b = self.cmp_a.get().strip(), self.cmp_b.get().strip()	A·B 경로.
+if not a or not b:	비었으면
+messagebox.showinfo("입력 없음", "A 와 B 결과(파일 또는 폴더)를 모두 고르세요.")	안내.
+return	끝.
+out = filedialog.asksaveasfilename(title="비교 결과 저장", initialfile="비교.xlsx", defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")])	저장 대화상자.
+if not out:	취소면
+return	끝.
+cfg = self._cfg_or_error()	설정.
+if cfg is None:	오류면
+return	끝.
+self._start(self._compare_job, Path(a), Path(b), Path(out), cfg)	작업 시작.
+def _compare_job(self, a: Path, b: Path, out: Path, cfg: Config) -> dict:	비교 작업.
+from .compare import compare_records, gold_metrics, load_records, pair_records, runs_markdown, write_runs_compare	비교 도구.
+from .goldmap import load_gold	골드 읽기.
+ra, rb = load_records(a), load_records(b)	A·B 기록.
+if not ra or not rb:	비었으면
+raise RuntimeError(f"결과 파일이 없습니다 (A {len(ra)}개, B {len(rb)}개). *_검토후보.xlsx 파일이나 그 폴더를 고르세요.")	오류.
+pairs = pair_records(ra, rb)	짝짓기.
+if not pairs:	없으면
+raise RuntimeError("이름이 같은 보고서가 없어 짝지을 수 없습니다.")	오류.
+diffs = [compare_records(x, y) for x, y in pairs]	비교.
+gold_rows = []	골드 행.
+for g in cfg.gold_files():	파일마다
+gold_rows.extend(load_gold(g))	합친다.
+gold = [(gold_metrics(x, gold_rows), gold_metrics(y, gold_rows)) for x, y in pairs] if gold_rows else None	골드가 있으면 지표.
+write_runs_compare(diffs, out, a.name, b.name, gold)	Excel.
+md = runs_markdown(diffs, a.name, b.name, gold)	Markdown.
+out.with_suffix(".md").write_text(md, encoding="utf-8")	.md.
+self._log(md + f"\n→ {out}\n→ {out.with_suffix('.md')}", "e")	로그.
+return {"kind": "compare", "out": out}	결과.
+def open_last_experiment(self) -> None:	마지막 실험 열기.
+if self.last_experiment:	있으면
+open_path(self.last_experiment)	열기.
+# ------------------------------------------------------------------ 변경 추적 탭 동작	주석: 변경 추적 탭 동작.
+def refresh_history(self) -> None:	이력 새로 고침 메서드.
+cfg = self.cfg	설정.
+def work():	스레드 함수.
+from .history import History	이력.
+h = History(cfg.history_dir())	이력 객체.
+self.q.put(("history", h.list_runs(limit=100), h.feedback_log(), h.train_log(), str(h.root or "")))	실행 100건, 피드백·학습 로그, 폴더 경로를 큐로.
+threading.Thread(target=work, daemon=True).start()	스레드 실행.
+def _fill_history(self, runs: list[dict], feedback: list[dict], train: list[dict], root: str) -> None:	이력 탭을 채우는 메서드 (메인 스레드).
+self.runs = runs	실행 목록 기억.
+self.run_tree.delete(*self.run_tree.get_children())	표 비우기.
+for r in runs:	실행마다
+st, s, ch = r.get("stats", {}), r.get("settings", {}), r.get("changes") or {}	통계·설정·변경.
+has_prev = bool(r.get("prev_run_id"))	직전 실행이 있는지.
+n_on = sum(1 for sw in SWITCHES if s.get(sw.field))	켠 스위치 수.
+self.run_tree.insert("", "end", iid=r.get("run_id"), values=(	행 추가 (iid 는 실행 ID):
+str(r.get("started_at", "")).replace("T", " ")[:16], r.get("source_name", ""), s.get("classifier", ""), s.get("embed_model", ""),	시각·파일·분류기·임베딩,
+f"{n_on}/{len(SWITCHES)} 켬", st.get("list", 0), st.get("A", 0), st.get("B", 0), st.get("C", 0), st.get("D", 0), st.get("held", 0),	스위치 수, 목록·등급·보류,
+ch.get("entered", "") if has_prev else "-", ch.get("left", "") if has_prev else "-", ch.get("grade", "") if has_prev else "-",	진입·이탈·등급 변경 (첫 실행이면 '-'),
+"; ".join(r.get("settings_diff", []))[:200] if has_prev else "(첫 실행)"))	달라진 설정 (첫 실행이면 '(첫 실행)').
+self.hist_status.set(f"실행 {len(runs)}건, 피드백 {len(feedback)}건, 학습 {len(train)}건  ({root})")	상태 문구: 건수들과 폴더.
+lines = []	로그 줄들.
+for f in feedback[-30:]:	최근 피드백 30건.
+lines.append(f"[피드백] {f.get('time', '')}  {Path(f.get('result', '')).name} → {Path(f.get('gold', '')).name}: {f.get('feedback_rows', 0)}행  "	'[피드백] 시각 결과 → 골드: N행
++ ", ".join(f"{k} {v}" for k, v in sorted((f.get("corrections") or {}).items())))	수정 종류'.
+for t in train[-30:]:	최근 학습 30건.
+lines.append(f"[학습]   {t.get('time', '')}  {t.get('classifier', '')} {t.get('n', 0)}문장, 교차검증 {t.get('cv_accuracy', 0):.1%} → {t.get('out', '')}")	학습 이력 한 줄.
+self._set_text(self.fb_log, "\n".join(sorted(lines, key=lambda s: s[9:28])) or "아직 피드백·학습 이력이 없습니다.")	시각 기준으로 정렬해 글 상자에 (없으면 안내).
+def show_run(self) -> None:	실행을 골랐을 때 상세를 보여 주는 메서드.
+sel = self.run_tree.selection()	선택.
+if not sel:	없으면
+return	끝.
+r = next((x for x in self.runs if x.get("run_id") == sel[0]), None)	해당 실행 사전.
+if r is None:	없으면
+return	끝.
+s, st = r.get("settings", {}), r.get("stats", {})	설정·통계.
+on = [sw.label for sw in SWITCHES if s.get(sw.field)]	켠 스위치 이름들.
+parts = [f"{r.get('run_id')}  {r.get('source_name')}  —  분류기 {s.get('classifier')} ({s.get('classifier_desc', '')}) / 임베딩 {s.get('embed_model')} / "	상세 첫 줄: 분류기·임베딩,
+f"추출 등급 {s.get('target_grades', 'A,B')} / 점수 기준 {s.get('accept_score')} / 켠 스위치: {', '.join(on) or '없음(기준선)'}",	등급·점수·스위치.
+f"목록 {st.get('list', 0)} (A{st.get('A', 0)} B{st.get('B', 0)} C{st.get('C', 0)} D{st.get('D', 0)}), 보류 {st.get('held', 0)}, 문장 {st.get('lines', 0)}, {r.get('elapsed_sec', 0)}초"]	둘째 줄: 수치.
+if r.get("prev_run_id"):	직전 실행이 있으면
+ch = r.get("changes") or {}	변경 수.
+parts.append(f"직전 실행 {r['prev_run_id']} 대비: 목록 진입 {ch.get('entered', 0)}, 이탈 {ch.get('left', 0)}, 등급 변경 {ch.get('grade', 0)}, 점수 변경 {ch.get('score', 0)}, 문장 변경 {ch.get('text', 0)}")	진입·이탈·등급·점수·문장 변경 수.
+parts.append("달라진 설정: " + ("; ".join(r.get("settings_diff", [])) or "없음"))	달라진 설정.
+else:	없으면
+parts.append("이 파일의 첫 실행이라 비교 대상이 없습니다.")	첫 실행 안내.
+self.detail_var.set("\n".join(parts))	상세 문구에 넣는다.
+def fill_changes(self, result) -> None:	변경 표를 채우는 메서드.
+self.change_tree.delete(*self.change_tree.get_children())	표 비우기.
+for c in getattr(result, "changes", []) or []:	변경 행마다
+self.change_tree.insert("", "end", values=(c["kind"], c["page"], c["line"], c["text"], c["old"], c["new"], c["source"], c["desc"]))	행 추가: 종류, 페이지, 줄, 글, 이전, 현재, 출처, 설명.
+if result is not None and result.info.prev_run_id and not result.changes:	직전 실행이 있는데 변경이 없으면
+self.change_tree.insert("", "end", values=("", "", "", "직전 실행과 달라진 문장이 없습니다.", "", "", "", ""))	안내 한 줄.
+def main(argv: list[str] | None = None) -> int:	진입 함수.
+app = App()	창 생성.
+app.mainloop()	이벤트 루프 (창이 닫힐 때까지).
+return 0	종료 코드 0.
+if __name__ == "__main__":	직접 실행했을 때
+sys.exit(main())	main 으로 종료.

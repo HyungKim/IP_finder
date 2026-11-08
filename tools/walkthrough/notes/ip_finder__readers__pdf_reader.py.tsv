@@ -1,0 +1,746 @@
+# ip_finder/readers/pdf_reader.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""PDF 리더 (PyMuPDF). 문자 좌표에서 줄·다단 읽기 순서·문단·표를 복원한다.	파일 설명 시작. 글자 좌표에서 줄·읽기 순서·문단·표를 복원한다.
+patent_finder 의 레이아웃 분석(XY-cut)을 PyMuPDF 위에 옮긴 것이다. 흐름:	patent_finder 의 XY-cut 을 PyMuPDF 위에 옮겼다는 출처.
+- 문자 → 줄(세로로 절반 이상 겹치는 문자) → 조각(큰 가로 간격에서 끊음: 다단·표 열 분리) → 재귀 XY-cut 으로 단과 블록 순서	흐름: 문자 → 줄 → 조각 → XY-cut → 문단. 각 단계의 기준.
+→ 같은 영역의 줄을 문단으로 묶음(줄 간격·글씨 크기·목록 표식·오른쪽 여백·들여쓰기로 판단). 줄 끝 하이픈은 이어 붙인다.	문단 묶기 기준과 하이픈 처리.
+- 페이지 위·아래 8% 띠의 글(문서명, 쪽 번호)은 단 나눔 분석에서 떼어 두고 위 띠는 맨 앞, 아래 띠는 맨 뒤에 읽는다. 지우지 않는다	위·아래 8% 띠(문서명, 쪽 번호)는 분석에서 떼어 두되 지우지 않는다.
+(반복 문구는 전처리 규칙이 거른다). 머리말·꼬리말을 지우던 정책은 v0.6.2 에서 폐기했다(제목이 지워지던 문제).	머리말·꼬리말 삭제 정책은 v0.6.2 에서 폐기했다는 기록.
+- 표는 선 개체가 있을 때 PyMuPDF find_tables 로 찾아 행마다 '열 제목: 셀 | …' 한 줄(source="table")로 만든다.	표는 find_tables 로 찾는다.
+- 제목 = 페이지 위쪽 35% 안에서 ① 본문 글씨의 1.15배 이상인 줄 중 가장 큰 것("font") → ② 굵은 글씨 줄 중 가장 위("bold")	제목 규칙 ①②③.
+→ ③ 본문의 0.8배 이상 크기인 첫 줄("first-line", 8pt 문서명 같은 작은 글은 건너뜀).	제목 규칙 ③ 의 예외.
+- 회전 페이지(/Rotate)는 화면 기준 좌표로 돌려 읽고, 화면에서 세로로 선 문자는 읽지 않고 센다.	회전 페이지와 세로 문자 처리.
+글꼴 매핑이 깨진 페이지(치환 문자 20% 초과)와 글자 없는 페이지는 본문 없이 둔다(전처리에서 '이미지 페이지').	글꼴 깨진 페이지와 빈 페이지는 이미지 페이지가 된다.
+"""	docstring 끝.
+from __future__ import annotations	새 문법 호환 선언.
+import os	환경 변수 접근용 모듈.
+import re	정규식.
+import statistics	중앙값 계산.
+from dataclasses import dataclass, field	dataclass 도구.
+from pathlib import Path	경로.
+from typing import Any	'어떤 타입이든' (Any).
+os.environ.setdefault("PYMUPDF_SUGGEST_LAYOUT_ANALYZER", "0")   # find_tables 가 pymupdf_layout 설치를 권하는 문구를 찍지 않게	PyMuPDF 가 표 인식 때 추가 패키지 설치를 권하는 문구를 끄는 환경 변수. import 전에 둔다.
+import pymupdf	PyMuPDF.
+from ..models import Document, Line, Page	모델.
+from ._text import clean, list_marker, table_lines	공용 텍스트 함수들.
+EDGE_ZONE = 0.08          # 페이지 위·아래 8% 띠: 본문 배치 분석에서 떼어 두고 앞·뒤에 읽는다 (지우지 않음)	위·아래 띠 비율 8%.
+TITLE_ZONE = 0.35         # 제목은 페이지 높이의 이 비율 안에 있어야 한다	제목 구역 35%.
+HEADING_RATIO = 1.15      # 본문 글씨의 이 배수 이상이면 제목·소제목	제목 크기 배수 1.15.
+TITLE_MIN_RATIO = 0.8     # 첫 줄을 제목으로 삼을 때(③) 본문 글씨의 이 배수 미만인 작은 글(문서명·쪽 번호)은 건너뛴다	첫 줄 제목 최소 크기 배수 0.8.
+_DATE_START = re.compile(r"^\d{4}\s*[./년]")	연도로 시작하는 줄 ('2026.', '2026년').
+_NUMBER_DOT_END = re.compile(r"\d\.$")	'1.' '2026.' 처럼 숫자+점으로 끝나는 줄 (문장 끝이 아님).
+MAX_VECTORS = 5000        # 선 개체가 이보다 많으면 표 인식을 건너뛴다 (도면 페이지)	선 개체가 이보다 많으면 표 인식을 건너뛴다 (도면 페이지).
+MAX_LEVEL = 3	목록 수준 최대 3.
+_FLAGS = pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_MEDIABOX_CLIP   # 합자는 풀고, 이미지 블록은 받지 않는다	글 추출 옵션: 공백 유지(합자 풀기), 페이지 안만, 이미지 블록 제외.
+@dataclass	@dataclass.
+class Char:	글자 하나.
+text: str	글자.
+x0: float	왼쪽 x.
+x1: float	오른쪽 x.
+top: float	위 y.
+bottom: float	아래 y.
+size: float	글씨 크기.
+bold: bool = False	굵은 글씨인지.
+@dataclass	@dataclass.
+class Fragment:	조각: 한 줄에서 가로로 이어진 글자 묶음, 또는 표 하나.
+"""같은 줄에서 가로로 이어진 문자 묶음, 또는 표 하나."""	설명.
+x0: float	왼쪽.
+x1: float	오른쪽.
+top: float	위.
+bottom: float	아래.
+chars: list[Char] = field(default_factory=list)	글자 목록 (기본 빈 리스트).
+line_id: int = -1	속한 줄 번호 (-1 은 없음).
+table: Any = None	표 데이터 (표 조각일 때만).
+@dataclass	@dataclass.
+class TextLine:	줄: 글과 글자 경계 좌표.
+text: str	글.
+xs: list[float]	글자마다의 x 좌표 (마지막은 끝 x). 단어 폭 계산에 쓴다.
+top: float	위.
+bottom: float	아래.
+size: float	글씨 크기 (중앙값).
+tabular: bool = False       # 큰 가로 간격으로 나뉜 칸이 둘 이상인 줄(공백으로 맞춘 표의 한 행). 앞뒤 줄과 문단으로 묶지 않는다	표 같은 줄인지 (칸이 둘 이상). 앞뒤 줄과 문단으로 묶지 않는다.
+bold: bool = False          # 글자 과반이 굵은 글씨	과반이 굵은지.
+@property	@property.
+def x0(self) -> float:	왼쪽 x.
+return self.xs[0]	첫 좌표.
+@property	@property.
+def x1(self) -> float:	오른쪽 x.
+return self.xs[-1]	마지막 좌표.
+@dataclass	@dataclass.
+class Block:	블록: 페이지 안의 읽기 단위.
+"""페이지 안의 읽기 단위. kind: heading | paragraph | list_item | table_row."""	종류 네 가지.
+kind: str	종류.
+text: str	글.
+top: float	위 y.
+size: float	글씨 크기.
+level: int = 0	목록 수준.
+rows: list[list[str]] | None = None     # table_row 묶음: 표 전체의 셀 텍스트	표 블록일 때 셀 글 행들.
+bold: bool = False	굵은지.
+x0: float = 0.0	왼쪽.
+x1: float = 0.0	오른쪽.
+is_title: bool = False	제목으로 뽑혔는지.
+title_source: str = ""	제목 출처.
+# ------------------------------------------------------------------ 문자 → 줄 → 조각	절 구분 주석: 문자 → 줄 → 조각.
+def cluster_lines(chars: list[Char]) -> list[list[Char]]:	글자들을 줄로 묶는 함수. 돌려주는 것은 '줄 = 글자 리스트' 의 리스트.
+"""세로로 절반 이상 겹치는 문자를 같은 줄로 묶는다."""	기준: 세로로 절반 이상 겹치면 같은 줄.
+lines: list[dict[str, Any]] = []	만들어 가는 줄 목록. 줄마다 top, bottom, chars 를 가진 사전.
+for char in sorted(chars, key=lambda c: (c.top, c.x0)):	글자를 위에서 아래, 왼쪽에서 오른쪽 순으로 정렬해 하나씩.
+height = char.bottom - char.top	글자 높이.
+if height <= 0:	높이가 0 이하인 이상한 글자는
+continue	건너뛴다.
+target = None	붙을 줄을 아직 못 찾음.
+for line in reversed(lines[-8:]):	최근 8줄만 뒤에서부터 본다 (전체를 보지 않아 빠르다).
+overlap = min(line["bottom"], char.bottom) - max(line["top"], char.top)	글자와 줄의 세로 겹침 길이.
+base = min(height, line["bottom"] - line["top"])	둘 중 낮은 높이.
+if base > 0 and overlap / base >= 0.5:	겹침이 낮은 높이의 절반 이상이면
+target = line	그 줄에 붙이기로 하고
+break	찾기 끝.
+if target is None:	붙을 줄이 없으면
+lines.append({"top": char.top, "bottom": char.bottom, "chars": [char]})	새 줄을 만든다.
+else:	있으면
+target["chars"].append(char)	그 줄에 글자를 더하고
+if height > target["bottom"] - target["top"]:	글자가 줄보다 크면
+target["top"], target["bottom"] = char.top, char.bottom	줄의 높이를 글자 높이로 넓힌다.
+return [line["chars"] for line in lines]	줄마다 글자 리스트만 꺼내 돌려준다.
+def split_fragments(line_chars: list[Char], line_id: int) -> list[Fragment]:	한 줄의 글자를 큰 가로 간격에서 끊어 조각(Fragment)으로 만드는 함수.
+"""한 줄의 문자를 큰 가로 간격에서 끊어 조각으로 만든다 (다단·표 열 분리용). 공백 문자는 간격으로만 보고 버린다."""	설명: 다단과 표 열이 여기서 갈라진다. 공백 글자는 간격으로만 쓴다.
+ordered = sorted((c for c in line_chars if not c.text.isspace()), key=lambda c: c.x0)	공백이 아닌 글자를 왼쪽부터 정렬.
+if not ordered:	글자가 없으면
+return []	빈 목록.
+groups: list[list[Char]] = [[ordered[0]]]	첫 글자로 첫 묶음 시작.
+for previous, current in zip(ordered, ordered[1:]):	앞 글자와 현재 글자를 짝지어 (zip 으로 이웃끼리)
+if current.x0 - previous.x1 > 1.4 * max(previous.size, current.size):	둘 사이 간격이 글씨 크기의 1.4배보다 크면
+groups.append([current])	새 묶음을 시작하고
+else:	아니면
+groups[-1].append(current)	현재 묶음에 붙인다.
+fragments = []	결과 조각 목록.
+for group in groups:	묶음마다
+visible = [c for c in group if not c.text.isspace()]	보이는 글자만.
+if not visible:	없으면
+continue	건너뛴다.
+fragments.append(Fragment(x0=min(c.x0 for c in visible), x1=max(c.x1 for c in visible),	조각 생성: 가장 왼쪽 x0, 가장 오른쪽 x1,
+top=min(c.top for c in visible), bottom=max(c.bottom for c in visible),	가장 위 top, 가장 아래 bottom,
+chars=group, line_id=line_id))	글자 목록과 줄 번호.
+return fragments	조각 목록을 돌려준다.
+def build_line(chars: list[Char]) -> TextLine | None:	글자 목록으로 줄(TextLine)을 만드는 함수. 공백은 간격으로 복원한다.
+"""문자 목록에서 줄 텍스트와 문자 경계 x 좌표(xs)를 만든다. 단어 사이 공백은 간격으로 복원한다."""	설명.
+ordered = sorted(chars, key=lambda c: c.x0)	왼쪽부터 정렬.
+text: list[str] = []	글자들.
+xs: list[float] = []	글자 경계 x 들.
+previous: Char | None = None	앞 글자.
+last_x1 = 0.0	마지막 오른쪽 x.
+for char in ordered:	글자마다
+if char.text.isspace() or not char.text:	공백 글자이거나 빈 글자면
+if text and text[-1] != " ":	마지막에 공백이 아직 없으면
+text.append(" ")	공백 하나 넣고
+xs.append(char.x0)	좌표도.
+previous = None	앞 글자 없음으로.
+continue	다음으로.
+if previous is not None and char.x0 - previous.x1 > 0.18 * max(previous.size, char.size):	앞 글자와의 간격이 글씨의 18% 넘으면 (단어 사이)
+if text and text[-1] != " ":	공백이 아직 없으면
+text.append(" ")	공백을 넣고
+xs.append(previous.x1)	좌표는 앞 글자의 오른쪽.
+count = len(char.text)	이 항목의 글자 수 (합자는 여러 글자일 수 있음).
+step = (char.x1 - char.x0) / count	글자 하나당 폭.
+for index, ch in enumerate(char.text):	글자마다
+text.append(ch)	글자 추가,
+xs.append(char.x0 + step * index)	좌표 추가 (균등 분배).
+last_x1 = char.x1	마지막 오른쪽 x 갱신.
+previous = char	앞 글자로.
+while text and text[-1] == " ":	끝의 공백들은
+text.pop()	지우고
+xs.pop()	좌표도.
+if not text:	글이 없으면
+return None	None.
+xs.append(last_x1)	끝 좌표 추가.
+visible = [c for c in ordered if not c.text.isspace()]	보이는 글자들.
+return TextLine(text="".join(text), xs=xs, top=min(c.top for c in visible), bottom=max(c.bottom for c in visible),	TextLine: 글, 좌표, 위·아래,
+size=statistics.median(c.size for c in visible), bold=sum(1 for c in visible if c.bold) * 2 > len(visible))	크기 중앙값, 과반이 굵은지.
+def _band_lines(line_chars: list[Char]) -> list[TextLine]:	위·아래 띠의 한 줄을 조각별로 각각 줄로 만드는 함수.
+"""위·아래 띠의 한 줄을 큰 가로 간격에서 나눠 각각 한 줄로 (왼쪽의 문서명과 오른쪽의 쪽 번호가 한 줄에 있어도 따로)."""	설명: 문서명과 쪽 번호를 따로.
+out = []	결과.
+for frag in split_fragments(line_chars, -1):	큰 간격에서 조각으로 나눠 (줄 번호 -1)
+built = build_line(frag.chars)	줄로 만들고
+if built is not None:	비어 있지 않으면
+out.append(built)	모은다.
+return out	돌려준다.
+# ------------------------------------------------------------------ XY-cut 읽기 순서	절 구분 주석: XY-cut.
+def lower_quartile(values: list[float]) -> float:	하위 사분위 함수 (보통 줄 간격 추정).
+"""일반적인 줄 간격의 추정값. 문단 간격이 섞여 있어도 흔들리지 않게 하위 사분위를 쓴다."""	설명.
+if not values:	값이 없으면
+return 0.0	0.
+ordered = sorted(values)	정렬.
+return ordered[(len(ordered) - 1) // 4]	아래에서 1/4 지점의 값.
+def _gaps(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:	구간들 사이의 빈 틈을 구하는 함수.
+merged: list[list[float]] = []	겹치는 구간을 합친 목록.
+for start, end in sorted(intervals):	시작 순으로 정렬해
+if merged and start <= merged[-1][1]:	앞 구간과 겹치면
+merged[-1][1] = max(merged[-1][1], end)	끝을 늘려 합치고
+else:	아니면
+merged.append([start, end])	새 구간.
+return [(a[1], b[0]) for a, b in zip(merged, merged[1:])]	이웃 구간 사이 (앞 끝, 뒤 시작) 이 틈.
+def xy_cut(fragments: list[Fragment], x_gap: float, y_gap: float, min_col_width: float,	재귀 XY-cut. 조각 목록을 단과 블록 순서로 나눈다. x_gap 은 단 사이 최소 여백, y_gap 은 위아래 최소 여백,
+stats: dict[str, int], column: str = "c", standalone: set[int] | None = None) -> list[tuple[str, list[Fragment]]]:	min_col_width 는 단의 최소 폭, stats 는 통계(자른 횟수), column 은 단 키 문자열, standalone 은 단에 속하지 않는 조각들의 id 집합.
+"""재귀 XY-cut. 세로 여백(단 구분)을 먼저 찾고, 없으면 가장 큰 가로 여백에서 위아래로 나눈다.	설명: 세로 여백을 먼저, 없으면 가로 여백.
+반환: (단 키, 조각 목록). 좌우로 나뉠 때만 단 키가 달라지고, 위아래로 나뉜 잎들은 같은 단 키를 갖는다.	반환 형태 설명.
+standalone: 제목 크기 글·표처럼 단에 속하지 않는 조각의 id. 두 단의 위·아래에 있으면 단보다 앞·뒤에 따로 읽는다.	standalone 설명.
+"""	docstring 끝.
+if len(fragments) <= 1:	조각이 하나 이하면 더 나눌 것이 없다.
+return [(column, fragments)] if fragments else []	하나면 (단 키, 그것), 없으면 빈 목록.
+standalone = standalone or set()	standalone 이 None 이면 빈 집합으로.
+x_candidates = sorted(_gaps([(f.x0, f.x1) for f in fragments]), key=lambda g: g[0] - g[1])	조각들의 가로 구간 사이 빈 틈(_gaps)을 넓은 순으로 정렬 (g[0]-g[1] 는 음수라 넓을수록 앞).
+for start, end in x_candidates:	넓은 틈부터
+if end - start < x_gap:	틈이 최소 여백보다 좁으면
+break	더 볼 것 없이 끝.
+left = [f for f in fragments if f.x1 <= start + 0.01]	틈 왼쪽에 끝나는 조각들.
+right = [f for f in fragments if f.x1 > start + 0.01]	틈 오른쪽의 조각들.
+widths = [max(f.x1 for f in side) - min(f.x0 for f in side) for side in (left, right)]	양쪽 각각의 폭.
+if min(widths) >= min_col_width:	좁은 쪽도 최소 단 폭 이상이면 진짜 단이다.
+stats["x_cuts"] = stats.get("x_cuts", 0) + 1	세로 자르기 횟수를 센다 (다단 페이지 경고용).
+# 두 단이 함께 있는 세로 구간(band) 위·아래에만 있는 조각(단 위의 제목, 단 아래의 소제목·캡션)은	주석: 두 단 사이의 전체 폭 조각 처리 이유 첫 줄.
+# 단에 넣지 않고 앞뒤에 따로 둔다. 그래야 왼쪽 단 끝에 붙은 전체 폭 소제목이 오른쪽 단보다 먼저 읽히지 않는다.	주석 둘째 줄.
+band_top = max(min(f.top for f in left), min(f.top for f in right))	두 단이 함께 있는 세로 구간의 위쪽 경계.
+band_bottom = min(max(f.bottom for f in left), max(f.bottom for f in right))	아래쪽 경계.
+head = [f for f in fragments if id(f) in standalone and f.bottom + y_gap <= band_top]	구간 위에 있는 독립 조각들(제목).
+tail = [f for f in fragments if id(f) in standalone and f.top >= band_bottom + y_gap]	구간 아래에 있는 독립 조각들(캡션·소제목).
+if head or tail:	그런 것이 있으면
+band = [f for f in fragments if f not in head and f not in tail]	나머지(구간 안)만 band 로 두고
+return (xy_cut(head, x_gap, y_gap, min_col_width, stats, column, standalone)	head 를 먼저 (재귀),
++ xy_cut([f for f in band if f in left], x_gap, y_gap, min_col_width, stats, column + "L", standalone)	왼쪽 단(키에 L 추가),
++ xy_cut([f for f in band if f in right], x_gap, y_gap, min_col_width, stats, column + "R", standalone)	오른쪽 단(키에 R 추가),
++ xy_cut(tail, x_gap, y_gap, min_col_width, stats, column, standalone))	tail 을 마지막에 이어 돌려준다.
+return (xy_cut(left, x_gap, y_gap, min_col_width, stats, column + "L", standalone)	head/tail 이 없으면 왼쪽 단,
++ xy_cut(right, x_gap, y_gap, min_col_width, stats, column + "R", standalone))	오른쪽 단 순으로.
+y_candidates = sorted(_gaps([(f.top, f.bottom) for f in fragments]), key=lambda g: g[0] - g[1])	세로로 못 잘랐으면 가로 틈(위아래 여백)을 넓은 순으로.
+if y_candidates and y_candidates[0][1] - y_candidates[0][0] >= y_gap:	가장 넓은 가로 틈이 최소 여백 이상이면
+start = y_candidates[0][0]	그 틈의 시작 y.
+upper = [f for f in fragments if f.bottom <= start + 0.01]	틈 위의 조각들.
+lower = [f for f in fragments if f.bottom > start + 0.01]	틈 아래의 조각들.
+return (xy_cut(upper, x_gap, y_gap, min_col_width, stats, column, standalone)	위를 먼저 (같은 단 키),
++ xy_cut(lower, x_gap, y_gap, min_col_width, stats, column, standalone))	아래를 이어서.
+return [(column, fragments)]	어느 쪽으로도 못 자르면 이 묶음이 잎(leaf) 하나.
+# ------------------------------------------------------------------ 줄 → 문단	절 구분 주석: 줄 → 문단.
+def _first_word_width(line: TextLine) -> float:	줄의 첫 단어 폭을 구하는 함수.
+space = line.text.find(" ")	첫 공백 위치.
+end = space if space > 0 else len(line.text)	공백이 없으면 끝까지.
+return line.xs[end] - line.xs[0]	경계 좌표 차이.
+def group_paragraphs(lines: list[TextLine], right_edge: float) -> list[list[TextLine]]:	같은 영역의 줄들을 문단으로 묶는 함수. right_edge 는 단의 오른쪽 끝.
+"""같은 영역 안의 줄을 문단으로 묶는다."""	설명.
+if not lines:	줄이 없으면
+return []	빈 목록.
+gaps = [b.top - a.bottom for a, b in zip(lines, lines[1:])]	이웃 줄 사이 간격 목록.
+median_gap = lower_quartile([g for g in gaps if g > 0])	양수 간격의 하위 사분위를 '보통 줄 간격' 으로 (문단 간격이 섞여도 흔들리지 않게).
+paragraphs: list[list[TextLine]] = [[lines[0]]]	첫 줄로 첫 문단 시작.
+for previous, current in zip(lines, lines[1:]):	앞 줄과 현재 줄을 짝지어
+size = max(previous.size, current.size)	둘 중 큰 글씨 크기.
+first = paragraphs[-1][0]	현재 문단의 첫 줄.
+starts_marker = bool(list_marker(current.text)[0])	신호 1: 현재 줄이 목록 표식으로 시작하는가.
+size_change = abs(previous.size - current.size) > 0.15 * size	신호 2: 글씨 크기가 15% 넘게 달라졌는가.
+big_gap = (current.top - previous.bottom) > max(0.5 * size, 1.5 * median_gap + 0.5)	신호 3: 줄 간격이 보통보다 많이 큰가 (글씨 절반 또는 보통 간격의 1.5배+0.5 중 큰 값).
+# 다음 줄의 첫 단어가 앞줄에 들어갈 자리가 있었다면 의도적인 줄바꿈이다.	주석: 의도적 줄바꿈 판단.
+room = right_edge - previous.x1	앞 줄 오른쪽에 남은 여유.
+hyphenated = (len(previous.text) >= 2 and previous.text[-1] == "-" and previous.text[-2].isalpha()	앞 줄이 영문 하이픈으로 끝나고
+and current.text[:1].isascii() and current.text[:1].islower())	다음 줄이 영문 소문자로 시작하면 하이픈 분철이다.
+hard_break = not hyphenated and room > _first_word_width(current) + 0.6 * size	신호 4: 분철이 아닌데 다음 줄 첫 단어가 앞 줄에 들어갈 자리가 있었다면 일부러 줄을 바꾼 것.
+hanging = bool(list_marker(first.text)[0])	문단 첫 줄이 목록 표식이면 내어쓰기(hanging) 문단.
+indented = not hanging and current.x0 - previous.x0 > 0.8 * size	신호 5: 내어쓰기가 아닌데 현재 줄이 글씨 0.8배 넘게 들여쓰였는가.
+# 앞줄이 문장 부호로 끝났거나(번호 "1." "2026." 제외) 다음 줄이 연도로 시작하면 다른 문장이다.	주석: 문장 부호·연도 판단.
+prev_text = previous.text.rstrip()	앞 줄 글의 끝 공백 제거.
+sentence_end = prev_text[-1:] in ".!?。" and not _NUMBER_DOT_END.search(prev_text)	신호 6: 앞 줄이 . ! ? 。 로 끝나는데 '1.' 같은 번호 끝은 아닌가.
+date_start = bool(_DATE_START.match(current.text))	신호 7: 현재 줄이 연도(2026. 또는 2026년)로 시작하는가.
+if (starts_marker or size_change or big_gap or hard_break or indented or sentence_end or date_start	신호 중 하나라도 참이거나
+or current.tabular or previous.tabular):	둘 중 하나가 표 같은 줄(tabular)이면
+paragraphs.append([current])	새 문단을 시작하고
+else:	아니면
+paragraphs[-1].append(current)	현재 문단에 붙인다.
+return paragraphs	문단 목록을 돌려준다.
+def join_lines(lines: list[TextLine]) -> tuple[str, int]:	문단의 줄들을 한 문장으로 잇는 함수. (글, 하이픈 제거 수) 를 돌려준다.
+"""문단의 줄을 공백 하나로 잇는다. 첫 줄의 글머리 기호는 떼고, 영문 줄 끝 하이픈은 다음 줄과 붙인다. 반환: (text, 하이픈 제거 수)."""	설명.
+pieces: list[str] = []	이을 조각들.
+dehyphenated = 0	하이픈을 뗀 횟수.
+for index, line in enumerate(lines):	줄마다 번호와 함께
+text = line.text	줄 글.
+if index == 0:	첫 줄이면
+kind, body_start = list_marker(text)	목록 표식 종류와 본문 시작 위치를 보고
+if kind == "bullet":	글머리 기호면
+text = text[body_start:]	기호를 떼고 본문부터 (번호 표식 '1.' 은 의미가 있어 남긴다).
+is_last = index == len(lines) - 1	마지막 줄인가.
+joiner = "" if is_last else " "	마지막이면 뒤에 아무것도 안 붙이고, 아니면 공백 하나.
+if not is_last and len(text) >= 2 and text[-1] in "-­":	마지막이 아니고 줄 끝이 하이픈(또는 소프트 하이픈)이면
+following = lines[index + 1].text[:1]	다음 줄의 첫 글자.
+if text[-1] == "­" or (text[-2].isascii() and text[-2].isalpha() and following.isascii() and following.islower()):	소프트 하이픈이거나, 영문자-하이픈 뒤에 영문 소문자가 오면 분철이므로
+text = text[:-1]	하이픈을 떼고
+joiner = ""	공백 없이 붙이고
+dehyphenated += 1	횟수를 센다.
+pieces.append(text + joiner)	조각을 모은다.
+return "".join(pieces).rstrip(), dehyphenated	전부 이어 끝 공백을 떼고, 횟수와 함께 돌려준다.
+# ------------------------------------------------------------------ 선 없는 표 (공백으로 칸을 맞춘 행 묶음)	절 구분 주석: 선 없는 표.
+_MARKER_ONLY = re.compile(r"\(?\d{1,3}[.)]|\(?[가-힣a-zA-Z][.)]|[①-⑳]")	번호·글머리 표식만 있는 조각 꼴 ('1.', '(가)', '①').
+_BULLET_CHARS = set("•∙‣⁃◦○●◎◇◆□■▪▫▶▷►▻➢➤➔※✓✔·-–—*+→")	글머리 기호 글자 집합.
+def _marker_only(text: str) -> bool:	글이 표식 하나뿐인지.
+t = text.strip()	양끝 공백 제거.
+return t in _BULLET_CHARS or bool(_MARKER_ONLY.fullmatch(t))	기호 집합에 있거나 번호 꼴에 완전히 맞으면 참.
+def _is_big(fragment: Fragment, body_size: float) -> bool:	조각이 제목 크기인지.
+"""제목·소제목 크기의 조각인지 (문자 크기 중앙값 기준)."""	설명.
+return _big_chars(fragment.chars, body_size)	글자들로 판정.
+def _big_chars(chars: list[Char], body_size: float) -> bool:	글자 묶음이 제목 크기인지.
+sizes = [c.size for c in chars if c.text.strip()]	보이는 글자들의 크기.
+return bool(sizes) and statistics.median(sizes) >= HEADING_RATIO * body_size	중앙값이 본문의 1.15배 이상이면 참.
+def _merge_fragments(parts: list[Fragment]) -> Fragment:	조각들을 하나로 합치는 함수 (제목 줄용).
+"""한 줄의 조각들을 하나로 합친다 (제목 줄은 간격이 커도 쪼개지 않는다)."""	설명.
+chars = [c for f in parts for c in f.chars]	모든 글자.
+return Fragment(x0=min(f.x0 for f in parts), x1=max(f.x1 for f in parts), top=min(f.top for f in parts),	가장 왼쪽·오른쪽·위,
+bottom=max(f.bottom for f in parts), chars=chars, line_id=parts[0].line_id)	가장 아래, 글자들, 첫 조각의 줄 번호.
+_JOINERS = set("-–—:·/")      # 칸 사이에 홀로 있으면 구분선이 아니라 이음표: "개선안 2 - 냉각 유로" 는 한 줄	칸 사이에 홀로 있으면 이음표로 보는 글자들 (구분선 아님).
+# 제목 크기 줄 안에서 새 항목이 시작되는 표식: 번호("2.", "3)", "①")나 전용 글머리 기호. 대시("- 부제")는 이어지는 글로 본다.	주석: 제목 줄 안의 새 항목 표식.
+_NEW_ITEM = re.compile(r"^\s*(?:\(?\d{1,3}[.)]|\(?[a-zA-Z][.)]|\(?[가-힣][.)]|[①-⑳]|[ⅰ-ⅹⅠ-Ⅹ][.)])\s+|^\s*[•∙‣⁃◦○●◎◇◆□■▪▫▶▷►▻➢➤➔※✓✔]")	번호('2.', '3)', '①', 'ⅰ.')+공백 또는 전용 글머리 기호로 시작하는 꼴.
+def _heading_groups(parts: list[Fragment]) -> list[list[Fragment]]:	제목 크기 줄의 조각을 묶는 함수.
+"""제목 크기 줄의 조각을 묶는다. 간격이 커도 한 제목이지만, 번호·글머리 기호로 시작하는 조각은 새 항목(옆 단의 소제목)이다."""	설명: 번호·글머리로 시작하는 조각만 새 항목.
+groups: list[list[Fragment]] = []	묶음들.
+for f in sorted(parts, key=lambda f: f.x0):	왼쪽부터
+line = build_line(f.chars)	조각을 줄로 만들어
+text = line.text if line else ""	글.
+if groups and not _NEW_ITEM.match(text):	묶음이 있고 새 항목 표식이 아니면
+groups[-1].append(f)	현재 묶음에 붙이고
+else:	아니면
+groups.append([f])	새 묶음.
+return groups	돌려준다.
+def _cells(parts: list[Fragment]) -> list[tuple[Fragment, TextLine]]:	줄의 조각에서 표식만 있는 것을 뺀 칸 목록.
+"""줄의 조각 중 글머리 기호·번호만 있는 조각을 뺀 칸 목록."""	설명.
+out = []	결과.
+for f in parts:	조각마다
+tl = build_line(f.chars)	줄로.
+if tl is not None and not _marker_only(tl.text):	글이 있고 표식만이 아니면
+out.append((f, tl))	(조각, 줄) 로 모은다.
+return out	돌려준다.
+def _aligned(prev: list[tuple[Fragment, TextLine]], cur: list[tuple[Fragment, TextLine]], size: float) -> bool:	앞 행과 현재 행이 같은 표의 행인지.
+"""칸 수가 같고 세로로 바로 아래에 있으며 칸마다 왼쪽 또는 오른쪽 끝이 맞으면 같은 표의 행."""	설명: 칸 수 같고, 바로 아래, 칸 끝이 맞음.
+if len(prev) != len(cur):	칸 수가 다르면
+return False	아니다.
+if cur[0][0].top - max(f.bottom for f, _ in prev) > 2.0 * size:	세로 간격이 글씨의 2배 넘으면
+return False	아니다.
+tol = 1.5 * size	허용 오차 1.5배.
+return all(abs(a.x0 - b.x0) <= tol or abs(a.x1 - b.x1) <= tol for (a, _), (b, _) in zip(prev, cur))	칸마다 왼쪽 또는 오른쪽 끝이 오차 안에서 맞으면 참.
+def _prose_like(rows: list[list[tuple[Fragment, TextLine]]]) -> bool:	행 묶음이 표가 아니라 2단 본문처럼 보이는지.
+"""좌우 2단 본문처럼 보이는 행 묶음인지. 글머리 기호로 시작하는 칸이 둘 이상이거나,	설명 1: 글머리 기호 칸이 둘 이상.
+어느 열이든 칸 대부분이 길고(20자 이상) 열 폭을 거의 채우면(75% 이상) 표가 아니라 단으로 본다."""	설명 2: 어느 열이든 긴 칸이 열 폭을 채움.
+if sum(1 for cells in rows if any(list_marker(tl.text)[0] == "bullet" for _, tl in cells)) >= 2:	글머리 기호로 시작하는 칸이 있는 행이 둘 이상이면
+return True	본문.
+for col in range(len(rows[0])):	열마다
+widths = [cells[col][0].x1 - cells[col][0].x0 for cells in rows]	그 열 칸들의 폭.
+wmax = max(widths) or 1.0	최대 폭 (0 방지).
+long_cells = sum(1 for cells, w in zip(rows, widths) if len(cells[col][1].text) >= 20 and w >= 0.75 * wmax)	20자 이상이고 최대 폭의 75% 이상인 칸 수.
+if long_cells >= max(2, 0.6 * len(rows)):	그런 칸이 2개 이상이고 행의 60% 이상이면
+return True	본문.
+return False	아니면 표.
+def text_tables(per_line: list[tuple[int, list[Fragment]]], size: float) -> tuple[list[dict[str, Any]], set[int], set[int]]:	선 없는 표를 찾는 함수. 줄 번호와 조각 목록을 받는다.
+"""칸이 둘 이상인 줄이 같은 꼴로 둘 이상 이어지면 선 없는 표로 본다.	설명: 칸이 둘 이상인 줄이 같은 꼴로 이어지면 표.
+반환: (표 목록, 표에 들어간 줄 id, 칸이 둘 이상인 줄 id)."""	반환 설명.
+cands: list[tuple[int, list[tuple[Fragment, TextLine]], list[Fragment]]] = []	후보: (줄 번호, 칸들, 조각들).
+for line_id, parts in per_line:	줄마다
+cells = _cells(parts)	칸 목록.
+if len(cells) >= 2:	칸이 둘 이상이면
+cands.append((line_id, cells, parts))	후보.
+tabular = {line_id for line_id, _, _ in cands}	칸이 둘 이상인 줄 번호 집합.
+runs: list[list[tuple[int, list[tuple[Fragment, TextLine]], list[Fragment]]]] = []	이어지는 행 묶음들.
+current: list = []	현재 묶음.
+for cand in cands:	후보마다
+if current and cand[0] == current[-1][0] + 1 and _aligned(current[-1][1], cand[1], size):	현재 묶음이 있고 바로 다음 줄이며 칸이 정렬돼 있으면
+current.append(cand)	이어 붙이고
+else:	아니면
+if len(current) >= 2:	현재 묶음이 두 행 이상이면
+runs.append(current)	확정하고
+current = [cand]	새 묶음.
+if len(current) >= 2:	마지막 묶음이 두 행 이상이면
+runs.append(current)	확정.
+tables, used = [], set()	표 목록과 쓰인 줄 번호.
+for run in runs:	묶음마다
+if _prose_like([cells for _, cells, _ in run]):	본문처럼 보이면
+continue	표로 보지 않는다.
+frags = [f for _, _, parts in run for f in parts]	모든 조각.
+tables.append({"bbox": (min(f.x0 for f in frags), min(f.top for f in frags), max(f.x1 for f in frags), max(f.bottom for f in frags)),	표 사전: 테두리(최소 x, 최소 위, 최대 x, 최대 아래),
+"text_rows": [[tl.text for _, tl in cells] for _, cells, _ in run], "chars": []})	행별 셀 글, 글자 목록은 비움 (이미 글로 있음).
+used.update(line_id for line_id, _, _ in run)	쓰인 줄 번호 기록.
+return tables, used, tabular	돌려준다.
+# ------------------------------------------------------------------ 페이지	절 구분 주석: 페이지.
+class _PageParser:	페이지 하나를 분석하는 클래스.
+def __init__(self, page: pymupdf.Page) -> None:	생성자: PyMuPDF 페이지.
+self.page = page	페이지.
+self.rotation = int(page.rotation or 0)	회전 각도.
+self.width = float(page.rect.width) or 1.0	너비 (0 방지).
+self.height = float(page.rect.height) or 1.0	높이.
+self.blocks: list[Block] = []	블록 목록.
+self.x_gap = 10.0	단 사이 최소 간격 (parse 가 다시 정한다).
+self.body_size = 10.0	본문 글씨 크기 (parse 가 정한다).
+self.meta: dict[str, Any] = {"rotated_chars": 0, "x_cuts": 0, "tables": 0, "text_tables": 0, "dehyphenated": 0,	통계 사전: 세로 글자, 세로 자르기, 표, 선 없는 표, 하이픈,
+"images": 0, "vectors": 0}	그림, 선 개체.
+# ---- 문자 수집 ----	주석: 문자 수집.
+def _chars(self) -> list[Char]:	페이지의 글자를 모두 모아 Char 목록으로 돌려주는 메서드.
+page = self.page	PyMuPDF 페이지 객체.
+m = page.rotation_matrix	페이지 회전(/Rotate)을 화면 기준으로 바꾸는 행렬.
+lin = pymupdf.Matrix(m.a, m.b, m.c, m.d, 0, 0)	이동 성분(e, f)을 뺀 선형 부분만. 글의 진행 방향을 돌리는 데 쓴다.
+chars: list[Char] = []	결과 목록.
+rotated = 0	세로로 선 글자 수.
+for block in page.get_text("rawdict", flags=_FLAGS).get("blocks", []):	페이지의 글을 'rawdict'(글자 단위 사전) 형태로 받아 블록마다 반복. _FLAGS 는 합자를 풀고 이미지 블록을 빼는 옵션.
+if block.get("type") != 0:	글 블록(type 0)이 아니면
+continue	건너뛴다.
+for ln in block.get("lines", []):	블록 안의 줄마다
+d = pymupdf.Point(ln.get("dir", (1, 0))) * lin        # 화면 기준 글 진행 방향	줄의 글 진행 방향 벡터를 화면 기준으로 돌린다.
+upright = abs(d.y) < 0.1 and d.x > 0	오른쪽으로 똑바로 가는 줄인지 (세로 성분이 거의 0, 가로 성분이 양수).
+for span in ln.get("spans", []):	줄 안의 스팬(같은 글꼴 구간)마다
+size = float(span.get("size") or 0.0)	글씨 크기. 없으면 0.
+bold = bool(int(span.get("flags") or 0) & 16) or "bold" in str(span.get("font") or "").lower()	굵은 글씨인지: 글꼴 플래그의 16 비트가 켜졌거나 글꼴 이름에 'bold' 가 있으면.
+for ch in span.get("chars", []):	스팬 안의 글자마다
+c = ch.get("c", "")	글자 하나.
+if not upright:	똑바로 선 줄이 아니면
+if c.strip():	빈 글자가 아닐 때
+rotated += 1	세로 글자로 센다.
+continue	읽지 않고 건너뛴다.
+r = pymupdf.Rect(ch["bbox"]) * m                    # 화면 기준 좌표	글자 상자(bbox)를 회전 행렬로 돌려 화면 기준 좌표로.
+chars.append(Char(c, r.x0, r.x1, r.y0, r.y1, size or (r.y1 - r.y0), bold))	Char 객체로 저장: 글자, 좌·우, 위·아래, 크기(없으면 높이로 대신), 굵기.
+self.meta["rotated_chars"] = rotated	세로 글자 수를 메타에 기록 (경고용).
+return chars	글자 목록을 돌려준다.
+def parse(self) -> None:	분석 본체. self.blocks 를 채운다.
+page = self.page	페이지.
+chars = self._chars()	글자들.
+visible = [c for c in chars if c.text.strip()]	보이는 글자.
+unmapped = sum(1 for c in visible if c.text == "�")	치환 문자(깨진 글꼴) 수.
+self.meta["text_chars"] = len(visible)	글자 수 기록.
+self.meta["unmapped_ratio"] = unmapped / len(visible) if visible else 0.0	깨진 비율.
+try:	그림 정보는 실패할 수 있어 try.
+images = page.get_image_info()	그림 목록.
+except Exception:	오류면
+images = []	빈 목록.
+area = self.width * self.height	페이지 면적.
+self.meta["images"] = len(images)	그림 수.
+self.meta["image_ratio"] = min(1.0, sum(max(0.0, i["bbox"][2] - i["bbox"][0]) * max(0.0, i["bbox"][3] - i["bbox"][1])	그림이 차지하는 면적 비율 (최대 1).
+for i in images if i.get("bbox")) / area) if area else 0.0	계속.
+try:	선 개체 수도 try.
+self.meta["vectors"] = len(page.get_cdrawings())	선·도형 개체 수.
+except Exception:	오류면
+self.meta["vectors"] = 0	0.
+if not visible or self.meta["unmapped_ratio"] > 0.2:	글자가 없거나 20% 넘게 깨졌으면
+return	본문 없이 끝 (이미지 페이지가 된다).
+body_size = self.body_size = statistics.median(c.size for c in visible)	본문 글씨 크기 = 글자 크기 중앙값.
+self.meta["body_size"] = body_size	기록.
+tables = self._tables(chars)	선 있는 표를 찾는다.
+table_chars = {id(c) for table in tables for c in table["chars"]}	표 안 글자들의 id.
+free = [c for c in chars if id(c) not in table_chars]	표 밖 글자들 (본문 분석 대상).
+# 위·아래 8% 띠의 줄(문서명·쪽 번호)은 단 나눔의 영향을 받지 않도록 본문 배치 분석에서 떼어 둔다. 지우지는 않는다.	주석: 위·아래 띠 처리.
+fragments: list[Fragment] = []	XY-cut 에 넣을 조각 목록.
+header_lines: list[TextLine] = []	위 띠(머리말)의 줄들.
+footer_lines: list[TextLine] = []	아래 띠(꼬리말)의 줄들.
+body_lines: list[list[Char]] = []	본문 줄들 (글자 리스트).
+for line_chars in cluster_lines(free):	표에 속하지 않은 글자(free)를 줄로 묶어 하나씩.
+shown = [c for c in line_chars if c.text.strip()]	보이는 글자만.
+if not shown:	없으면
+continue	건너뛴다.
+if build_line(line_chars) is None:	줄로 만들 수 없으면(빈 줄)
+continue	건너뛴다.
+if max(c.bottom for c in shown) < EDGE_ZONE * self.height:	줄의 바닥이 페이지 위 8% 안이면
+header_lines.extend(_band_lines(line_chars))	머리말 줄로 (큰 간격에서 나눠 문서명과 쪽 번호를 따로).
+elif min(c.top for c in shown) > (1 - EDGE_ZONE) * self.height:	줄의 꼭대기가 아래 8% 안이면
+footer_lines.extend(_band_lines(line_chars))	꼬리말 줄로.
+else:	그 밖은
+body_lines.append(line_chars)	본문 줄로.
+tops = []	줄마다 (top, bottom) 을 모을 목록 (줄 간격 추정용).
+per_line: list[tuple[int, list[Fragment]]] = []	줄 번호와 조각들의 쌍 목록.
+for line_id, line_chars in enumerate(body_lines):	본문 줄마다 번호를 붙여
+parts = split_fragments(line_chars, line_id)	큰 간격에서 조각으로 나눈다.
+if len(parts) > 1 and _big_chars(line_chars, body_size):	조각이 둘 이상인데 제목 크기 줄이면
+# 제목 크기 줄은 간격이 커도 한 줄 ("개선안 2   - 냉각 유로 이중화"). 번호로 시작하는 옆 단 소제목만 따로.	주석: 제목 크기 줄은 한 줄.
+parts = [_merge_fragments(g) for g in _heading_groups(parts)]	번호로 시작하는 조각만 따로 두고 나머지는 합친다.
+if parts:	조각이 있으면
+per_line.append((line_id, parts))	줄 번호와 함께 기록하고
+tops.append((min(p.top for p in parts), max(p.bottom for p in parts)))	그 줄의 위·아래를 기록.
+plain, used, _tabular = text_tables(per_line, body_size)	선 없는 표(공백으로 칸을 맞춘 행 묶음)를 찾는다. plain 은 찾은 표, used 는 표에 쓰인 줄 번호.
+self.meta["text_tables"] = len(plain)	찾은 수를 메타에.
+tables = tables + plain	선 있는 표와 합친다.
+for line_id, parts in per_line:	줄마다
+if line_id not in used:	표에 쓰이지 않은 줄이면
+fragments.extend(parts)	조각들을 XY-cut 입력에 넣는다.
+for table in tables:	표마다
+x0, top, x1, bottom = table["bbox"]	표의 테두리 좌표를 꺼내
+fragments.append(Fragment(x0=x0, x1=x1, top=top, bottom=bottom, table=table))	표 하나를 조각 하나로 넣는다 (table 필드에 표 데이터).
+tops.sort()	줄 위치들을 정렬.
+median_gap = lower_quartile([b[0] - a[1] for a, b in zip(tops, tops[1:]) if b[0] - a[1] > 0])	이웃 줄 간격의 하위 사분위 = 보통 줄 간격.
+stats: dict[str, int] = {}	자르기 통계.
+self.x_gap = max(1.5 * body_size, 10.0)	단 사이 최소 간격: 글씨 1.5배 또는 10pt 중 큰 값.
+standalone = {id(f) for f in fragments if f.table is not None or _is_big(f, body_size)}	단에 속하지 않는 조각들: 표와 제목 크기 글.
+leaves = xy_cut(fragments, x_gap=self.x_gap, y_gap=max(0.6 * body_size, 1.6 * median_gap + 1.0),	XY-cut 실행. y 최소 여백은 글씨 0.6배 또는 보통 간격 1.6배+1,
+min_col_width=max(8 * body_size, 0.15 * self.width), stats=stats, standalone=standalone)	최소 단 폭은 글씨 8배 또는 페이지 폭 15% 중 큰 값.
+self.meta["x_cuts"] = stats.get("x_cuts", 0)	세로 자르기 횟수 기록.
+# 잎마다 줄과 문단을 먼저 만들고, 목록 수준은 같은 단의 목록 항목 중 가장 왼쪽 것을 기준으로 정한다.	주석: 잎마다 문단 만들기.
+# 줄바꿈 판단에 쓰는 오른쪽 끝은 잎이 아니라 단 전체의 가장 긴 줄로 잡는다(짧은 줄 몇 개만 있는 잎에서 잘못 합치지 않게).	주석: 오른쪽 끝 기준.
+col_right: dict[str, float] = {}	단 키 → 그 단에서 가장 오른쪽 x.
+for column, leaf in leaves:	잎마다
+xs = [f.x1 for f in leaf if f.table is None]	표 아닌 조각들의 오른쪽 x.
+if xs:	있으면
+col_right[column] = max(col_right.get(column, 0.0), max(xs))	단의 최대값 갱신.
+prepared = [(column, self._leaf_items(leaf, col_right.get(column, 0.0))) for column, leaf in leaves]	잎마다 (단 키, 항목들) 로 미리 만든다. 항목 = 표 또는 문단.
+column_left: dict[str, float] = {}	단 키 → 목록 항목의 가장 왼쪽 x.
+any_left: dict[str, float] = {}	단 키 → 아무 줄의 가장 왼쪽 x.
+for column, items in prepared:	잎마다
+for _top, item in items:	항목마다
+if not isinstance(item, dict):	표가 아니면 (줄 묶음)
+any_left[column] = min(any_left.get(column, float("inf")), item[0].x0)	첫 줄의 왼쪽 x 로 최소값 갱신.
+if list_marker(item[0].text)[0] and item[0].size < HEADING_RATIO * body_size:	목록 표식이 있고 본문 크기면
+column_left[column] = min(column_left.get(column, float("inf")), item[0].x0)	목록 왼쪽 기준 갱신.
+for column, left in any_left.items():	단마다
+column_left.setdefault(column, left)	목록 기준이 없으면 아무 줄의 왼쪽으로.
+for line in sorted(header_lines, key=lambda l: (l.top, l.x0)):	머리말 줄을 위에서부터
+self._paragraph([line], body_size, line.x0)	각각 블록으로 (맨 앞).
+for column, items in prepared:	잎마다
+for _top, item in items:	항목마다
+if isinstance(item, dict):	표면
+self._table_block(item)	표 블록.
+else:	아니면
+self._paragraph(item, body_size, column_left[column])	문단 블록 (단의 왼쪽 기준으로 수준 계산).
+for line in sorted(footer_lines, key=lambda l: (l.top, l.x0)):	꼬리말 줄을
+self._paragraph([line], body_size, line.x0)	각각 블록으로 (맨 뒤).
+# ---- 표 ----	주석: 표.
+def _tables(self, chars: list[Char]) -> list[dict[str, Any]]:	선 있는 표를 찾는 메서드.
+vectors = self.meta.get("vectors", 0)	선 개체 수.
+if vectors == 0 or self.rotation:          # 선이 없으면 표도 없다. 회전 페이지의 표 좌표는 믿기 어려워 건너뛴다	선이 없거나 회전 페이지면 (좌표 불안정)
+return []	표 없음.
+if vectors > MAX_VECTORS:	선이 너무 많으면 (도면)
+self.meta["table_detection_skipped"] = True	건너뛴 사실을 기록하고
+return []	표 없음.
+try:	표 인식은 실패할 수 있어 try.
+found = self.page.find_tables().tables	PyMuPDF 표 인식.
+except Exception:	오류면
+return []	표 없음.
+tables = []	결과.
+for table in found:	찾은 표마다
+rows = [[cell for cell in row.cells] for row in table.rows]	행별 셀 상자들.
+if len(rows) < 2 or max((sum(1 for c in row if c) for row in rows), default=0) < 2:	행이 2 미만이거나 셀이 있는 열이 2 미만이면
+continue	표로 보지 않는다.
+x0, top, x1, bottom = (float(v) for v in table.bbox)	테두리 좌표.
+inside = [c for c in chars if x0 <= (c.x0 + c.x1) / 2 <= x1 and top <= (c.top + c.bottom) / 2 <= bottom]	중심이 테두리 안에 있는 글자들.
+if not any(c.text.strip() for c in inside):	글이 하나도 없으면
+continue	건너뛴다 (빈 격자).
+tables.append({"bbox": (x0, top, x1, bottom), "rows": rows, "chars": inside})	표 사전: 테두리, 행(셀 상자), 글자들.
+self.meta["tables"] = len(tables)	표 수 기록.
+return tables	돌려준다.
+def _cell_text(self, table: dict[str, Any], bbox) -> str:	셀 하나의 글을 만드는 메서드.
+x0, top, x1, bottom = (float(v) for v in bbox)	셀 좌표.
+cell_chars = [c for c in table["chars"] if x0 <= (c.x0 + c.x1) / 2 <= x1 and top <= (c.top + c.bottom) / 2 <= bottom]	중심이 셀 안인 글자들.
+lines = [line for line in (build_line(group) for group in cluster_lines(cell_chars)) if line]	줄로 묶고 줄 글로.
+if not lines:	없으면
+return ""	빈 문자열.
+text, removed = join_lines(sorted(lines, key=lambda l: l.top))	위에서 아래로 정렬해 한 문장으로 잇는다.
+self.meta["dehyphenated"] += removed	하이픈 통계.
+return text	글.
+def _table_block(self, table: dict[str, Any]) -> None:	표를 블록으로 넣는 메서드.
+if "text_rows" in table:	선 없는 표면 (글이 이미 있음)
+rows = table["text_rows"]	그 행들.
+else:	선 있는 표면
+rows = [[self._cell_text(table, bbox) if bbox else "" for bbox in row] for row in table["rows"]]	셀마다 글을 만든다 (셀 상자가 없으면 빈칸).
+if any(any(c.strip() for c in r) for r in rows):	글이 하나라도 있으면
+self.blocks.append(Block(kind="table_row", text="", top=table["bbox"][1], size=0.0, rows=rows))	table_row 블록 (위치는 표의 위 y).
+# ---- 본문 ----	주석: 본문.
+def _leaf_items(self, leaf: list[Fragment], right_edge: float = 0.0) -> list[tuple[float, Any]]:	잎(XY-cut 의 마지막 묶음) 하나의 내용을 (위 y, 표 또는 문단) 목록으로 만드는 메서드.
+"""잎 하나의 내용: (위쪽 좌표, 표 또는 문단의 줄 묶음)을 위에서 아래 순으로."""	설명.
+by_line: dict[int, list[Fragment]] = {}	줄 번호 → 그 줄의 조각들.
+for fragment in leaf:	조각마다
+if fragment.table is None:	표가 아니면
+by_line.setdefault(fragment.line_id, []).append(fragment)	줄 번호 아래에 모은다.
+# 조각 하나짜리 줄들이 이 잎의 본문 폭 [L, R]. 다른 줄에서 그 폭 바깥에 떨어져 있는 조각(옆 도형의 라벨 등)은 따로 뗀다.	주석: 본문 폭 바깥 조각.
+singles = [fs[0] for fs in by_line.values() if len(fs) == 1 and not _marker_only(build_line(fs[0].chars).text)]	조각이 하나뿐이고 표식만이 아닌 줄들의 조각 (본문 폭을 재는 기준).
+left = min((f.x0 for f in singles), default=None)	그 조각들의 가장 왼쪽 (없으면 None).
+right = max((f.x1 for f in singles), default=None)	가장 오른쪽.
+lines: list[TextLine] = []	줄 목록.
+apart: list[TextLine] = []         # 본문 폭 바깥의 조각: 문단 묶기에 끼우지 않고 각각 한 줄로	본문 폭 밖의 줄들 (문단 묶기에 넣지 않음).
+for frags in by_line.values():	줄마다
+frags.sort(key=lambda f: f.x0)	조각을 왼쪽부터 정렬.
+body, outliers = frags, []	본문 조각과 밖 조각 초기값.
+if left is not None and len(frags) >= 2:	기준 폭이 있고 조각이 둘 이상이면
+outliers = [f for f in frags if f.x1 < left - self.x_gap or f.x0 > right + self.x_gap]	본문 폭 바깥에 단 간격 이상 떨어진 조각들 (옆 도형의 라벨 등).
+body = [f for f in frags if f not in outliers]	나머지가 본문.
+for f in outliers:	밖 조각마다
+line = build_line(f.chars)	줄로 만들어
+if line is not None:	비어 있지 않으면
+apart.append(line)	따로 둔다.
+texts = [build_line(f.chars).text.strip() for f in body]	본문 조각들의 글.
+if not body:	본문 조각이 없으면
+continue	다음 줄로.
+if _big_chars([c for f in body for c in f.chars], self.body_size):	제목 크기 줄이면
+pieces = _heading_groups(body)                      # 제목 크기 줄: 번호로 시작하는 조각만 따로	번호로 시작하는 조각만 따로 (나머지는 한 제목).
+elif any(t in _JOINERS for t in texts[1:-1]):	칸 사이에 이음표('-', ':')만 홀로 있으면
+pieces = [body]                                     # 칸 사이에 이음표("-", ":")만 홀로 있으면 한 줄	한 줄로.
+else:	그 밖은
+cells = [f for f, t in zip(body, texts) if not _marker_only(t)]	표식만인 조각을 뺀 칸들.
+# 칸이 둘 이상인 줄(도형 라벨 둘, 이름=값 쌍 둘)은 칸마다 한 줄로 두고 앞뒤 줄과 문단으로 묶지 않는다.	주석: 칸이 둘 이상인 줄.
+pieces = [[f] for f in cells] if len(cells) >= 2 else [body]	칸이 둘 이상이면 칸마다 한 줄, 아니면 전체가 한 줄.
+for group in pieces:	묶음마다
+line = build_line([c for f in group for c in f.chars])	글자들을 모아 줄로.
+if line is not None:	비어 있지 않으면
+line.tabular = len(pieces) >= 2	칸이 둘 이상이었으면 tabular 표시 (문단으로 묶이지 않게).
+lines.append(line)	줄 목록에.
+lines.sort(key=lambda l: (l.top, l.x0))	위에서 아래, 왼쪽에서 오른쪽으로 정렬.
+items: list[tuple[float, Any]] = [(f.top, f.table) for f in leaf if f.table is not None]	항목 목록: 표들을 먼저 (위 y, 표).
+items.extend((line.top, [line]) for line in apart)	밖 줄들을 각각 (위 y, [줄]) 로.
+right_edge = max(right_edge, max((line.x1 for line in lines), default=0.0))	오른쪽 끝: 단의 끝과 이 잎의 가장 긴 줄 중 큰 값.
+for paragraph in group_paragraphs(lines, right_edge):	줄들을 문단으로 묶어
+items.append((paragraph[0].top, paragraph))	(첫 줄 위 y, 문단) 으로 추가.
+return sorted(items, key=lambda entry: entry[0])	위 y 순으로 정렬해 돌려준다.
+def _paragraph(self, item: list[TextLine], body_size: float, left_edge: float) -> None:	줄 묶음(문단) 하나를 Block 으로 만들어 self.blocks 에 넣는 메서드. left_edge 는 단의 왼쪽 끝.
+"""줄 묶음 하나를 블록으로 만든다."""	설명.
+marker_kind = list_marker(item[0].text)[0]	첫 줄의 목록 표식 종류 ('bullet', 'number', '').
+text, removed = join_lines(item)	줄들을 한 문장으로 잇는다.
+self.meta["dehyphenated"] += removed	하이픈 제거 수를 메타에 더한다.
+text = clean(text)	제어 문자·중복 공백 정리.
+if not text:	비었으면
+return	블록을 만들지 않는다.
+size = statistics.median(line.size for line in item)	줄들의 글씨 크기 중앙값.
+if size >= HEADING_RATIO * body_size and len(text) <= 120:	본문의 1.15배 이상이고 120자 이하면
+kind = "heading"                 # "3. 제어 로직 상세" 처럼 번호가 붙은 소제목도 제목 후보	제목(heading) 블록. 번호 붙은 소제목도 포함.
+elif marker_kind:	목록 표식이 있으면
+kind = "list_item"	목록 항목.
+else:	아니면
+kind = "paragraph"	일반 문단.
+level = int((item[0].x0 - left_edge) / (1.2 * body_size) + 0.5) if marker_kind else 0	목록 수준: 단의 왼쪽 끝에서 들여쓴 거리를 글씨 1.2배 단위로 반올림. 표식이 없으면 0.
+self.blocks.append(Block(kind=kind, text=text, top=item[0].top, size=size,	Block 생성: 종류, 글, 위치, 크기,
+level=max(0, min(MAX_LEVEL, level)), bold=sum(1 for l in item if l.bold) * 2 > len(item),	수준(0~3 으로 제한), 굵기(줄의 과반이 굵으면 굵음),
+x0=min(l.x0 for l in item), x1=max(l.x1 for l in item)))	가로 범위.
+@dataclass	@dataclass.
+class _Parsed:	페이지 분석 결과 묶음 (제목 선택과 Page 변환에 쓴다).
+no: int	번호.
+height: float	높이.
+blocks: list[Block]	블록들.
+has_graphics: bool	그래픽 여부.
+meta: dict[str, Any]	통계.
+def _pick_title(p: _Parsed) -> None:	페이지의 제목 블록을 고르는 함수. 결과는 블록의 is_title 표시로 남긴다.
+"""제목 후보를 고른다 (순서대로). ① 위쪽 35% 안의 제목 크기 줄 중 가장 큰 것(font)	규칙 ①
+② 굵은 글씨로 본문 크기 이상인 줄 중 가장 위의 것(bold) ③ 위쪽 35% 안에서 본문의 0.8배 이상 크기인 첫 줄(first-line;	규칙 ②③
+8pt 문서명·쪽 번호 같은 작은 글은 건너뛰고, 그런 줄뿐이면 그중 첫 줄). 표는 제외한다. 머리말이라고 지우거나 빼는 규칙은 없다."""	예외와 '머리말 삭제 없음'.
+body = float(p.meta.get("body_size") or 0.0)	본문 글씨 크기.
+zone = [b for b in p.blocks if b.kind != "table_row" and b.top < TITLE_ZONE * p.height and 0 < len(b.text) <= 120]	제목 후보 구역: 표 행이 아니고, 위쪽 35% 안이며, 글이 1~120자인 블록.
+if not zone:	후보가 없으면
+return	제목 없이 끝.
+heads = [b for b in zone if b.kind == "heading"]	그중 제목 크기(heading) 블록들.
+if heads:	있으면
+best, source = max(heads, key=lambda b: (round(b.size, 1), -b.top)), "font"	글씨가 가장 크고(같으면 더 위에 있는) 것을 'font' 출처로.
+else:	없으면
+bolds = [b for b in zone if b.bold and b.size >= 0.9 * body]	굵고 본문 0.9배 이상인 블록들.
+if bolds:	있으면
+best, source = min(bolds, key=lambda b: b.top), "bold"	가장 위의 것을 'bold' 출처로.
+else:	그것도 없으면
+best, source = next((b for b in zone if b.size >= TITLE_MIN_RATIO * body), zone[0]), "first-line"	본문 0.8배 이상인 첫 블록, 그런 것도 없으면 맨 첫 블록을 'first-line' 출처로. next(…, 기본값) 은 첫 번째 것 또는 기본값.
+best.is_title, best.title_source = True, source	고른 블록에 제목 표시와 출처를 적는다.
+def _to_page(p: _Parsed) -> Page:	분석 결과를 Page 로 바꾸는 함수.
+blocks = p.blocks	블록들.
+title, title_i, title_source = "", None, "없음"	제목, 제목 블록 번호, 출처 초기값.
+chosen = next(((i, b) for i, b in enumerate(blocks) if b.is_title), None)	제목 표시된 첫 블록 (번호, 블록). 없으면 None.
+if chosen is None:	없으면
+chosen = next(((i, b) for i, b in enumerate(blocks) if b.kind != "table_row" and b.text), None)	표가 아니고 글이 있는 첫 블록을
+if chosen is not None:	있으면
+chosen[1].is_title, chosen[1].title_source = True, "first-line"	제목으로 표시 (출처 first-line).
+if chosen is not None:	고른 것이 있으면
+title_i, title, title_source = chosen[0], chosen[1].text, chosen[1].title_source	번호·글·출처를 꺼낸다.
+lines: list[Line] = []	줄 목록.
+for i, b in enumerate(blocks):	블록마다
+if i == title_i:	제목 블록이면
+continue	본문에서 뺀다.
+if b.kind == "table_row":	표 블록이면
+lines.extend(table_lines(b.rows or []))	셀 단위 줄들.
+else:	아니면
+lines.append(Line(idx=0, text=b.text, level=b.level))	글과 수준을 가진 줄 하나.
+return Page(no=p.no, title=title, lines=lines, has_graphics=p.has_graphics, title_source=title_source)	Page 생성.
+def read_pdf(path: Path, layout: bool = True) -> Document:	PDF 읽기 진입 함수. layout 인자가 추가됐다.
+"""layout=True: 레이아웃 분석(아래 _PageParser). layout=False: 원시 읽기(_read_raw)."""	설명 문자열.
+if not layout:	레이아웃 분석을 끄면
+return _read_raw(path)	원시 읽기로 간다.
+parsed, notes = _parse_pdf(path)	모든 페이지 분석과 안내문.
+pages = [_to_page(p) for p in parsed]	Page 들로.
+return Document(path=Path(path), kind="pdf", pages=pages, title=pages[0].title if pages else "", notes=notes)	Document (제목은 첫 페이지 제목).
+def _read_raw(path: Path) -> Document:	원시 읽기 함수(기준선).
+"""레이아웃 분석 없는 원시 읽기(기준선). PyMuPDF 의 기본 텍스트 추출이 주는 줄을 그 순서 그대로 한 줄씩 Line 으로 만든다.	설명 첫 줄: PyMuPDF 기본 추출 줄을 그대로.
+다단·문단·표·제목 판단은 전혀 하지 않는다. 쪽의 첫 줄을 제목으로 둔다(페이지 규칙이 볼 제목이 필요해서).	설명: 분석 없음, 첫 줄이 제목.
+그림·선 개체 수는 세어 has_graphics 만 채운다(이미지 페이지 판단용)."""	설명: 그림·선 수만 센다.
+doc = pymupdf.open(path)	문서 열기.
+pages: list[Page] = []	쪽 목록.
+try:	문서 열기 이후를 try 로 감싸 끝에 반드시 닫게 한다 (finally 는 발췌 밖).
+for pno, page in enumerate(doc, 1):	페이지마다 1부터 번호를 붙여
+raw = page.get_text("text", flags=_FLAGS)	PyMuPDF 의 기본 글 추출(줄바꿈으로 나뉜 글).
+texts = [clean(t) for t in raw.splitlines()]	줄마다 정리(clean: 제어 문자·글머리 기호·공백).
+texts = [t for t in texts if t]	빈 줄 제거.
+try:	한 페이지의 오류를 따로 잡기 위해
+images = len(page.get_image_info())	그림 수.
+except Exception:	오류면
+images = 0	실패하면 0.
+try:	한 페이지의 오류를 따로 잡기 위해
+vectors = len(page.get_cdrawings())	선 개체 수.
+except Exception:	오류면
+vectors = 0	실패하면 0.
+title = texts[0] if texts else ""	첫 줄을 제목으로(없으면 빈 제목).
+lines = [Line(idx=0, text=t) for t in texts[1:]]	나머지 줄이 본문 Line.
+pages.append(Page(no=pno, title=title, lines=lines, has_graphics=images > 0 or vectors > 3,	Page 생성. 그림이 있거나 선이 넷 넘으면 그래픽 있음.
+title_source="raw" if title else "없음"))	제목 출처는 raw(첫 줄) 또는 없음.
+finally:	finally:
+doc.close()	문서를 닫는다.
+return Document(path=Path(path), kind="pdf", pages=pages, title=pages[0].title if pages else "",	Document 생성.
+notes=["원시 읽기(레이아웃 분석 끔): 줄 순서·문단·표·제목을 분석하지 않음"], reader="raw")	안내 한 줄과 reader=raw 표시.
+def layout_report(path: Path, pages: set[int] | None = None) -> list[str]:	읽기 진단 함수. 줄 목록을 돌려준다.
+"""진단용: 페이지마다 고른 제목과 블록 목록(종류, 글씨 크기, 굵기, 세로 위치 %, 가로 범위, 글자 수, 앞부분)."""	설명.
+parsed, notes = _parse_pdf(path)	분석.
+out = [f"== {path}", *[f"  안내: {n}" for n in notes]]	머리: 파일 이름과 안내문들.
+for p in parsed:	페이지마다
+if pages and p.no not in pages:	지정 페이지가 아니면
+continue	건너뛴다.
+_to_page(p)	제목 선택을 적용 (부수 효과만 쓴다).
+title = next((b for b in p.blocks if b.is_title), None)	제목 블록.
+out.append(f"-- {p.no}쪽  본문 글씨 {p.meta.get('body_size', 0):.1f}pt  제목: {title.text[:60] if title else '(없음)'}"	페이지 줄: 번호, 본문 글씨 크기, 제목,
+f"  [{title.title_source if title else '없음'}]  그림 {p.meta.get('images', 0)} 선 {p.meta.get('vectors', 0)}"	제목 출처, 그림·선 개체 수,
+f" 표 {p.meta.get('tables', 0) + p.meta.get('text_tables', 0)} 세로문자 {p.meta.get('rotated_chars', 0)}")	표 수, 세로 문자 수.
+for b in p.blocks:	블록마다
+if b.kind == "table_row":	표면
+out.append(f"     표 {len(b.rows or [])}행  top {100 * b.top / p.height:4.0f}%")	'표 N행 top xx%'.
+continue	다음으로.
+out.append(f"     {'제목' if b.is_title else b.kind:<9} {b.size:5.1f}pt{' 굵게' if b.bold else '    '} top {100 * b.top / p.height:4.0f}%"	종류(제목이면 '제목'), 크기, 굵게, 세로 위치 %,
+f"  x {b.x0:4.0f}-{b.x1:4.0f}  lv{b.level}  {len(b.text):3d}자  {b.text[:50]}")	가로 범위, 수준, 글자 수, 앞 50자.
+return out	돌려준다.
+def _parse_pdf(path: Path) -> tuple[list[_Parsed], list[str]]:	PDF 를 열어 페이지마다 분석하는 내부 함수. (결과들, 안내문들).
+doc = pymupdf.open(path)	문서 열기.
+parsed: list[_Parsed] = []	결과 목록.
+notes: list[str] = []	안내문.
+multi_column: list[int] = []	다단 페이지 번호들.
+rotated: list[int] = []	세로 글자 페이지들.
+unmapped: list[int] = []	글꼴 깨진 페이지들.
+failed: list[int] = []	실패한 페이지들.
+table_total = 0	표 총수.
+try:	한 페이지의 오류를 따로 잡기 위해
+for pno, page in enumerate(doc, 1):	페이지마다 1부터 번호를 붙여
+parser = _PageParser(page)	페이지 분석기를 만들고
+try:	한 페이지의 오류를 따로 잡기 위해
+parser.parse()	분석 실행.
+except Exception as exc:          # 한 페이지의 오류가 전체를 막지 않게 한다	어떤 오류든 잡아서
+failed.append(pno)	실패한 페이지 번호를 기록하고
+parser.blocks = []	블록을 비우고
+notes.append(f"{pno}쪽 읽기 실패: {type(exc).__name__}")	안내문에 오류 종류 이름을 남긴다. 전체 처리는 계속된다.
+meta = parser.meta	분석 통계.
+has_graphics = meta.get("images", 0) > 0 or meta.get("vectors", 0) > 3	그림이 있거나 선 개체가 3개 넘으면 그래픽이 있는 페이지.
+if meta.get("unmapped_ratio", 0) > 0.2:	치환 문자(깨진 글꼴)가 20% 넘으면
+unmapped.append(pno)	기록하고
+has_graphics = True	그래픽 페이지로 본다 (본문이 없어 이미지 페이지가 된다).
+if meta.get("x_cuts"):	세로로 자른 적이 있으면
+multi_column.append(pno)	다단 페이지로 기록.
+if meta.get("rotated_chars"):	세로 글자가 있었으면
+rotated.append(pno)	기록.
+table_total += meta.get("tables", 0) + meta.get("text_tables", 0)	표 수를 누적.
+parsed.append(_Parsed(no=pno, height=parser.height, blocks=parser.blocks, has_graphics=has_graphics, meta=meta))	페이지 결과(번호, 높이, 블록, 그래픽 여부, 통계)를 모은다.
+finally:	finally:
+doc.close()	문서를 닫는다.
+# 머리말·꼬리말을 반복 횟수로 지우던 규칙은 없다(v0.6.2 폐기). 반복 문구는 전처리가 후보에서만 뺀다.	주석: 머리말 제거 정책 없음.
+for p in parsed:	페이지마다
+_pick_title(p)	제목을 고른다.
+if multi_column:	다단 페이지가 있으면
+notes.append(f"다단/좌우 배치를 나눠 읽은 페이지 {len(multi_column)}쪽 ({_pages(multi_column)}): 읽기 순서를 확인하세요")	안내: 읽기 순서 확인.
+if rotated:	세로 글자가 있으면
+notes.append(f"세로로 선 문자를 읽지 않은 페이지 {len(rotated)}쪽 ({_pages(rotated)})")	안내.
+if unmapped:	깨진 페이지가 있으면
+notes.append(f"글꼴 매핑이 깨져 본문을 읽지 못한 페이지 {len(unmapped)}쪽 ({_pages(unmapped)}): 이미지 페이지로 처리")	안내: 이미지 페이지로 처리.
+if table_total:	표가 있으면
+notes.append(f"표 {table_total}개를 셀 단위로 읽음 (열 제목: 셀)")	안내: 셀 단위.
+return parsed, notes	돌려준다.
+def _pages(nums: list[int]) -> str:	페이지 번호 목록을 '1, 2, 3 …' 로 (8개까지).
+return ", ".join(str(n) for n in nums[:8]) + (" …" if len(nums) > 8 else "")	앞 8개를 쉼표로 잇고 더 있으면 '…'.

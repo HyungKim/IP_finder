@@ -13,8 +13,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-MODEL = os.environ.get("IP_FINDER_MODEL", "qwen3:4b-instruct")
-EMBED_MODEL = os.environ.get("IP_FINDER_EMBED_MODEL", "bge-m3")   # hybrid/fast 모드용. 없어도 llm 모드로 동작
+EMBED_MODEL = os.environ.get("IP_FINDER_EMBED_MODEL", "bge-m3")   # 1차 분류기(proto·knn·centroid·softmax·ovr)의 임베딩. 0단계에는 LLM 모델이 없다
 HOST = "http://127.0.0.1:11434"
 REQ = ROOT / ("requirements-windows.txt" if sys.platform == "win32" else "requirements.txt")
 WHEELS = ROOT / "wheels"
@@ -91,7 +90,7 @@ def step_ollama() -> bool:
             say("[오류] Ollama 서버에 연결할 수 없습니다. Ollama 를 실행한 뒤 다시 시도하세요.")
             return False
     say("[3/4] 모델 확인")
-    for name, size, required in ((MODEL, "약 2.5GB", True), (EMBED_MODEL, "약 1.2GB", False)):
+    for name, size, required in ((EMBED_MODEL, "약 1.2GB", True),):
         if name in tags or f"{name}:latest" in tags:
             say(f"  모델 {name} 있음")
             continue
@@ -102,9 +101,9 @@ def step_ollama() -> bool:
         say(f"[{'오류' if required else '주의'}] 모델 {name} 을 받지 못했습니다.")
         say(f"  인터넷이 막힌 PC라면 다른 PC에서 'ollama pull {name}' 을 실행한 뒤")
         say("  %USERPROFILE%\\.ollama\\models 폴더를 이 PC의 같은 위치로 복사하세요.")
+        say("  임베딩 모델이 없으면 임베딩을 쓰지 않는 분류기(cue, ngram)만 동작합니다.")
         if required:
             return False
-        say("  임베딩 모델이 없으면 hybrid/fast 모드 대신 llm 모드로 동작합니다 (느리지만 정상).")
     return True
 
 
@@ -128,6 +127,7 @@ def main() -> int:
         say("  ui.bat                        (더블클릭하면 창이 뜹니다)")
         say("  extract.bat 보고서.pptx        (파일이나 폴더를 extract.bat 위로 끌어다 놓아도 됩니다)")
         say("  결과는 원본 옆에 '이름_검토후보.xlsx' 로 생깁니다.")
+        say("  실험: ladder.bat / run_all.bat / compare_runs.bat / compare_classifiers.bat  (docs\\stages 참고)")
     return rc
 
 

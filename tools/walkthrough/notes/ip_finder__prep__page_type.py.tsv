@@ -1,0 +1,20 @@
+# ip_finder/prep/page_type.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""제목으로 페이지 유형을 추정한다. 분류기 특성(단서 13개 중 4개), 제목 기반 보정, 페이지 가중치가 함께 쓴다.	파일 설명 첫 줄.
+한 유형에만 해당할 때 힌트를 주고, 여러 유형이 섞인 제목('문제점 및 개선 방안')은 힌트를 주지 않는다."""	한 유형에만 걸릴 때만 힌트.
+from __future__ import annotations	새 문법 호환.
+import re	정규식.
+PAGE_TYPES: list[tuple[str, re.Pattern, str]] = [	페이지 유형 표. (키, 제목 정규식, LLM 에 줄 힌트 문장) 의 리스트.
+("problem", re.compile(r"(원인|문제|배경|이슈|과제|불량|한계|분석|고장|결함)"), "과제·원인 설명 페이지. 원인이나 현상 설명은 C"),	problem: 원인·문제·배경·이슈·과제·불량·한계·분석·고장·결함.
+("result", re.compile(r"(결과|검증|효과|성능|평가|비교|시험|테스트|측정|실험)"), "결과·효과 페이지. 수치 결과는 B"),	result: 결과·검증·효과·성능·평가·비교·시험·테스트·측정·실험.
+("means", re.compile(r"(개선|방안|대책|설계|구조|알고리즘|적용|구현|방법|원리|개발|기술|메커니즘)"), "수단 설명 페이지. 구체적 수단은 A"),	means: 개선·방안·대책·설계·구조·알고리즘·적용·구현·방법·원리·개발·기술·메커니즘.
+("plan", re.compile(r"(계획|향후|로드맵|검토\s*사항|추진\s*방향|추진\s*계획)"), "계획 페이지. 예정·검토는 D"),	plan: 계획·향후·로드맵·검토 사항·추진 방향·추진 계획.
+("status", re.compile(r"(현황|실적|진행\s*상황|동향|경과|요약|summary|overview)"), "현황·요약 페이지. 기술 내용이 없는 문장은 X"),	status: 현황·실적·진행 상황·동향·경과·요약·summary·overview.
+]	표 끝.
+TYPE_KEYS = ["problem", "result", "means", "plan", "status", "general"]	유형 키 목록 (general 포함). 묶음 기준이 type 일 때 쓴다.
+HINT_BY_KEY = {k: h for k, _, h in PAGE_TYPES}	키 → 힌트 문장 사전.
+def page_type(title: str) -> tuple[str, str | None]:	제목을 받아 (유형 키, 힌트) 를 돌려주는 함수.
+"""(유형 키, 힌트 문장 또는 None)"""	설명.
+hits = [(k, h) for k, rx, h in PAGE_TYPES if rx.search(title or "")]	제목에 걸리는 유형들. 'title or ""' 은 None 대비.
+if len(hits) == 1:	정확히 하나만 걸리면
+return hits[0]	그 (키, 힌트).
+return "general", None	0개 또는 2개 이상이면 general, 힌트 없음.

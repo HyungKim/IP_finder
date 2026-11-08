@@ -1,4 +1,7 @@
-"""입력 파일을 공통 Document 모델로 읽는다. 원본은 절대 수정하지 않는다."""
+"""입력 파일을 공통 Document 모델로 읽는다. 원본은 절대 수정하지 않는다.
+
+layout=True(레이아웃 분석 스위치 켬): 다단 읽기 순서·문단 묶기·제목·표·도형 구분·▪| 항목 나누기.
+layout=False(끔, 기준선): PDF 는 PyMuPDF 가 주는 줄을 그대로, PPTX 는 도형 순서대로 문단을 그대로. 첫 줄(또는 제목 자리)이 제목."""
 from __future__ import annotations
 
 from dataclasses import replace
@@ -10,24 +13,25 @@ from ._text import split_items
 SUPPORTED = {".pdf", ".pptx", ".ppt"}
 
 
-def load_document(path: str | Path) -> Document:
+def load_document(path: str | Path, layout: bool = True) -> Document:
     p = Path(path)
     suffix = p.suffix.lower()
     if suffix == ".pdf":
         from .pdf_reader import read_pdf
-        doc = read_pdf(p)
+        doc = read_pdf(p, layout=layout)
     elif suffix == ".pptx":
         from .pptx_reader import read_pptx
-        doc = read_pptx(p)
+        doc = read_pptx(p, layout=layout)
     elif suffix == ".ppt":
         from .ppt_convert import convert_ppt_to_pptx
         from .pptx_reader import read_pptx
         converted = convert_ppt_to_pptx(p)
-        doc = read_pptx(converted)
+        doc = read_pptx(converted, layout=layout)
         doc.path = p
     else:
         raise ValueError(f"지원하지 않는 형식: {p.name} (지원: {', '.join(sorted(SUPPORTED))})")
-    return split_listed_items(doc)
+    doc.reader = "layout" if layout else "raw"
+    return split_listed_items(doc) if layout else doc
 
 
 def split_listed_items(doc: Document) -> Document:

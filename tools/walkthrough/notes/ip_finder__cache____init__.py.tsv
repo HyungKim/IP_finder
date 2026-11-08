@@ -1,0 +1,3 @@
+# ip_finder/cache/__init__.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+from .store import LabelCache	캐시 클래스를 패키지 이름으로 공개.
+__all__ = ["LabelCache"]	공개 이름 목록.

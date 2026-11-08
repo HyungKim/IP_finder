@@ -1,0 +1,32 @@
+# tests/test_cli.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""명령줄 끝에서 끝까지 (임베딩이 필요 없는 cue 분류기로 Ollama 없이 돈다)."""	파일 설명.
+from pathlib import Path	경로.
+from ip_finder.cli import main	CLI 진입.
+def test_switches_and_check_and_extract(sample_dir, tmp_path, capsys):	switches·extract·pages 테스트.
+cfg = tmp_path / "ip_finder.toml"	설정 파일.
+cfg.write_text(f'classifier = "cue"\nuse_cache = false\nhistory_path = "{(tmp_path / "hist").as_posix()}"\ngold_paths = ["{(tmp_path / "gold").as_posix()}"]\n', encoding="utf-8")	cue 분류기, 캐시 끔, 임시 이력·골드.
+assert main(["switches", "--config", str(cfg), "--on", "short_line"]) == 0	switches 성공.
+out = capsys.readouterr().out	출력.
+assert "짧은 줄 제외" in out and "켬" in out	스위치 이름과 켬.
+assert main(["extract", str(sample_dir / "sample_report.pptx"), "--config", str(cfg), "--out-dir", str(tmp_path / "o"), "--on", "all", "--off", "layout", "-q"]) == 0	extract(전부 켬, 레이아웃만 끔).
+out = capsys.readouterr().out	출력.
+assert "검토 목록" in out and (tmp_path / "o" / "sample_report_검토후보.xlsx").exists()	요약과 결과 파일.
+assert main(["pages", str(sample_dir / "sample_report.pdf"), "--config", str(cfg), "--on", "page_exclude"]) == 0	pages(페이지 제외).
+assert "제목 규칙" in capsys.readouterr().out	제목 규칙 출력.
+def test_run_all_compare_runs_and_ladder(sample_dir, tmp_path, capsys):	실험 명령 테스트.
+cfg = tmp_path / "ip_finder.toml"	설정 파일.
+cfg.write_text(f'classifier = "cue"\nuse_cache = false\nhistory_path = ""\ngold_paths = ["{(tmp_path / "gold").as_posix()}"]\n', encoding="utf-8")	cue, 이력 끔.
+assert main(["run-all", str(sample_dir), "--config", str(cfg), "--out", str(tmp_path / "r0"), "-q"]) == 0	기준선 run-all.
+assert main(["run-all", str(sample_dir), "--config", str(cfg), "--out", str(tmp_path / "r1"), "--on", "all", "-q"]) == 0	전부 켬 run-all.
+assert (tmp_path / "r0" / "run_manifest.json").exists() and len(list((tmp_path / "r1").glob("*_검토후보.xlsx"))) == 2	목록 파일과 결과 2개.
+assert main(["compare-runs", str(tmp_path / "r0"), str(tmp_path / "r1"), "--out", str(tmp_path / "cmp.xlsx")]) == 0	compare-runs.
+out = capsys.readouterr().out	출력.
+assert "## 실행 비교" in out and (tmp_path / "cmp.xlsx").exists() and (tmp_path / "cmp.md").exists()	Markdown 제목과 파일들.
+assert main(["ladder", str(sample_dir / "sample_report.pdf"), "--config", str(cfg), "--steps", "layout,short_line", "--out", str(tmp_path / "lad"), "--no-gold-metrics"]) == 0	ladder(두 칸).
+out = capsys.readouterr().out	출력.
+assert "## 사다리 실행" in out and (tmp_path / "lad" / "사다리_switches.xlsx").exists()	제목과 Excel.
+assert sorted(p.name for p in (tmp_path / "lad").iterdir() if p.is_dir()) == ["step-00-baseline", "step-01-layout", "step-02-short_line"]	칸 폴더.
+def test_cli_errors_are_reported(tmp_path, capsys):	오류 보고 테스트.
+assert main(["compare-runs", str(tmp_path / "none"), str(tmp_path / "none2")]) == 1	없는 폴더 비교 → 1.
+assert main(["switches", "--on", "nope"]) == 1	모르는 스위치 → 1.
+assert "모르는 스위치" in capsys.readouterr().err	오류 메시지.
