@@ -4,7 +4,7 @@ requires = ["setuptools>=68"]	setuptools 68 이상이 필요하다.
 build-backend = "setuptools.build_meta"	빌드 뒷단 모듈 이름.
 [project]	[project] 표: 패키지 자체의 정보 시작.
 name = "ip-finder"	패키지 이름(pip 가 아는 이름).
-version = "1.0.0.dev1"	버전. ip_finder/__init__.py 의 __version__ 과 같게 유지한다.
+version = "1.0.0.dev2"	버전. ip_finder/__init__.py 의 __version__ 과 같게 유지한다.
 description = "보고자료(PDF/PPTX)에서 특허 검토 후보 문장을 온디바이스 분류기로 추출해 등급을 붙인 Excel 목록을 만든다 (rebuild: 단계별 재구성)"	한 줄 설명.
 readme = "README.md"	패키지 설명서로 README.md 를 쓴다는 표시.
 requires-python = ">=3.11"	파이썬 3.11 이상이 필요하다 (tomllib 가 3.11부터 표준 라이브러리에 있다).
