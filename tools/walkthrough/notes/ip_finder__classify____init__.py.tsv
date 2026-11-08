@@ -7,7 +7,9 @@
 | softmax  | O    | O     | 소프트맥스 회귀 (임베딩 + 단서 특성) |	softmax 행.
 | ovr      | O    | O     | 일대다 로지스틱 (등급마다 독립 시그모이드) |	ovr 행.
 | cue      | X    | X     | 단서어 정규식 규칙 (기준선) |	cue 행.
-| ngram    | O    | X     | 글자 n-gram + 소프트맥스 (임베딩 없음) |	ngram 행.
+| ngram    | O    | X     | 글자 n-gram + 소프트맥스 (임베딩 없음, 기준선) |	ngram 행(기준선 표시).
+기준선 둘(cue, ngram)은 '기계학습·임베딩 없이도 되는가'를 숫자로 보이기 위한 비교 기준이다. 설정 baseline_classifiers = false 면	설명: 기준선 둘의 역할과 설정.
+비교 대상과 UI 선택지에서 빠지고(available_names), classifier 로 직접 고르면 여전히 쓸 수 있다.	설명 이어짐.
 """	설명 끝.
 from __future__ import annotations	새 문법 호환 선언.
 from pathlib import Path	경로 타입.
@@ -27,6 +29,11 @@ raise ValueError(f"모르는 분류기: {name} (가능: {', '.join(REGISTRY)})")
 return REGISTRY[name](cfg)	클래스를 호출해 객체 생성(cfg 전달).
 def needs_embedding(name: str) -> bool:	이 분류기가 임베딩을 쓰는지.
 return REGISTRY[name].needs_embedding	클래스 속성을 돌려준다.
+def available_names(cfg=None) -> list[str]:	비교 대상·UI 선택지에 올릴 이름 목록 함수.
+"""비교 대상·UI 선택지에 올릴 분류기 이름. 설정 baseline_classifiers 가 False 면 기준선용(cue, ngram)을 뺀다.	설명 첫 줄.
+설정에서 직접 classifier = "cue" 로 고르는 것은 이 목록과 무관하게 늘 된다."""	설명: 직접 고르면 늘 된다.
+include = True if cfg is None else bool(getattr(cfg, "baseline_classifiers", True))	설정이 없으면 포함, 있으면 baseline_classifiers 값.
+return [n for n in ORDER if include or not REGISTRY[n].baseline]	기준선이 아니거나 포함이면 넣는다.
 def load_classifier(cfg, embedder=None) -> Classifier:	설정대로 쓸 준비가 끝난 분류기를 만드는 함수.
 """설정의 분류기를 쓸 수 있게 만든다. 학습형은 classifier_dir/<이름>.npz 를 읽고 임베딩 모델이 설정과 같은지 확인한다.	설명 첫 줄.
 학습 없는 분류기(proto·cue)는 바로 만들고, proto 는 원형 문장을 임베딩한다."""	설명 이어짐.
@@ -59,5 +66,5 @@ cls = REGISTRY.get(kind)	클래스 찾기.
 if cls is None:	모르면
 raise ValueError(f"{path} 의 분류기 종류를 모릅니다: {kind}")	오류.
 return cls.load_into(path, cfg)	클래스의 load_into 로 복원.
-__all__ = ["Batch", "Classifier", "Prediction", "OllamaEmbedder", "REGISTRY", "ORDER", "build", "needs_embedding",	공개 이름 목록.
+__all__ = ["Batch", "Classifier", "Prediction", "OllamaEmbedder", "REGISTRY", "ORDER", "build", "needs_embedding", "available_names",	공개 이름 목록(available_names 추가).
 "load_classifier", "load_file", "load_prototypes", "present_labels"]	이어짐.

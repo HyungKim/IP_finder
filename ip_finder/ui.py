@@ -91,6 +91,7 @@ class App(tk.Tk):
         self.last_experiment: Path | None = None
         self.runs: list[dict] = []
         self.switch_vars: dict[str, tk.BooleanVar] = {s.name: tk.BooleanVar(value=bool(getattr(self.cfg, s.field))) for s in SWITCHES}
+        self.baseline_var = tk.BooleanVar(value=self.cfg.baseline_classifiers)     # 기준선 분류기(cue·ngram)를 선택지·비교에 넣을지
         style = ttk.Style(self)
         if "vista" in style.theme_names():
             style.theme_use("vista")
@@ -170,7 +171,8 @@ class App(tk.Tk):
             f_opt.columnconfigure(c, weight=1)
         ttk.Label(f_opt, text="1차 분류기").grid(row=0, column=0, sticky="w", padx=8, pady=4)
         self.clf_var = tk.StringVar(value=next((d for k, d in CLASSIFIER_CHOICES if k == self.cfg.classifier), CLASSIFIER_CHOICES[0][1]))
-        ttk.Combobox(f_opt, textvariable=self.clf_var, values=[d for _, d in CLASSIFIER_CHOICES], state="readonly", width=44).grid(row=0, column=1, columnspan=3, sticky="w", padx=4)
+        self.clf_box = ttk.Combobox(f_opt, textvariable=self.clf_var, values=self.classifier_choices(), state="readonly", width=44)
+        self.clf_box.grid(row=0, column=1, columnspan=3, sticky="w", padx=4)
         ttk.Label(f_opt, text="임베딩 모델").grid(row=0, column=4, sticky="e", padx=8)
         self.embed_var = tk.StringVar(value=self.cfg.embed_model)
         self.embed_box = ttk.Combobox(f_opt, textvariable=self.embed_var, values=[self.cfg.embed_model], width=18)
@@ -332,7 +334,8 @@ class App(tk.Tk):
         self.train_var = tk.StringVar(value=trainable[0][1])
         ttk.Combobox(f_tr, textvariable=self.train_var, values=[d for _, d in trainable], state="readonly", width=40).pack(side="left", padx=4)
         ttk.Button(f_tr, text="학습 실행", command=self.start_train).pack(side="left", padx=8)
-        ttk.Button(f_tr, text="분류기 7종 비교 (교차 검증) → Excel", command=self.start_compare_classifiers).pack(side="left", padx=8)
+        ttk.Button(f_tr, text="분류기 비교 (교차 검증) → Excel", command=self.start_compare_classifiers).pack(side="left", padx=8)
+        ttk.Checkbutton(f_tr, text="기준선 분류기(단서어 규칙·글자 n-gram) 포함", variable=self.baseline_var, command=self.refresh_classifier_choices).pack(side="left", padx=8)
         self.clf_status = tk.StringVar(value="")
         ttk.Label(f2, textvariable=self.clf_status).grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))
 
@@ -564,6 +567,18 @@ class App(tk.Tk):
     def classifier_key(self) -> str:
         return next((k for k, d in CLASSIFIER_CHOICES if d == self.clf_var.get()), "proto")
 
+    def classifier_choices(self) -> list[str]:
+        """추출 탭 분류기 선택지. 기준선 체크를 끄면 cue·ngram 이 빠진다 (설정 파일의 classifier 가 기준선이면 그것은 남긴다)."""
+        from .classify import REGISTRY
+        keep = self.baseline_var.get()
+        return [d for k, d in CLASSIFIER_CHOICES if keep or not REGISTRY[k].baseline or k == self.cfg.classifier]
+
+    def refresh_classifier_choices(self) -> None:
+        values = self.classifier_choices()
+        self.clf_box["values"] = values
+        if self.clf_var.get() not in values:
+            self.clf_var.set(values[0])
+
     def build_cfg(self) -> Config:
         """화면의 값으로 Config 를 만든다. Tk 변수는 메인 스레드에서만 읽는다."""
         low, high, low_w, accept = self.current_rules()
@@ -572,7 +587,7 @@ class App(tk.Tk):
                           use_cache=self.cache_var.get(), low_relevance_patterns=low, high_relevance_patterns=high,
                           low_relevance_weight=low_w, accept_score=accept, target_grades=grades, short_line_chars=self.short_chars(),
                           gold_paths=self.cfg.gold_paths, use_gold=self.cfg.use_gold, history_path=self.cfg.history_path,
-                          cache_path=self.cfg.cache_path, classifier_dir=self.cfg.classifier_dir)
+                          cache_path=self.cfg.cache_path, classifier_dir=self.cfg.classifier_dir, baseline_classifiers=self.baseline_var.get())
         for s in SWITCHES:
             setattr(cfg, s.field, bool(self.switch_vars[s.name].get()))
         return cfg
@@ -967,8 +982,10 @@ class App(tk.Tk):
         try:
             emb = make_embedder(cfg, cache)
             self._cancel.register(emb)
-            self._log(f"분류기 비교: 골드 {len(rows)}문장, 임베딩 {cfg.embed_model}", "q")
-            result = compare_classifiers(rows, cfg, emb, status=lambda m: self._log("  " + m, "q"))
+            from .classify import available_names
+            names = available_names(cfg)
+            self._log(f"분류기 비교: 골드 {len(rows)}문장, 임베딩 {cfg.embed_model}, 대상 {', '.join(names)}", "q")
+            result = compare_classifiers(rows, cfg, emb, names, status=lambda m: self._log("  " + m, "q"))
         finally:
             cache.close()
         write_classifier_compare(result, out)

@@ -27,6 +27,7 @@ def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--gold", action="append", help="골드 파일이나 폴더 (반복 가능). 기본: 설치 폴더의 data/gold")
     p.add_argument("--no-gold", action="store_true", help="골드 정답 반영 끔 (분류기 판정만 보고 싶을 때)")
     p.add_argument("--no-cache", action="store_true", help="임베딩 캐시 안 씀")
+    p.add_argument("--baseline", choices=["on", "off"], help="비교 기준선용 분류기(cue, ngram)를 compare-classifiers 기본 대상에 넣을지 (기본: 설정 baseline_classifiers, 처음엔 on)")
 
 
 def _cfg(args) -> Config:
@@ -36,7 +37,8 @@ def _cfg(args) -> Config:
                       use_cache=False if getattr(args, "no_cache", False) else None,
                       history_path="" if getattr(args, "no_history", False) else None,
                       gold_paths=getattr(args, "gold", None) or None,
-                      use_gold=False if getattr(args, "no_gold", False) else None)
+                      use_gold=False if getattr(args, "no_gold", False) else None,
+                      baseline_classifiers={"on": True, "off": False}.get(getattr(args, "baseline", None)))
     for name in getattr(args, "on", []) or []:
         set_all(cfg, True) if name == "all" else set_switch(cfg, name, True)
     for name in getattr(args, "off", []) or []:
@@ -93,7 +95,7 @@ def cmd_check(args) -> int:
     else:
         print(f"  분류기: {CLASSIFIER_NAMES[cfg.classifier]} (학습 없음)")
     print(f"  스위치: {describe_switches(cfg)}")
-    print(f"  추출 등급 {','.join(cfg.targets())}, 목록 점수 기준 {cfg.accept_score}")
+    print(f"  추출 등급 {','.join(cfg.targets())}, 목록 점수 기준 {cfg.accept_score}, 비교 기준선 분류기(cue·ngram) {'포함' if cfg.baseline_classifiers else '제외'}")
     print(f"  캐시: {cfg.cache_file()} (원문 미저장, 해시+벡터) / 이력: {cfg.history_dir() or '저장 안 함'}")
     golds = cfg.gold_files()
     print(f"  골드: {cfg.gold_dir()} — 파일 {len(golds)}개" + (" (골드 문장은 정답을 그대로 씀)" if cfg.use_gold else " (반영 끔)"))
@@ -364,11 +366,12 @@ def _write_md(path: Path, text: str) -> None:
 
 def cmd_compare_classifiers(args) -> int:
     from .cache import LabelCache
-    from .classify import REGISTRY, needs_embedding
+    from .classify import available_names, needs_embedding
     from .compare import classifiers_markdown, compare_classifiers, write_classifier_compare
     from .pipeline import make_embedder
     cfg = _cfg(args)
-    names = [n.strip() for n in (args.names or ",".join(REGISTRY)).split(",") if n.strip()]
+    names = [n.strip() for n in args.names.split(",") if n.strip()] if args.names else available_names(cfg)
+    print(f"비교 대상: {', '.join(names)}" + ("" if cfg.baseline_classifiers else "  (기준선 cue·ngram 제외: baseline_classifiers = false)"))
     rows = _gold_rows(cfg, args.gold)
     cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)
     try:
@@ -540,7 +543,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_history)
 
     p = sub.add_parser("compare-classifiers", help="[실험] 골드 교차 검증으로 1차 분류기 후보 전부 비교 → 분류기_비교.xlsx + .md")
-    p.add_argument("--names", help="비교할 분류기 (쉼표). 기본 전부: " + ",".join(CLASSIFIER_NAMES))
+    p.add_argument("--names", help="비교할 분류기 (쉼표). 기본: 전부 (" + ",".join(CLASSIFIER_NAMES) + "), 설정 baseline_classifiers=false 또는 --baseline off 면 cue·ngram 제외")
     p.add_argument("--folds", type=int, default=5, help="교차 검증 겹 수 (기본 5)")
     p.add_argument("--repeats", type=int, default=2, help="겹 나누기 반복 횟수 (기본 2, 표준편차 계산용)")
     p.add_argument("--seed", type=int, default=0)

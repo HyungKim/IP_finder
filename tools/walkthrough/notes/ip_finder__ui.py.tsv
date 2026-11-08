@@ -80,6 +80,7 @@ self.last_gold: Path | None = None	마지막으로 만든 골드 시트.
 self.last_experiment: Path | None = None	마지막 실험 결과 경로.
 self.runs: list[dict] = []	이력 탭의 실행 목록.
 self.switch_vars: dict[str, tk.BooleanVar] = {s.name: tk.BooleanVar(value=bool(getattr(self.cfg, s.field))) for s in SWITCHES}	스위치마다 체크박스 변수(설정 값으로 초기화).
+self.baseline_var = tk.BooleanVar(value=self.cfg.baseline_classifiers)     # 기준선 분류기(cue·ngram)를 선택지·비교에 넣을지	기준선 포함 체크 변수(설정 값으로 초기화).
 style = ttk.Style(self)	ttk 스타일.
 if "vista" in style.theme_names():	윈도우의 vista 테마가 있으면
 style.theme_use("vista")	그것을,
@@ -153,7 +154,8 @@ for c in (1, 3, 5):	1·3·5열이
 f_opt.columnconfigure(c, weight=1)	늘어나게.
 ttk.Label(f_opt, text="1차 분류기").grid(row=0, column=0, sticky="w", padx=8, pady=4)	'1차 분류기' 라벨.
 self.clf_var = tk.StringVar(value=next((d for k, d in CLASSIFIER_CHOICES if k == self.cfg.classifier), CLASSIFIER_CHOICES[0][1]))	분류기 변수(설정 값에 맞는 표시 글).
-ttk.Combobox(f_opt, textvariable=self.clf_var, values=[d for _, d in CLASSIFIER_CHOICES], state="readonly", width=44).grid(row=0, column=1, columnspan=3, sticky="w", padx=4)	읽기 전용 콤보.
+self.clf_box = ttk.Combobox(f_opt, textvariable=self.clf_var, values=self.classifier_choices(), state="readonly", width=44)	분류기 콤보(선택지는 classifier_choices 로 계산).
+self.clf_box.grid(row=0, column=1, columnspan=3, sticky="w", padx=4)	배치.
 ttk.Label(f_opt, text="임베딩 모델").grid(row=0, column=4, sticky="e", padx=8)	'임베딩 모델' 라벨.
 self.embed_var = tk.StringVar(value=self.cfg.embed_model)	임베딩 변수.
 self.embed_box = ttk.Combobox(f_opt, textvariable=self.embed_var, values=[self.cfg.embed_model], width=18)	임베딩 선택 상자.
@@ -305,7 +307,8 @@ trainable = [(k, d) for k, d in CLASSIFIER_CHOICES if k in ("knn", "centroid", "
 self.train_var = tk.StringVar(value=trainable[0][1])	변수.
 ttk.Combobox(f_tr, textvariable=self.train_var, values=[d for _, d in trainable], state="readonly", width=40).pack(side="left", padx=4)	콤보.
 ttk.Button(f_tr, text="학습 실행", command=self.start_train).pack(side="left", padx=8)	학습 실행 단추.
-ttk.Button(f_tr, text="분류기 7종 비교 (교차 검증) → Excel", command=self.start_compare_classifiers).pack(side="left", padx=8)	분류기 비교 단추.
+ttk.Button(f_tr, text="분류기 비교 (교차 검증) → Excel", command=self.start_compare_classifiers).pack(side="left", padx=8)	분류기 비교 단추(대상 수는 체크에 따라 달라져 '7종' 표기 삭제).
+ttk.Checkbutton(f_tr, text="기준선 분류기(단서어 규칙·글자 n-gram) 포함", variable=self.baseline_var, command=self.refresh_classifier_choices).pack(side="left", padx=8)	기준선 포함 체크박스(바꾸면 콤보 선택지 갱신).
 self.clf_status = tk.StringVar(value="")	상태 변수.
 ttk.Label(f2, textvariable=self.clf_status).grid(row=2, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 6))	라벨.
 f3 = ttk.LabelFrame(root, text=" 4. 채점  —  골드 시트로 현재 설정(추출 탭의 분류기·스위치)의 등급 정확도와 검토 목록 정밀도를 잽니다 ")	채점 프레임(모드 선택 없음).
@@ -512,6 +515,16 @@ raise ValueError(f"짧은 줄 기준은 0 이상의 정수여야 합니다: {v!r
 return int(v)	정수.
 def classifier_key(self) -> str:	콤보 표시 글 → 분류기 키.
 return next((k for k, d in CLASSIFIER_CHOICES if d == self.clf_var.get()), "proto")	찾기(기본 proto).
+def classifier_choices(self) -> list[str]:	콤보 선택지 계산.
+"""추출 탭 분류기 선택지. 기준선 체크를 끄면 cue·ngram 이 빠진다 (설정 파일의 classifier 가 기준선이면 그것은 남긴다)."""	설명 문자열.
+from .classify import REGISTRY	등록부.
+keep = self.baseline_var.get()	체크 값.
+return [d for k, d in CLASSIFIER_CHOICES if keep or not REGISTRY[k].baseline or k == self.cfg.classifier]	기준선은 체크가 켜졌거나 설정 파일의 분류기일 때만.
+def refresh_classifier_choices(self) -> None:	콤보 선택지 갱신.
+values = self.classifier_choices()	새 목록.
+self.clf_box["values"] = values	콤보에 반영.
+if self.clf_var.get() not in values:	현재 값이 목록에 없으면
+self.clf_var.set(values[0])	첫 항목으로.
 def build_cfg(self) -> Config:	화면 값으로 Config 만들기.
 """화면의 값으로 Config 를 만든다. Tk 변수는 메인 스레드에서만 읽는다."""	설명 문자열.
 low, high, low_w, accept = self.current_rules()	규칙 값들.
@@ -520,7 +533,7 @@ cfg = Config.load(self.cfg.config_path or None, classifier=self.classifier_key()
 use_cache=self.cache_var.get(), low_relevance_patterns=low, high_relevance_patterns=high,	캐시·키워드,
 low_relevance_weight=low_w, accept_score=accept, target_grades=grades, short_line_chars=self.short_chars(),	가중치·점수·등급·짧은 줄,
 gold_paths=self.cfg.gold_paths, use_gold=self.cfg.use_gold, history_path=self.cfg.history_path,	골드 경로·반영·이력 경로는 기존 설정 그대로,
-cache_path=self.cfg.cache_path, classifier_dir=self.cfg.classifier_dir)	캐시·분류기 폴더.
+cache_path=self.cfg.cache_path, classifier_dir=self.cfg.classifier_dir, baseline_classifiers=self.baseline_var.get())	체크 값을 설정에.
 for s in SWITCHES:	스위치마다
 setattr(cfg, s.field, bool(self.switch_vars[s.name].get()))	체크박스 값을 필드에.
 return cfg	반환.
@@ -879,8 +892,10 @@ cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시.
 try:	오류 대비.
 emb = make_embedder(cfg, cache)	임베더.
 self._cancel.register(emb)	중지 토큰 등록.
-self._log(f"분류기 비교: 골드 {len(rows)}문장, 임베딩 {cfg.embed_model}", "q")	로그.
-result = compare_classifiers(rows, cfg, emb, status=lambda m: self._log("  " + m, "q"))	비교 실행(상태는 로그로).
+from .classify import available_names	available_names.
+names = available_names(cfg)	비교 대상.
+self._log(f"분류기 비교: 골드 {len(rows)}문장, 임베딩 {cfg.embed_model}, 대상 {', '.join(names)}", "q")	로그에 대상 표시.
+result = compare_classifiers(rows, cfg, emb, names, status=lambda m: self._log("  " + m, "q"))	대상 목록을 넘겨 비교.
 finally:	finally:
 cache.close()	캐시 닫기.
 write_classifier_compare(result, out)	Excel.

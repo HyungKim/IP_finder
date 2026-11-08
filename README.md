@@ -11,7 +11,7 @@
 | 2 | 도구 준비됨 | 레이아웃 분석·전처리·후처리 스위치를 한 칸씩 켜며 기여 측정 (`ladder`) |
 | 3 | 예정 | LLM 2차 판정 부착 |
 
-단계별 가설·측정 방법·결과표는 [docs/stages/](docs/stages/README.md) 에 있습니다. 0.6.2 의 설명서는 태그 `v0.6.2` 의 README 를 보세요.
+단계별 가설·측정 방법·결과표는 [docs/stages/](docs/stages/README.md) 에, 분류기 동작 원리는 [docs/classifiers.md](docs/classifiers.md) 에, 보고서에 인용할 학술 출처는 [docs/REFERENCES.md](docs/REFERENCES.md) 에 있습니다. 0.6.2 의 설명서는 태그 `v0.6.2` 의 README 를 보세요.
 
 ## 단서 등급
 
@@ -82,9 +82,10 @@ ip-finder layout 보고서.pdf --pages 3-5        (레이아웃 분석 진단)
 | `softmax` | O | O | 소프트맥스 회귀 (임베딩 + 단서 특성 13개, 표준화, 경사하강법). 신뢰도 = 1위 확률 |
 | `ovr` | O | O | 일대다 로지스틱 (등급마다 독립 시그모이드). 모두 낮으면 '모름'에 가까움 |
 | `cue` | X | X | 단서어 정규식 규칙. 기계학습 없는 비교 기준 |
-| `ngram` | O | X | 글자 2·3-gram 해시(4096차원) + 소프트맥스. 임베딩 모델 없이 동작 |
+| `ngram` | O | X | 글자 2·3-gram 해시(4096차원) + 소프트맥스. 임베딩 모델 없이 동작. 비교 기준선 |
 
-학습형은 골드로 먼저 만듭니다: `ip-finder train --classifier knn` → `data\classifiers\knn.npz` (임베딩 모델이 설정과 다르면 거부). 신뢰도(0~1)는 모두 "1위 등급이 맞을 확률의 추정"으로 통일되어 점수 = 신뢰도 × 페이지 가중치가 분류기 종류와 무관하게 같은 뜻입니다.
+학습형은 골드로 먼저 만듭니다: `ip-finder train --classifier knn` → `data\classifiers\knn.npz` (임베딩 모델이 설정과 다르면 거부).
+`cue` 와 `ngram` 은 "기계학습·임베딩 없이도 되는가"를 보이는 **비교 기준선**입니다. 설정 `baseline_classifiers = false`(또는 `--baseline off`, UI 체크 해제)로 비교 대상과 선택지에서 뺄 수 있고, 켜고 끄는 것은 결과에 영향이 없습니다. 각 분류기가 어떻게 판정하는지는 [docs/classifiers.md](docs/classifiers.md). 신뢰도(0~1)는 모두 "1위 등급이 맞을 확률의 추정"으로 통일되어 점수 = 신뢰도 × 페이지 가중치가 분류기 종류와 무관하게 같은 뜻입니다.
 
 ### 결과 Excel 의 시트
 

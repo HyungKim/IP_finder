@@ -58,11 +58,12 @@ out.append(Prediction(labels[int(order[0])], max(0.0, min(1.0, conf)),	Predictio
 {l: float(v) for l, v in zip(labels, row)}, top, top - second))	등급별 점수 사전, 1위, 차이.
 return out	목록 반환.
 class Classifier:	분류기 기본 클래스.
-"""분류기 기본 클래스. 하위 클래스는 name/label/needs_embedding/trainable 과 fit/predict/_arrays/_restore 를 채운다."""	설명 문자열.
+"""분류기 기본 클래스. 하위 클래스는 name/label/needs_embedding/trainable(/baseline) 과 fit/predict/_arrays/_restore 를 채운다."""	설명 문자열(baseline 속성 언급).
 name = ""	이름(등록부 키).
 label = ""	한글 이름.
 needs_embedding = False	임베딩 필요 여부.
 trainable = False	학습 여부.
+baseline = False             # True 면 비교 기준선용(cue, ngram): 설정 baseline_classifiers 가 False 일 때 비교 대상·UI 선택지에서 빠진다	기준선 여부 속성(기본 False). cue·ngram 만 True.
 def __init__(self, cfg=None):	생성자.
 self.cfg = cfg	설정 보관.
 self.labels: list[str] = list(LABELS)	등급 목록(학습하면 골드에 있는 등급으로 바뀜).

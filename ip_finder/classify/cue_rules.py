@@ -13,6 +13,7 @@ class CueRuleClassifier(Classifier):
     label = "단서어 규칙 (기준선)"
     needs_embedding = False
     trainable = False
+    baseline = True
 
     @staticmethod
     def rule(text: str) -> tuple[str, str]:

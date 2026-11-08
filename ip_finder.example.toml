@@ -6,6 +6,7 @@ classifier = "proto"                 # proto(원형 문장 코사인, 학습 없
 embed_model = "bge-m3"               # 임베딩 모델 (KURE-v1 을 들여왔으면 "kure-v1"). cue·ngram 은 쓰지 않는다
 classifier_dir = "data/classifiers"  # ip-finder train 이 만드는 <이름>.npz 폴더
 knn_k = 5
+baseline_classifiers = true          # 비교 기준선용 분류기(cue, ngram)를 compare-classifiers 기본 대상과 UI 선택지에 넣을지. 결과에는 영향 없음
 target_grades = "A,B"                # 추출 대상 등급. "A,B,C,D" 로 넓힐 수 있음
 accept_score = 0.5                   # 신뢰도 × 가중치 가 이 값 이상이어야 검토 목록. 미만은 보류 시트
 

@@ -125,8 +125,9 @@ class OneVsRestClassifier(_LinearBase):
 
 class NgramClassifier(_LinearBase):
     name = "ngram"
-    label = "글자 n-gram + 소프트맥스"
+    label = "글자 n-gram + 소프트맥스 (기준선)"
     needs_embedding = False
+    baseline = True
     standardize = False          # 희소한 n-gram 수치를 표준화하면 드문 n-gram 이 과대해진다. 길이 1 정규화만 쓴다
     lr = 0.5
     epochs = 400

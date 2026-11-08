@@ -1,7 +1,7 @@
 # tests/test_classify.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
 import numpy as np	numpy.
 import pytest	pytest.
-from ip_finder.classify import ORDER, REGISTRY, Batch, build, load_classifier, load_file, load_prototypes	분류기 묶음.
+from ip_finder.classify import ORDER, REGISTRY, Batch, available_names, build, load_classifier, load_file, load_prototypes	available_names 추가.
 from ip_finder.classify.cv import out_of_fold_predict, stratified_folds	교차 검증.
 from ip_finder.classify.features import ngram_matrix, with_cues	특성.
 from ip_finder.config import Config	설정.
@@ -24,6 +24,8 @@ assert page_type("검증 결과")[0] == "result"	result.
 assert page_type("문제점 및 개선 방안") == ("general", None)      # 유형이 섞이면 힌트 없음	섞이면 general.
 def test_registry_has_seven_classifiers():	등록부 테스트.
 assert ORDER == ["proto", "knn", "centroid", "softmax", "ovr", "cue", "ngram"]	순서.
+assert [n for n in ORDER if REGISTRY[n].baseline] == ["cue", "ngram"]                 # 비교 기준선 둘	기준선은 cue·ngram 둘.
+assert available_names(Config()) == ORDER and available_names(Config(baseline_classifiers=False)) == ["proto", "knn", "centroid", "softmax", "ovr"]	포함/제외 목록.
 assert {n: (c.trainable, c.needs_embedding) for n, c in REGISTRY.items()} == {	학습·임베딩 속성(첫 줄).
 "proto": (False, True), "knn": (True, True), "centroid": (True, True), "softmax": (True, True), "ovr": (True, True),	이어짐.
 "cue": (False, False), "ngram": (True, False)}	이어짐.

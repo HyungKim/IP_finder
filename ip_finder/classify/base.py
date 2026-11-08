@@ -77,11 +77,12 @@ def predictions_from_scores(scores: np.ndarray, labels: list[str], confidence: n
 
 
 class Classifier:
-    """분류기 기본 클래스. 하위 클래스는 name/label/needs_embedding/trainable 과 fit/predict/_arrays/_restore 를 채운다."""
+    """분류기 기본 클래스. 하위 클래스는 name/label/needs_embedding/trainable(/baseline) 과 fit/predict/_arrays/_restore 를 채운다."""
     name = ""
     label = ""
     needs_embedding = False
     trainable = False
+    baseline = False             # True 면 비교 기준선용(cue, ngram): 설정 baseline_classifiers 가 False 일 때 비교 대상·UI 선택지에서 빠진다
 
     def __init__(self, cfg=None):
         self.cfg = cfg

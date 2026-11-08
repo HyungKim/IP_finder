@@ -8,7 +8,7 @@ import statistics	표준편차.
 import time	시간.
 from collections import Counter	Counter.
 from dataclasses import dataclass, field	dataclass.
-from ..classify import ORDER, REGISTRY, Batch, build	분류기 묶음.
+from ..classify import REGISTRY, Batch, available_names, build	available_names 를 가져온다.
 from ..classify.cv import out_of_fold_predict	교차 검증 밖 판정.
 from ..config import Config	설정.
 from ..eval.score import candidate_metrics, score	채점 함수 둘.
@@ -38,7 +38,7 @@ def labels(self) -> list[str]:	판정 라벨 목록.
 return [p.label if p is not None else "?" for p in self.preds]	None 은 ?.
 def compare_classifiers(rows: list[dict], cfg: Config, embedder=None, names: list[str] | None = None, k: int = 5,	비교 본체 함수.
 repeats: int = 2, seed: int = 0, status=None) -> dict:	이어짐: 반복·seed·상태 콜백.
-names = names or list(ORDER)	이름이 없으면 전부.
+names = names or available_names(cfg)          # 기본: 설정 baseline_classifiers 에 따라 기준선(cue, ngram) 포함/제외	기본 대상: 설정의 기준선 포함 여부에 따름.
 for n in names:	이름마다
 if n not in REGISTRY:	모르면
 raise ValueError(f"모르는 분류기: {n} (가능: {', '.join(REGISTRY)})")	오류.

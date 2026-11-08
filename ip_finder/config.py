@@ -47,8 +47,9 @@ CLASSIFIER_NAMES = {
     "softmax": "소프트맥스 회귀",
     "ovr": "일대다 로지스틱",
     "cue": "단서어 규칙 (기준선)",
-    "ngram": "글자 n-gram + 소프트맥스",
+    "ngram": "글자 n-gram + 소프트맥스 (기준선)",
 }
+BASELINE_CLASSIFIERS = ("cue", "ngram")   # 비교 기준선용. baseline_classifiers 설정으로 비교 대상에 넣고 뺀다
 
 # 옛 설정 파일(0.x) 의 키를 새 필드로 옮긴다. 값이 없는 키는 그냥 무시된다.
 _RENAMED = {"require_korean": "rule_require_korean"}
@@ -65,6 +66,7 @@ class Config:
     embed_model: str = "bge-m3"               # Ollama 임베딩 모델. KURE-v1 은 tools/import_kure.bat 로 들여온 뒤 "kure-v1"
     classifier_dir: str = "data/classifiers"  # 학습한 분류기 파일 <이름>.npz 가 놓이는 폴더 (설치 폴더 기준)
     knn_k: int = 5                            # knn 분류기의 이웃 수
+    baseline_classifiers: bool = True         # 비교 기준선용 분류기(cue, ngram)를 compare-classifiers 기본 대상과 UI 선택지에 넣을지. 결과에는 영향 없음
     target_grades: str = "A,B"                # 추출 대상 등급. 이 등급으로 판정된 문장만 검토 목록 후보
     accept_score: float = 0.5                 # 신뢰도 × 가중치 가 이 값 이상이어야 검토 목록. 미만은 보류 시트
     # ---- 스위치 (switches.py 와 짝). 기본 전부 끔 = 기준선 ----

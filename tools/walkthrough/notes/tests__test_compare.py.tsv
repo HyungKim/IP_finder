@@ -79,6 +79,9 @@ md = classifiers_markdown(result)	Markdown.
 assert "| 원형 문장 코사인 (제로샷) |" in md	표 행.
 skipped = compare_classifiers(rows, cfg, None, ["proto", "cue"])	임베더 없이.
 assert skipped["reports"][0].skipped and skipped["reports"][1].accuracy is not None   # 임베더 없음 → proto 건너뜀, cue 는 동작	proto 건너뜀, cue 동작.
+cfg.baseline_classifiers = False	기준선 제외.
+five = compare_classifiers(rows, cfg, fake_embedder, k=3, repeats=1)	비교.
+assert [r.name for r in five["reports"]] == ["proto", "knn", "centroid", "softmax", "ovr"]   # 기준선 제외 옵션	다섯만.
 def test_ladder_cumulative_and_single(sample_dir, cfg, fake_embedder, tmp_path):	사다리 테스트.
 gold = make_gold_sheet(sample_dir / "sample_report.pptx", cfg, tmp_path / "g.xlsx", embedder=fake_embedder)	골드 시트.
 rows = load_gold(gold)	행.

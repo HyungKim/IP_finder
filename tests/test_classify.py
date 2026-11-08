@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from ip_finder.classify import ORDER, REGISTRY, Batch, build, load_classifier, load_file, load_prototypes
+from ip_finder.classify import ORDER, REGISTRY, Batch, available_names, build, load_classifier, load_file, load_prototypes
 from ip_finder.classify.cv import out_of_fold_predict, stratified_folds
 from ip_finder.classify.features import ngram_matrix, with_cues
 from ip_finder.config import Config
@@ -30,6 +30,8 @@ def test_page_type():
 
 def test_registry_has_seven_classifiers():
     assert ORDER == ["proto", "knn", "centroid", "softmax", "ovr", "cue", "ngram"]
+    assert [n for n in ORDER if REGISTRY[n].baseline] == ["cue", "ngram"]                 # 비교 기준선 둘
+    assert available_names(Config()) == ORDER and available_names(Config(baseline_classifiers=False)) == ["proto", "knn", "centroid", "softmax", "ovr"]
     assert {n: (c.trainable, c.needs_embedding) for n, c in REGISTRY.items()} == {
         "proto": (False, True), "knn": (True, True), "centroid": (True, True), "softmax": (True, True), "ovr": (True, True),
         "cue": (False, False), "ngram": (True, False)}

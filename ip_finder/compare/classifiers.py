@@ -10,7 +10,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 
-from ..classify import ORDER, REGISTRY, Batch, build
+from ..classify import REGISTRY, Batch, available_names, build
 from ..classify.cv import out_of_fold_predict
 from ..config import Config
 from ..eval.score import candidate_metrics, score
@@ -47,7 +47,7 @@ class ClassifierReport:
 
 def compare_classifiers(rows: list[dict], cfg: Config, embedder=None, names: list[str] | None = None, k: int = 5,
                         repeats: int = 2, seed: int = 0, status=None) -> dict:
-    names = names or list(ORDER)
+    names = names or available_names(cfg)          # 기본: 설정 baseline_classifiers 에 따라 기준선(cue, ngram) 포함/제외
     for n in names:
         if n not in REGISTRY:
             raise ValueError(f"모르는 분류기: {n} (가능: {', '.join(REGISTRY)})")

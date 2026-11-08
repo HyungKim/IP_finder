@@ -11,6 +11,7 @@ name = "cue"	이름.
 label = "단서어 규칙 (기준선)"	한글 이름.
 needs_embedding = False	임베딩 없음.
 trainable = False	학습 없음.
+baseline = True	비교 기준선 표시.
 @staticmethod	정적 메서드.
 def rule(text: str) -> tuple[str, str]:	문장 하나에 규칙 적용.
 """(등급, 걸린 규칙 이름)"""	설명 문자열.

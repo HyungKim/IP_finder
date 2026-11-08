@@ -95,8 +95,9 @@ def _scores(self, batch: Batch) -> np.ndarray:	점수.
 return 1.0 / (1.0 + np.exp(-(self._z(self.features(batch)) @ self.W.T + self.b)))   # 등급별 시그모이드. 모두 낮으면 '모름'에 가깝다	등급별 시그모이드(합 1 아님).
 class NgramClassifier(_LinearBase):	n-gram 클래스.
 name = "ngram"	이름.
-label = "글자 n-gram + 소프트맥스"	한글 이름.
+label = "글자 n-gram + 소프트맥스 (기준선)"	한글 이름에 (기준선) 표시.
 needs_embedding = False	임베딩 없음.
+baseline = True	비교 기준선 표시.
 standardize = False          # 희소한 n-gram 수치를 표준화하면 드문 n-gram 이 과대해진다. 길이 1 정규화만 쓴다	표준화 끔(희소 특성).
 lr = 0.5	학습률 더 크게.
 epochs = 400	반복 수.

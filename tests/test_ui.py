@@ -48,6 +48,12 @@ def test_ui_builds_and_fills(tmp_path):
         assert app.pw_var is app.switch_vars["page_weight"]
         app.clf_var.set(next(d for k, d in __import__("ip_finder.ui", fromlist=["CLASSIFIER_CHOICES"]).CLASSIFIER_CHOICES if k == "knn"))
         assert app.build_cfg().classifier == "knn"
+        assert len(app.clf_box["values"]) == 7 and app.build_cfg().baseline_classifiers is True
+        app.baseline_var.set(False)
+        app.refresh_classifier_choices()
+        assert len(app.clf_box["values"]) == 5 and not any("기준선" in v for v in app.clf_box["values"]) and app.build_cfg().baseline_classifiers is False
+        app.baseline_var.set(True)
+        app.refresh_classifier_choices()
         app.accept_var.set("0.7")
         app.low_var.set("0.2")
         app.low_text.delete("1.0", "end")

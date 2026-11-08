@@ -15,6 +15,7 @@
 | ovr | O | O | 일대다 로지스틱 | 어느 등급에도 확신 없는 문장을 드러냄 |
 
 임베딩 모델(bge-m3, kure-v1)은 `--embed-model` 로 바꿔 한 번 더 돌리면 비교 축이 된다. Laya 같은 결정 모델은 PyTorch 가 필요해 후보에서 뺐다.
+cue 와 ngram 은 실제 후보가 아니라 기준선이다. 비교 표에서 빼려면 설정 `baseline_classifiers = false` 또는 `--baseline off`. 각 분류기의 동작 원리는 [../classifiers.md](../classifiers.md).
 
 ## 측정 방법 (회사 PC)
 

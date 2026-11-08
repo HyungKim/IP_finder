@@ -43,6 +43,12 @@ assert c.layout_analysis is True and c.rule_require_korean is False and c.page_w
 assert app.pw_var is app.switch_vars["page_weight"]	가중치 변수 공유.
 app.clf_var.set(next(d for k, d in __import__("ip_finder.ui", fromlist=["CLASSIFIER_CHOICES"]).CLASSIFIER_CHOICES if k == "knn"))	분류기 콤보를 knn 으로.
 assert app.build_cfg().classifier == "knn"	반영.
+assert len(app.clf_box["values"]) == 7 and app.build_cfg().baseline_classifiers is True	선택지 7개, 설정 포함 True.
+app.baseline_var.set(False)	체크 끔.
+app.refresh_classifier_choices()	갱신.
+assert len(app.clf_box["values"]) == 5 and not any("기준선" in v for v in app.clf_box["values"]) and app.build_cfg().baseline_classifiers is False	선택지 5개, 기준선 없음, 설정 False.
+app.baseline_var.set(True)	다시 켬.
+app.refresh_classifier_choices()	갱신.
 app.accept_var.set("0.7")	점수.
 app.low_var.set("0.2")	낮음 가중치.
 app.low_text.delete("1.0", "end")	키워드 지움.

@@ -24,6 +24,7 @@ p.add_argument("--off", action="append", default=[], metavar="SWITCH", help="끌
 p.add_argument("--gold", action="append", help="골드 파일이나 폴더 (반복 가능). 기본: 설치 폴더의 data/gold")	--gold: 골드 경로(반복).
 p.add_argument("--no-gold", action="store_true", help="골드 정답 반영 끔 (분류기 판정만 보고 싶을 때)")	--no-gold: 골드 반영 끔.
 p.add_argument("--no-cache", action="store_true", help="임베딩 캐시 안 씀")	--no-cache: 캐시 끔.
+p.add_argument("--baseline", choices=["on", "off"], help="비교 기준선용 분류기(cue, ngram)를 compare-classifiers 기본 대상에 넣을지 (기본: 설정 baseline_classifiers, 처음엔 on)")	--baseline on|off: 기준선 분류기를 비교 기본 대상에 넣을지.
 def _cfg(args) -> Config:	명령줄 인자(args)를 설정 객체로 바꾸는 함수.
 cfg = Config.load(args.config, classifier=getattr(args, "classifier", None), embed_model=getattr(args, "embed_model", None),	Config.load 에 CLI 값 넘기기(없으면 None → 기본값 유지): 분류기·임베딩,
 host=getattr(args, "host", None), target_grades=getattr(args, "grades", None),	호스트·등급,
@@ -31,7 +32,8 @@ accept_score=getattr(args, "accept_score", None),	점수 기준.
 use_cache=False if getattr(args, "no_cache", False) else None,	--no-cache 면 캐시 끔.
 history_path="" if getattr(args, "no_history", False) else None,	--no-history 면 이력 경로를 빈 문자열로 두어 저장하지 않는다.
 gold_paths=getattr(args, "gold", None) or None,	--gold 를 여러 번 준 목록. 없으면 None 이라 설정 파일·기본값을 따른다.
-use_gold=False if getattr(args, "no_gold", False) else None)	--no-gold 면 골드 반영 끔. 닫는 괄호로 호출이 끝난다.
+use_gold=False if getattr(args, "no_gold", False) else None,	골드 반영 끔.
+baseline_classifiers={"on": True, "off": False}.get(getattr(args, "baseline", None)))	--baseline 값을 설정 필드로(없으면 None → 설정 파일 값).
 for name in getattr(args, "on", []) or []:	--on 마다
 set_all(cfg, True) if name == "all" else set_switch(cfg, name, True)	all 이면 전부, 아니면 그 스위치를 켠다.
 for name in getattr(args, "off", []) or []:	--off 마다
@@ -84,7 +86,7 @@ print(f"  분류기: {CLASSIFIER_NAMES[cfg.classifier]} — {'학습 파일 ' + 
 else:	없으면
 print(f"  분류기: {CLASSIFIER_NAMES[cfg.classifier]} (학습 없음)")	학습 없는 분류기.
 print(f"  스위치: {describe_switches(cfg)}")	스위치 상태.
-print(f"  추출 등급 {','.join(cfg.targets())}, 목록 점수 기준 {cfg.accept_score}")	등급·점수 기준.
+print(f"  추출 등급 {','.join(cfg.targets())}, 목록 점수 기준 {cfg.accept_score}, 비교 기준선 분류기(cue·ngram) {'포함' if cfg.baseline_classifiers else '제외'}")	등급·점수 기준과 기준선 포함 여부 출력.
 print(f"  캐시: {cfg.cache_file()} (원문 미저장, 해시+벡터) / 이력: {cfg.history_dir() or '저장 안 함'}")	캐시·이력 경로.
 golds = cfg.gold_files()	골드 파일 목록.
 print(f"  골드: {cfg.gold_dir()} — 파일 {len(golds)}개" + (" (골드 문장은 정답을 그대로 씀)" if cfg.use_gold else " (반영 끔)"))	골드 폴더와 파일 수.
@@ -323,11 +325,12 @@ def _write_md(path: Path, text: str) -> None:	Markdown 저장 도우미.
 path.write_text(text, encoding="utf-8")	쓰기.
 def cmd_compare_classifiers(args) -> int:	compare-classifiers 명령.
 from .cache import LabelCache	캐시.
-from .classify import REGISTRY, needs_embedding	등록부와 needs_embedding.
+from .classify import available_names, needs_embedding	available_names 와 needs_embedding.
 from .compare import classifiers_markdown, compare_classifiers, write_classifier_compare	비교 함수와 출력 함수.
 from .pipeline import make_embedder	임베더 함수.
 cfg = _cfg(args)	설정.
-names = [n.strip() for n in (args.names or ",".join(REGISTRY)).split(",") if n.strip()]	비교할 이름들(기본 전부).
+names = [n.strip() for n in args.names.split(",") if n.strip()] if args.names else available_names(cfg)	--names 가 있으면 그것, 없으면 설정에 따른 기본 목록.
+print(f"비교 대상: {', '.join(names)}" + ("" if cfg.baseline_classifiers else "  (기준선 cue·ngram 제외: baseline_classifiers = false)"))	비교 대상 출력(기준선 제외면 안내).
 rows = _gold_rows(cfg, args.gold)	골드 행.
 cache = LabelCache(cfg.cache_file() if cfg.use_cache else None)	캐시 (설정에 따라 파일 또는 메모리).
 try:	오류 대비.
@@ -479,7 +482,7 @@ p.add_argument("--limit", type=int, default=20)	--limit (기본 20).
 _common(p)	공통 옵션.
 p.set_defaults(func=cmd_history)	처리 함수.
 p = sub.add_parser("compare-classifiers", help="[실험] 골드 교차 검증으로 1차 분류기 후보 전부 비교 → 분류기_비교.xlsx + .md")	compare-classifiers 하위 명령.
-p.add_argument("--names", help="비교할 분류기 (쉼표). 기본 전부: " + ",".join(CLASSIFIER_NAMES))	--names.
+p.add_argument("--names", help="비교할 분류기 (쉼표). 기본: 전부 (" + ",".join(CLASSIFIER_NAMES) + "), 설정 baseline_classifiers=false 또는 --baseline off 면 cue·ngram 제외")	--names 도움말(기본과 제외 조건).
 p.add_argument("--folds", type=int, default=5, help="교차 검증 겹 수 (기본 5)")	--folds.
 p.add_argument("--repeats", type=int, default=2, help="겹 나누기 반복 횟수 (기본 2, 표준편차 계산용)")	--repeats.
 p.add_argument("--seed", type=int, default=0)	--seed.

@@ -8,6 +8,7 @@ SUMMARY = {
         "비교 도구: run-all(한 설정으로 전부), compare-runs(결과 둘을 문장 단위로), ladder(스위치 사다리), compare-classifiers(골드 교차 검증). Excel + Markdown 요약.",
         "결과 Excel 에 '전처리 제외' 시트와 '설정 …' 행이 생겨 결과 파일만으로 전후 비교가 된다.",
         "테스트 84건(가짜 샘플·가짜 임베더, Ollama 없이).",
+        "추가(둘째 커밋): 기준선 분류기(cue·ngram)를 비교 대상·UI 선택지에서 넣고 빼는 설정 baseline_classifiers(--baseline on|off, UI 체크). docs/classifiers.md(분류기 동작 원리), docs/REFERENCES.md(학술 출처).",
     ],
     "deleted_why": "LLM 2차 판정과 프롬프트. 3단계에서 스위치로 다시 붙인다(코드는 v0.6.2 태그에 있다).",
     "full_url": "https://claude.ai/artifact/DYZAsAgovyUwN6YVVNNra2",

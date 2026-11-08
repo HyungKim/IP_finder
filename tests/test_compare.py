@@ -92,6 +92,9 @@ def test_compare_classifiers_on_fake_gold(sample_dir, cfg, fake_embedder, tmp_pa
     assert "| 원형 문장 코사인 (제로샷) |" in md
     skipped = compare_classifiers(rows, cfg, None, ["proto", "cue"])
     assert skipped["reports"][0].skipped and skipped["reports"][1].accuracy is not None   # 임베더 없음 → proto 건너뜀, cue 는 동작
+    cfg.baseline_classifiers = False
+    five = compare_classifiers(rows, cfg, fake_embedder, k=3, repeats=1)
+    assert [r.name for r in five["reports"]] == ["proto", "knn", "centroid", "softmax", "ovr"]   # 기준선 제외 옵션
 
 
 def test_ladder_cumulative_and_single(sample_dir, cfg, fake_embedder, tmp_path):
