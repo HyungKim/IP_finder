@@ -71,7 +71,8 @@ class Services:
                 if self.cancel is not None:
                     self.cancel.register(self.embedder)
             if not self.embedder.available():
-                raise OllamaError(f"임베딩 모델 {self.cfg.embed_model} 을 쓸 수 없습니다 (ollama pull {self.cfg.embed_model})")
+                from .ollama import explain_missing_model
+                raise OllamaError(f"임베딩 모델 {self.cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(self.cfg.host, self.cfg.embed_model)}")
         self.classifier = load_classifier(self.cfg, self.embedder)
 
 

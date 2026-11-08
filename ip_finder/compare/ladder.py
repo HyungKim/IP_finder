@@ -143,7 +143,8 @@ def preflight(base_cfg: Config, ladder: Ladder, embedders: dict, cache) -> dict[
                 emb = make_embedder(cfg, cache)
                 embedders[cfg.embed_model] = emb
             if not emb.available():
-                raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 (ollama pull {cfg.embed_model})")
+                from ..ollama import explain_missing_model
+                raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(cfg.host, cfg.embed_model)}")
         classifiers[key] = load_classifier(cfg, emb)
     return classifiers
 

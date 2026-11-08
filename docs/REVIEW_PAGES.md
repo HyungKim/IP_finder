@@ -14,4 +14,4 @@
 | 판 | 전체 코드 주석 | 변경 리뷰 |
 |---|---|---|
 | 0.6.2 (main) | https://claude.ai/artifact/36EwwFZwJM4szGhGDPgjiK | (구조 워크스루) https://claude.ai/artifact/MQS6u24L9q34ur65QZ4ENk |
-| 1.0.0.dev1~dev2 (rebuild 0단계) | https://claude.ai/artifact/DYZAsAgovyUwN6YVVNNra2 | https://claude.ai/artifact/VbT6xdu2si77vEHkegnPfE |
+| 1.0.0.dev1~dev3 (rebuild 0단계) | https://claude.ai/artifact/DYZAsAgovyUwN6YVVNNra2 | https://claude.ai/artifact/VbT6xdu2si77vEHkegnPfE |

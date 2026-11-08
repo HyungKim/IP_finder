@@ -47,7 +47,9 @@ if not needs_embedding(cfg.classifier) and not required:	임베딩이 필요 없
 return None	None.
 emb = make_embedder(cfg, cache)	임베더.
 if needs_embedding(cfg.classifier) and not emb.available():	필요한데 모델이 없으면
-raise SystemExit(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 ({cfg.host}). Ollama 실행과 'ollama pull {cfg.embed_model}' 을 확인하세요.")	안내와 함께 종료.
+from .ollama import explain_missing_model	원인 설명 함수.
+raise SystemExit(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(cfg.host, cfg.embed_model)}\n"	원인(서버 꺼짐·모델 없음·꼬리표 다름)을 붙여 종료.
+f"임베딩 없이 돌려 보려면 --classifier cue (단서어 규칙, 기준선).")	임베딩 없이 돌리는 방법 안내.
 return emb	임베더 반환.
 # ------------------------------------------------------------------ 일상 실행	절 주석: 일상 실행.
 def cmd_check(args) -> int:	check 명령: 설치 상태 점검.
@@ -72,10 +74,14 @@ print(f"  [X ] {e}")	오류 문구를 찍고
 return 1	바로 실패 종료.
 if server_available(cfg.host):	서버가 응답하면
 models = installed_models(cfg.host)	설치 모델.
-has = cfg.embed_model in models or f"{cfg.embed_model}:latest" in models	임베딩 모델 유무.
+from .ollama import explain_missing_model, resolve_model	모델 해석·설명 함수.
+found = resolve_model(cfg.host, cfg.embed_model)	실제 모델 이름.
 print(f"  [OK] Ollama 연결됨. 설치 모델: {', '.join(models) or '없음'}")	연결됨과 모델 목록 출력.
-print(f"  [{'OK' if has else 'X '}] 임베딩 모델 {cfg.embed_model} {'준비됨' if has else '없음 → ollama pull ' + cfg.embed_model}")	임베딩 모델 상태 출력.
-ok = ok and has	전체 성공 여부에 반영.
+if found:	찾았으면
+print(f"  [OK] 임베딩 모델 {cfg.embed_model} 준비됨" + (f" (실제 이름 {found})" if found not in (cfg.embed_model, cfg.embed_model + ':latest') else ""))	준비됨(이름이 다르면 실제 이름도).
+else:	없으면
+print(f"  [X ] {explain_missing_model(cfg.host, cfg.embed_model)}")	원인 설명 출력.
+ok = ok and bool(found)	전체 성공 여부.
 else:	없으면
 print(f"  [X ] Ollama 에 연결할 수 없음 ({cfg.host}). 임베딩을 쓰는 분류기(proto·knn·centroid·softmax·ovr)는 동작하지 않습니다. cue·ngram 은 동작.")	연결 안 되면 어떤 분류기가 되는지 안내.
 ok = False	실패 표시.
@@ -83,7 +89,7 @@ cls = REGISTRY[cfg.classifier]	설정의 분류기 클래스.
 if cls.trainable:	학습형이면
 f = cfg.classifier_file()	파일 경로.
 print(f"  분류기: {CLASSIFIER_NAMES[cfg.classifier]} — {'학습 파일 ' + str(f) if f.exists() else '학습 파일 없음 → ip-finder train --classifier ' + cfg.classifier}")	파일 유무와 학습 안내.
-else:	없으면
+else:	Ollama 에 못 닿으면
 print(f"  분류기: {CLASSIFIER_NAMES[cfg.classifier]} (학습 없음)")	학습 없는 분류기.
 print(f"  스위치: {describe_switches(cfg)}")	스위치 상태.
 print(f"  추출 등급 {','.join(cfg.targets())}, 목록 점수 기준 {cfg.accept_score}, 비교 기준선 분류기(cue·ngram) {'포함' if cfg.baseline_classifiers else '제외'}")	등급·점수 기준과 기준선 포함 여부 출력.
@@ -211,7 +217,7 @@ continue	건너뛴다.
 if "-" in part:	'-' 가 있으면 범위.
 a, b = part.split("-", 1)	시작과 끝.
 out.update(range(int(a), int(b) + 1))	그 범위의 번호들 추가.
-else:	Ollama 에 못 닿으면
+else:	아니면
 out.add(int(part))	번호 하나.
 return out	집합.
 def cmd_layout(args) -> int:	layout 명령: 읽기 진단.
@@ -280,7 +286,8 @@ emb = None	임베더 없음.
 if REGISTRY[name].needs_embedding:	임베딩이 필요하면
 emb = make_embedder(cfg, cache)	임베더.
 if not emb.available():	임베딩 모델이 없으면
-print(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 → ollama pull {cfg.embed_model}")	안내,
+from .ollama import explain_missing_model	원인 설명 함수.
+print(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(cfg.host, cfg.embed_model)}")	원인과 함께 출력.
 return 1	실패.
 stats = train_classifier(golds, cfg, Path(args.out) if args.out else None, emb, name=name)	학습 실행(name 전달).
 finally:	finally:

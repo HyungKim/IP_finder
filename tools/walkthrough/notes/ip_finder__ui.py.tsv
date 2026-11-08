@@ -660,7 +660,9 @@ if needs_embedding(cfg.classifier):	필요하면
 emb = make_embedder(cfg, cache)	임베더.
 self._cancel.register(emb)	중지 토큰에 등록.
 if not emb.available():	임베딩 모델이 없으면
-raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 ({cfg.host}). Ollama 실행과 'ollama pull {cfg.embed_model}' 을 확인하세요.")	모델 없으면 오류.
+from .ollama import explain_missing_model	원인 설명 함수.
+raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(cfg.host, cfg.embed_model)}\n"	원인과 함께 오류(첫 줄).
+f"임베딩 없이 돌려 보려면 1차 분류기를 'cue'(단서어 규칙)로 고르세요.")	cue 로 돌리는 방법 안내.
 return emb, load_classifier(cfg, emb)	임베더와 분류기.
 def _extract_job(self, inputs: list[Path], cfg: Config, out_dir: Path | None) -> dict:	UI 의 추출 작업. 워커 스레드에서 돈다. 입력 경로들, 설정, 출력 폴더를 받아 사전을 돌려준다.
 import time	시간 측정 모듈.
@@ -879,7 +881,8 @@ if REGISTRY[name].needs_embedding:	필요하면
 emb = make_embedder(cfg, cache)	임베더.
 self._cancel.register(emb)	중지 토큰 등록.
 if not emb.available():	임베딩 모델이 없으면
-raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 → ollama pull {cfg.embed_model}")	오류.
+from .ollama import explain_missing_model	원인 설명 함수.
+raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(cfg.host, cfg.embed_model)}")	원인과 함께 오류.
 self._log(f"학습 중: {CLASSIFIER_NAMES[name]} ← {', '.join(g.name for g in golds)}", "q")	로그.
 stats = train_classifier(golds, cfg, None, emb, name=name)	학습.
 finally:	finally:

@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 
 from ..cache import LabelCache
-from ..ollama import AbortableHTTP, CancelledError, OllamaError, assert_local
+from ..ollama import AbortableHTTP, CancelledError, OllamaError, assert_local, resolve_model
 
 BATCH = 32
 
@@ -33,12 +33,16 @@ class OllamaEmbedder:
         self.http.reset()
 
     def available(self) -> bool:
+        """모델이 설치돼 있으면 True. 'bge-m3' 가 'bge-m3:567m' 처럼 다른 꼬리표로만 있으면 그 이름으로 바꿔 쓴다."""
         try:
-            with urllib.request.urlopen(self.host + "/api/tags", timeout=10) as r:
-                names = [m["name"] for m in json.loads(r.read()).get("models", [])]
-            return self.model in names or f"{self.model}:latest" in names
+            found = resolve_model(self.host, self.model)
         except Exception:
             return False
+        if found is None:
+            return False
+        if found != self.model and found != f"{self.model}:latest":
+            self.model = found
+        return True
 
     def _post(self, inputs: list[str]) -> list[list[float]]:
         body = {"model": self.model, "input": inputs, "keep_alive": self.keep_alive}

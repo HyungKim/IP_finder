@@ -728,7 +728,9 @@ class App(tk.Tk):
             emb = make_embedder(cfg, cache)
             self._cancel.register(emb)
             if not emb.available():
-                raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 ({cfg.host}). Ollama 실행과 'ollama pull {cfg.embed_model}' 을 확인하세요.")
+                from .ollama import explain_missing_model
+                raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(cfg.host, cfg.embed_model)}\n"
+                                   f"임베딩 없이 돌려 보려면 1차 분류기를 'cue'(단서어 규칙)로 고르세요.")
         return emb, load_classifier(cfg, emb)
 
     def _extract_job(self, inputs: list[Path], cfg: Config, out_dir: Path | None) -> dict:
@@ -969,7 +971,8 @@ class App(tk.Tk):
                 emb = make_embedder(cfg, cache)
                 self._cancel.register(emb)
                 if not emb.available():
-                    raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 → ollama pull {cfg.embed_model}")
+                    from .ollama import explain_missing_model
+                    raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(cfg.host, cfg.embed_model)}")
             self._log(f"학습 중: {CLASSIFIER_NAMES[name]} ← {', '.join(g.name for g in golds)}", "q")
             stats = train_classifier(golds, cfg, None, emb, name=name)
         finally:

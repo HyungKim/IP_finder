@@ -45,6 +45,36 @@ def server_available(host: str, timeout: int = 10) -> bool:
         return False
 
 
+def resolve_model(host: str, model: str) -> str | None:
+    """설치된 모델 중 model 에 해당하는 실제 이름. 'bge-m3' 는 'bge-m3:latest' 로, 그것도 없으면 'bge-m3:567m' 처럼
+    같은 이름에 다른 꼬리표(tag) 하나만 있을 때 그것으로 푼다. 없으면 None."""
+    names = installed_models(host)
+    if model in names:
+        return model
+    if f"{model}:latest" in names:
+        return f"{model}:latest"
+    base = model.split(":")[0]
+    same = [n for n in names if n.split(":")[0] == base]
+    return same[0] if len(same) == 1 else None
+
+
+def explain_missing_model(host: str, model: str) -> str:
+    """임베딩 모델을 쓸 수 없을 때 사람이 바로 고칠 수 있게 원인을 적는다."""
+    if not server_available(host):
+        return (f"Ollama 서버에 연결할 수 없습니다 ({host}). Ollama 를 실행하세요 (윈도우: 시작 메뉴의 Ollama, 또는 명령창에서 ollama serve). "
+                f"실행 중인데도 안 되면 설정 host 와 Ollama 의 포트(기본 11434)가 같은지 확인하세요.")
+    names = installed_models(host)
+    base = model.split(":")[0]
+    same = [n for n in names if n.split(":")[0] == base and n != model]
+    msg = f"Ollama 는 실행 중이지만 모델 {model} 이 없습니다. 설치된 모델: {', '.join(names) or '없음'}."
+    if same:
+        msg += f" 같은 이름의 다른 꼬리표 {', '.join(same)} 가 있습니다 → 설정 embed_model = \"{same[0]}\" 로 두거나 ollama cp {same[0]} {base}."
+    else:
+        msg += (f" → 이 PC 에서 'ollama pull {model}' (약 1.2GB). 인터넷이 막힌 PC 면 다른 PC 에서 pull 한 뒤 "
+                f"%USERPROFILE%\\.ollama\\models 폴더(blobs, manifests)를 이 PC 의 같은 위치로 복사하고 Ollama 를 다시 시작하세요.")
+    return msg
+
+
 class AbortableHTTP:
     """http.client 기반 POST. 다른 스레드에서 cancel() 하면 진행 중인 요청의 소켓을 닫아 즉시 돌아온다."""
 

@@ -118,7 +118,8 @@ if emb is None:	없으면
 emb = make_embedder(cfg, cache)	만들고
 embedders[cfg.embed_model] = emb	보관.
 if not emb.available():	모델이 없으면
-raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 (ollama pull {cfg.embed_model})")	실행 전에 오류.
+from ..ollama import explain_missing_model	원인 설명 함수.
+raise RuntimeError(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(cfg.host, cfg.embed_model)}")	원인과 함께 오류.
 classifiers[key] = load_classifier(cfg, emb)	분류기 로드.
 return classifiers	반환.
 def run_ladder(inputs: list[Path], base_cfg: Config, ladder: Ladder, out_dir: Path, gold_rows: list[dict] | None = None,	사다리 실행 본체.

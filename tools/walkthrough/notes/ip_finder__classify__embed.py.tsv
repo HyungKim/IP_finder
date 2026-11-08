@@ -6,7 +6,7 @@ import time	시간.
 import urllib.error	URL 오류 타입.
 import urllib.request	간단한 GET 용.
 from ..cache import LabelCache	캐시.
-from ..ollama import AbortableHTTP, CancelledError, OllamaError, assert_local	HTTP 클라이언트와 예외를 ollama 모듈에서 가져온다(llm 패키지가 없어졌다).
+from ..ollama import AbortableHTTP, CancelledError, OllamaError, assert_local, resolve_model	HTTP 클라이언트·예외·로컬 검사와 모델 이름 해석 함수.
 BATCH = 32	한 번에 보내는 문장 수.
 class OllamaEmbedder:	임베더 클래스.
 def __init__(self, host: str, model: str, *, timeout_sec: int = 300, keep_alive: str = "30m",	생성자: 호스트, 모델, 그리고 이름으로만 넘기는 시간 제한·유지 시간·
@@ -26,12 +26,16 @@ self.http.cancel()	진행 중인 요청을 끊는다.
 def reset(self) -> None:	초기화 메서드.
 self.http.reset()	취소 깃발 내림.
 def available(self) -> bool:	모델이 설치돼 있는지 확인하는 메서드.
+"""모델이 설치돼 있으면 True. 'bge-m3' 가 'bge-m3:567m' 처럼 다른 꼬리표로만 있으면 그 이름으로 바꿔 쓴다."""	설명: 다른 꼬리표만 있으면 그 이름을 쓴다.
 try:	연결 오류 대비 try.
-with urllib.request.urlopen(self.host + "/api/tags", timeout=10) as r:	/api/tags (설치된 모델 목록)를 10초 제한으로 GET.
-names = [m["name"] for m in json.loads(r.read()).get("models", [])]	모델 이름들.
-return self.model in names or f"{self.model}:latest" in names	설정 모델이 있으면 참 (':latest' 가 붙은 이름도 허용).
+found = resolve_model(self.host, self.model)	설치 모델에서 실제 이름을 찾는다.
 except Exception:	오류면
 return False	거짓.
+if found is None:	없으면
+return False	거짓.
+if found != self.model and found != f"{self.model}:latest":	찾은 이름이 설정과 다르면(예: bge-m3:567m)
+self.model = found	그 이름으로 바꿔 호출한다.
+return True	쓸 수 있음.
 def _post(self, inputs: list[str]) -> list[list[float]]:	문장 목록을 Ollama 에 보내 벡터 목록을 받는 내부 메서드 (앞의 _ 는 '바깥에서 직접 부르지 말 것' 관례).
 body = {"model": self.model, "input": inputs, "keep_alive": self.keep_alive}	요청 본문: 모델 이름, 입력 문장들, 모델 유지 시간.
 t0 = time.time()	시작 시각.

@@ -1,6 +1,6 @@
 """변경 리뷰 페이지의 파일별 머리말: 왜 바꿨나 / 어떻게 확인하나. 작업 단위마다 여기를 고쳐 쓴다."""
 SUMMARY = {
-    "title": "변경 리뷰: 0.6.2 → 1.0.0.dev2 (rebuild 0단계)",
+    "title": "변경 리뷰: 0.6.2 → 1.0.0.dev3 (rebuild 0단계)",
     "lead": "판정 파이프라인을 처음부터 단계별로 다시 쌓기 위한 첫 작업. LLM 2차 판정을 빼고, 모든 규칙을 스위치(기본 끔)로 바꾸고, 1차 분류기 7종과 개량 전후 비교 도구를 넣었다.",
     "points": [
         "읽기(원시/레이아웃) → 전처리(스위치) → 1차 분류기 → 후처리(스위치) → 점수 → Excel. 기준선 = 스위치 전부 끔.",
@@ -8,6 +8,7 @@ SUMMARY = {
         "비교 도구: run-all(한 설정으로 전부), compare-runs(결과 둘을 문장 단위로), ladder(스위치 사다리), compare-classifiers(골드 교차 검증). Excel + Markdown 요약.",
         "결과 Excel 에 '전처리 제외' 시트와 '설정 …' 행이 생겨 결과 파일만으로 전후 비교가 된다.",
         "테스트 84건(가짜 샘플·가짜 임베더, Ollama 없이).",
+        "추가(넷째 커밋, dev3): 임베딩 모델 오류에 원인 설명(ollama.explain_missing_model), 다른 꼬리표(bge-m3:567m) 자동 해석(resolve_model).",
         "추가(셋째 커밋): 파싱 점검 HTML(ip-finder parse / parse.bat / UI 단추): 쪽 그림 옆에 읽어 낸 줄(레이아웃·원시), 규칙이 뺄 줄, 점검 표시 ⚠.",
         "추가(둘째 커밋): 기준선 분류기(cue·ngram)를 비교 대상·UI 선택지에서 넣고 빼는 설정 baseline_classifiers(--baseline on|off, UI 체크). docs/classifiers.md(분류기 동작 원리), docs/REFERENCES.md(학술 출처).",
     ],
@@ -21,7 +22,7 @@ META = {
     "ip_finder/models.py": {"why": "LabeledLine 에서 LLM 라벨을 빼고 분류기 신뢰도(clf_conf)·차이(clf_margin)를 두었다. RunInfo 는 버전·읽기 방식·스위치 상태를 기록한다.", "check": "Excel '확신' 열과 '실행 정보'의 읽기 방식·스위치 행."},
     "ip_finder/config.py": {"why": "LLM 설정을 없애고 모든 규칙을 bool 스위치(기본 False)로. 분류기 선택(classifier)과 학습 파일 폴더(classifier_dir). 지문(fingerprint)에 스위치 전부.", "check": "ip-finder switches, 그리고 tests/test_prep.py::test_switches_registry_and_config_fields."},
     "ip_finder/switches.py": {"why": "새 파일. 스위치 11개의 이름·필드·한글 이름·설명을 한 곳에 등록해 CLI·UI·사다리·Excel 이 같은 목록을 쓴다.", "check": "ip-finder switches 출력이 이 목록과 같다."},
-    "ip_finder/ollama.py": {"why": "새 파일. 옛 llm/ollama_client.py 에서 HTTP 와 로컬 검사만 떼어 왔다(LLM 호출 함수 없음).", "check": "임베더(classify/embed.py)가 이 모듈만 쓴다. 외부 호스트를 주면 OllamaError."},
+    "ip_finder/ollama.py": {"why": "새 파일. 옛 llm/ollama_client.py 에서 HTTP 와 로컬 검사만 떼어 왔다(LLM 호출 함수 없음). dev3: 모델 이름 해석(resolve_model)과 오류 원인 설명(explain_missing_model).", "check": "ip-finder check 의 임베딩 줄. 모델이 없을 때 오류 문구에 설치 목록과 조치가 나온다."},
     "ip_finder/cli.py": {"why": "LLM 관련 인자 삭제, --classifier/--on/--off 추가, 실험 명령 4개(compare-classifiers, run-all, compare-runs, ladder)와 switches 명령 추가.", "check": "tests/test_cli.py 가 cue 분류기로 모든 실험 명령을 끝까지 돈다."},
     "ip_finder/pipeline.py": {"why": "cascade/fast/llm 모드를 없애고 분류기 하나로 판정(classify_lines). 읽기에 레이아웃 스위치, 점수에 trained 구분 없음.", "check": "tests/test_pipeline.py 기준선·전부 켬·스위치 하나씩."},
     "ip_finder/ui.py": {"why": "LLM 모델·모드 UI 삭제, 분류기 콤보와 스위치 체크박스, '실험' 탭(사다리·결과 비교), 분류기 7종 비교 단추.", "check": "ui.bat 실행 → 추출 탭 3번 스위치 묶음, 실험 탭. tests/test_ui.py."},

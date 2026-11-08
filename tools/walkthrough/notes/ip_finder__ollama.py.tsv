@@ -32,6 +32,32 @@ with urllib.request.urlopen(host.rstrip("/") + "/api/tags", timeout=timeout):	/a
 return True	열리면 True.
 except Exception:	실패하면
 return False	False.
+def resolve_model(host: str, model: str) -> str | None:	설정의 모델 이름을 설치된 실제 이름으로 푸는 함수.
+"""설치된 모델 중 model 에 해당하는 실제 이름. 'bge-m3' 는 'bge-m3:latest' 로, 그것도 없으면 'bge-m3:567m' 처럼	설명 첫 줄.
+같은 이름에 다른 꼬리표(tag) 하나만 있을 때 그것으로 푼다. 없으면 None."""	설명 이어짐.
+names = installed_models(host)	설치 모델 목록.
+if model in names:	그대로 있으면
+return model	그 이름.
+if f"{model}:latest" in names:	:latest 가 있으면
+return f"{model}:latest"	그 이름.
+base = model.split(":")[0]	꼬리표를 뗀 기본 이름.
+same = [n for n in names if n.split(":")[0] == base]	기본 이름이 같은 모델들.
+return same[0] if len(same) == 1 else None	하나뿐이면 그것, 아니면 None.
+def explain_missing_model(host: str, model: str) -> str:	모델을 못 쓸 때 원인을 글로 만드는 함수.
+"""임베딩 모델을 쓸 수 없을 때 사람이 바로 고칠 수 있게 원인을 적는다."""	설명 문자열.
+if not server_available(host):	서버가 안 뜨면
+return (f"Ollama 서버에 연결할 수 없습니다 ({host}). Ollama 를 실행하세요 (윈도우: 시작 메뉴의 Ollama, 또는 명령창에서 ollama serve). "	실행 방법 안내(첫 줄).
+f"실행 중인데도 안 되면 설정 host 와 Ollama 의 포트(기본 11434)가 같은지 확인하세요.")	포트 확인 안내.
+names = installed_models(host)	설치 모델.
+base = model.split(":")[0]	기본 이름.
+same = [n for n in names if n.split(":")[0] == base and n != model]	같은 기본 이름의 다른 꼬리표.
+msg = f"Ollama 는 실행 중이지만 모델 {model} 이 없습니다. 설치된 모델: {', '.join(names) or '없음'}."	모델 없음과 설치 목록.
+if same:	다른 꼬리표가 있으면
+msg += f" 같은 이름의 다른 꼬리표 {', '.join(same)} 가 있습니다 → 설정 embed_model = \"{same[0]}\" 로 두거나 ollama cp {same[0]} {base}."	설정을 바꾸거나 ollama cp 안내.
+else:	없으면
+msg += (f" → 이 PC 에서 'ollama pull {model}' (약 1.2GB). 인터넷이 막힌 PC 면 다른 PC 에서 pull 한 뒤 "	pull 안내(첫 줄).
+f"%USERPROFILE%\\.ollama\\models 폴더(blobs, manifests)를 이 PC 의 같은 위치로 복사하고 Ollama 를 다시 시작하세요.")	오프라인 PC 의 복사 방법.
+return msg	반환.
 class AbortableHTTP:	중지 가능한 POST 클라이언트.
 """http.client 기반 POST. 다른 스레드에서 cancel() 하면 진행 중인 요청의 소켓을 닫아 즉시 돌아온다."""	설명 문자열.
 def __init__(self, host: str, timeout: int):	생성자: 호스트 문자열과 시간 제한.

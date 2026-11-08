@@ -54,7 +54,9 @@ def _embedder_or_none(cfg: Config, cache=None, required: bool = True):
         return None
     emb = make_embedder(cfg, cache)
     if needs_embedding(cfg.classifier) and not emb.available():
-        raise SystemExit(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 ({cfg.host}). Ollama 실행과 'ollama pull {cfg.embed_model}' 을 확인하세요.")
+        from .ollama import explain_missing_model
+        raise SystemExit(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(cfg.host, cfg.embed_model)}\n"
+                         f"임베딩 없이 돌려 보려면 --classifier cue (단서어 규칙, 기준선).")
     return emb
 
 
@@ -81,10 +83,14 @@ def cmd_check(args) -> int:
         return 1
     if server_available(cfg.host):
         models = installed_models(cfg.host)
-        has = cfg.embed_model in models or f"{cfg.embed_model}:latest" in models
+        from .ollama import explain_missing_model, resolve_model
+        found = resolve_model(cfg.host, cfg.embed_model)
         print(f"  [OK] Ollama 연결됨. 설치 모델: {', '.join(models) or '없음'}")
-        print(f"  [{'OK' if has else 'X '}] 임베딩 모델 {cfg.embed_model} {'준비됨' if has else '없음 → ollama pull ' + cfg.embed_model}")
-        ok = ok and has
+        if found:
+            print(f"  [OK] 임베딩 모델 {cfg.embed_model} 준비됨" + (f" (실제 이름 {found})" if found not in (cfg.embed_model, cfg.embed_model + ':latest') else ""))
+        else:
+            print(f"  [X ] {explain_missing_model(cfg.host, cfg.embed_model)}")
+        ok = ok and bool(found)
     else:
         print(f"  [X ] Ollama 에 연결할 수 없음 ({cfg.host}). 임베딩을 쓰는 분류기(proto·knn·centroid·softmax·ovr)는 동작하지 않습니다. cue·ngram 은 동작.")
         ok = False
@@ -315,7 +321,8 @@ def cmd_train(args) -> int:
         if REGISTRY[name].needs_embedding:
             emb = make_embedder(cfg, cache)
             if not emb.available():
-                print(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다 → ollama pull {cfg.embed_model}")
+                from .ollama import explain_missing_model
+                print(f"임베딩 모델 {cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(cfg.host, cfg.embed_model)}")
                 return 1
         stats = train_classifier(golds, cfg, Path(args.out) if args.out else None, emb, name=name)
     finally:

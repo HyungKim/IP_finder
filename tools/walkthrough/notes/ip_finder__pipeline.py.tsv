@@ -60,7 +60,8 @@ self.embedder = make_embedder(self.cfg, self.cache)	임베더를 만든다(캐�
 if self.cancel is not None:	토큰이 있으면
 self.cancel.register(self.embedder)	등록.
 if not self.embedder.available():	임베딩 모델이 Ollama 에 없으면
-raise OllamaError(f"임베딩 모델 {self.cfg.embed_model} 을 쓸 수 없습니다 (ollama pull {self.cfg.embed_model})")	모델이 없으면 명확한 오류.
+from .ollama import explain_missing_model	원인 설명 함수.
+raise OllamaError(f"임베딩 모델 {self.cfg.embed_model} 을 쓸 수 없습니다. {explain_missing_model(self.cfg.host, self.cfg.embed_model)}")	원인과 함께 오류.
 self.classifier = load_classifier(self.cfg, self.embedder)	학습 분류기 또는 제로샷.
 def make_embedder(cfg: Config, cache: LabelCache | None = None) -> OllamaEmbedder:	임베더를 만드는 함수 (train 명령이 쓴다).
 return OllamaEmbedder(cfg.host, cfg.embed_model, timeout_sec=cfg.timeout_sec, keep_alive=cfg.keep_alive, cache=cache)	설정값과 캐시로.
