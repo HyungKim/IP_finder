@@ -1,0 +1,33 @@
+# tests/test_parse_view.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
+"""파싱 점검 HTML: 쪽마다 그림(PDF)과 읽은 줄(레이아웃/원시), 규칙이 뺄 줄, 점검 표시."""	파일 설명.
+from ip_finder.cli import main	CLI.
+from ip_finder.report.parse_view import build_parse_view, page_flags, write_parse_view	점검 함수들.
+from ip_finder.models import Line, Page	모델.
+def test_parse_view_pdf_has_images_and_both_readings(sample_dir, cfg_all, tmp_path):	PDF 테스트(전부 켠 설정).
+out = write_parse_view(sample_dir / "sample_report.pdf", cfg_all, tmp_path / "v.html")	생성.
+s = out.read_text(encoding="utf-8")	읽기.
+assert s.count('<section class="page"') == 12 and 'id="p5"' in s	쪽 12개와 5쪽 앵커.
+assert s.count("data:image/") == 12                                       # PDF 는 쪽마다 그림	쪽마다 그림.
+assert "레이아웃 분석이 읽은 줄" in s and "원시 읽기가 읽은 줄" in s and "개선안 1" in s	두 목록 제목과 쪽 제목.
+assert "제외: 반복 문구" in s                                                # 전부 켠 설정이 뺄 줄에 사유	뺄 줄 사유.
+assert "전부 켬" in s	스위치 설명.
+def test_parse_view_pptx_without_images_and_baseline(sample_dir, cfg, tmp_path):	PPTX 테스트(기준선).
+s = build_parse_view(sample_dir / "sample_report.pptx", cfg, images=True)	그림 켜고 생성.
+assert "data:image/" not in s and "PowerPoint" in s                        # 맥에서는 PPTX 그림 없음 → 안내	맥에서는 그림 없음 안내.
+assert "제외:" not in s and "기준선" in s                                      # 기준선 설정: 뺄 줄 없음	뺄 줄 없음, 기준선 표시.
+assert s.count('<section class="page"') == 12 and '<span class="tag">표</span>' in s   # PPTX 표 셀 꼬리표	쪽 12개, 표 꼬리표.
+def test_page_flags():	⚠ 함수 테스트.
+lay = Page(no=1, title="", lines=[], has_graphics=True)	글 없는 쪽(그래픽).
+raw = Page(no=1, title="", lines=[])	원시도 없음.
+assert page_flags(lay, raw) == ["글 없음 (그림·도형 있음)"]	글 없음.
+lay = Page(no=2, title="제목", title_source="font", lines=[Line(0, "하나")])	레이아웃 1줄.
+raw = Page(no=2, title="제목", lines=[Line(0, "하나"), Line(0, "둘"), Line(0, "셋")])	원시 3줄.
+assert page_flags(lay, raw) == ["두 읽기의 줄 수 차이 큼 (1 / 3)"]	차이 큼.
+lay = Page(no=3, title="", title_source="없음", lines=[], excluded_reason="표지")	제외된 빈 쪽.
+assert page_flags(lay, Page(no=3, title="", lines=[Line(0, "글")])) == ["레이아웃 분석이 줄을 하나도 못 읽음", "제목 없음", "현재 설정에서 쪽 제외: 표지"]	세 표시.
+def test_cli_parse(sample_dir, tmp_path, capsys):	CLI 테스트.
+assert main(["parse", str(sample_dir / "sample_report.pdf"), "--out-dir", str(tmp_path), "--no-images"]) == 0	그림 없이 생성.
+out = tmp_path / "sample_report_파싱점검.html"	출력 파일.
+assert out.exists() and "그림 생략" in out.read_text(encoding="utf-8") and "브라우저로 열어" in capsys.readouterr().out	존재·안내문·출력.
+assert main(["parse", str(sample_dir), "--out-dir", str(tmp_path / "both"), "--no-images"]) == 0	폴더 전체(pdf·pptx 같은 이름).
+assert sorted(p.name for p in (tmp_path / "both").iterdir()) == ["sample_report_pdf_파싱점검.html", "sample_report_pptx_파싱점검.html"]   # 같은 이름은 확장자로 구분	확장자로 구분된 두 파일.

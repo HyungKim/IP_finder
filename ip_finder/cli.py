@@ -1,5 +1,5 @@
 """ip-finder 명령.
-  일상 실행: extract / ui / check / switches / pages / layout
+  일상 실행: extract / parse / ui / check / switches / pages / layout
   정확도 관리: gold-sheet / feedback / train / eval / history
   실험(비교): compare-classifiers / run-all / ladder / compare-runs
 모든 명령은 로컬에서만 동작한다 (Ollama 는 127.0.0.1 임베딩만)."""
@@ -200,6 +200,29 @@ def cmd_pages(args) -> int:
         print(f"  {'p':>3} {'관련성':<4} {'가중치':>5} {'근거':<18} {'상태':<22} 제목")
         for pg in doc.pages:
             print(f"  {pg.no:>3} {pg.relevance:<4} {pg.weight:>5.2f} {pg.weight_reason[:18]:<18} {(pg.excluded_reason or '판정 ' + str(len(pg.active_lines())) + '문장')[:22]:<22} {pg.title[:50]}  [{pg.title_source}]")
+    return 0
+
+
+def cmd_parse(args) -> int:
+    """파싱 점검 HTML: 쪽 그림 옆에 리더가 읽은 줄(레이아웃 분석 / 원시 읽기)과 현재 설정이 뺄 줄을 보여 준다. 분류기 없음."""
+    import webbrowser
+    from .pipeline import find_inputs
+    from .report.parse_view import write_parse_view
+    cfg = _cfg(args)
+    files = find_inputs([Path(p) for p in args.paths])
+    if not files:
+        print("처리할 파일이 없습니다 (.pdf, .pptx, .ppt)")
+        return 1
+    from collections import Counter
+    from .report.parse_view import view_name
+    taken = Counter((f.parent if not args.out_dir else Path(args.out_dir), f.stem) for f in files)
+    for f in files:
+        ext = taken[(f.parent if not args.out_dir else Path(args.out_dir), f.stem)] > 1          # 같은 이름의 pdf·pptx 는 확장자로 구분
+        out = write_parse_view(f, cfg, (Path(args.out_dir) / view_name(f, ext)) if args.out_dir else None, images=not args.no_images, with_ext=ext)
+        print(f"{f.name} → {out}")
+        if args.open:
+            webbrowser.open(out.resolve().as_uri())
+    print("브라우저로 열어 ⚠ 표시 쪽부터 확인하세요. 원시 읽기와 비교하려면 위의 '원시 읽기도 보기'를 켭니다.")
     return 0
 
 
@@ -500,6 +523,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("paths", nargs="+")
     _common(p)
     p.set_defaults(func=cmd_pages)
+
+    p = sub.add_parser("parse", help="파싱 점검 HTML: 쪽 그림 옆에 읽어 낸 줄(레이아웃 분석/원시 읽기)과 규칙이 뺄 줄을 보여 줌 (분류기 없음)")
+    p.add_argument("paths", nargs="+")
+    p.add_argument("--out-dir", help="HTML 을 모을 폴더 (기본: 원본 옆 <이름>_파싱점검.html)")
+    p.add_argument("--no-images", action="store_true", help="쪽 그림 없이 글만 (파일이 작아짐)")
+    p.add_argument("--open", action="store_true", help="만든 뒤 브라우저로 연다")
+    _common(p)
+    p.set_defaults(func=cmd_parse)
 
     p = sub.add_parser("layout", help="읽기 진단: 레이아웃 분석이 고른 제목과 블록(종류·글씨 크기·굵기·위치) 표시")
     p.add_argument("paths", nargs="+")

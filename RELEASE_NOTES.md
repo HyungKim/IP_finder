@@ -1,3 +1,14 @@
+# IP Finder 1.0.0.dev2 (rebuild 브랜치, 사전 릴리스) — 파싱 점검 HTML, 기준선 분류기 옵션
+
+**이전 버전(0.6.x 또는 1.0.0.dev1)이 설치된 PC 에서 올리기**: Source code (zip) 안의 내용물을 설치 폴더(`ui.bat` 가 있는 곳) 위에 덮어씁니다. `.venv`, `data\`, `ip_finder.toml` 은 그대로 남고 **새 패키지·모델은 없습니다**(`install.bat` 재실행 불필요, wheel 번들은 0.5.x 부터 같음). 0.6.x 에서 올리는 경우의 주의는 아래 1.0.0.dev1 항목을 보세요.
+
+- **파싱 점검 HTML** `ip-finder parse 보고서.pdf --open` / `parse.bat`(끌어다 놓기) / UI 추출 탭 '파싱 점검 (HTML)': 분류기를 돌리기 전에 **읽기가 제대로 됐는지** 눈으로 봅니다. 쪽마다 원본 쪽 그림(PDF 는 바로, PPTX 는 윈도우 PowerPoint 가 있을 때) 옆에 레이아웃 분석이 읽은 줄(제목·표·도형·분할 꼬리표, 현재 설정의 규칙이 뺄 줄은 회색 취소선+사유), '원시 읽기도 보기'를 켜면 분석 없이 읽은 줄을 나란히. 맨 위 표의 ⚠(글 못 읽음·제목 없음·두 읽기의 줄 수 차이 큼·쪽 제외) 쪽부터 보면 됩니다. 결과는 원본 옆 `<이름>_파싱점검.html`(그림 내장, 실제 글이 들어 있으니 회사 밖 반출 금지).
+- **기준선 분류기 옵션** `baseline_classifiers`(기본 true, CLI `--baseline on|off`, UI 정확도 관리 탭 체크): 단서어 규칙(cue)·글자 n-gram(ngram)을 `compare-classifiers` 기본 대상과 UI 선택지에서 넣고 뺍니다. 결과에는 영향 없음.
+- 문서: `docs/classifiers.md`(분류기 7종이 어떻게 판정하는지), `docs/REFERENCES.md`(기법별 학술 출처), `docs/REVIEW_PAGES.md`(코드 리뷰 페이지).
+- 테스트 88건 통과.
+
+---
+
 # IP Finder 1.0.0.dev1 (rebuild 브랜치, 사전 릴리스) — 0단계: 1차 분류기만
 
 **이전 버전(0.6.x)이 설치된 PC 에서 올리기**: Source code (zip) 안의 내용물을 설치 폴더(`ui.bat` 가 있는 곳) 위에 덮어씁니다. `.venv`, `data\`, `ip_finder.toml` 은 그대로 남고 **새 패키지는 없습니다**(`install.bat` 재실행 불필요, wheel 번들은 0.5.x/0.6.x 와 같음). LLM 모델(qwen3)은 이 단계에서 쓰지 않으며 임베딩 모델 `bge-m3` 만 필요합니다.

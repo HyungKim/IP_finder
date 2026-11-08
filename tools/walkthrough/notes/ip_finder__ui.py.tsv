@@ -148,6 +148,7 @@ ttk.Button(btns, text="파일 추가...", command=self.add_files_dialog, width=1
 ttk.Button(btns, text="폴더 추가...", command=self.add_folder_dialog, width=14).pack(fill="x", pady=1)	폴더 추가 버튼.
 ttk.Button(btns, text="선택 제거", command=self.remove_selected, width=14).pack(fill="x", pady=1)	선택 제거 버튼.
 ttk.Button(btns, text="모두 지우기", command=lambda: self.files_list.delete(0, "end"), width=14).pack(fill="x", pady=1)	모두 지우기 버튼 (람다로 바로 목록 비움).
+ttk.Button(btns, text="파싱 점검 (HTML)", command=self.start_parse_view, width=14).pack(fill="x", pady=(6, 1))	파싱 점검 단추(입력 파일 단추 열).
 f_opt = ttk.LabelFrame(root, text=" 2. 옵션 ")	2 옵션 틀.
 f_opt.grid(row=1, column=0, sticky="ew", padx=6, pady=4)	배치.
 for c in (1, 3, 5):	1·3·5열이
@@ -760,6 +761,28 @@ from .readers import load_document	읽기.
 doc = load_document(path, layout=cfg.layout_analysis)	레이아웃 스위치대로 읽기.
 prepare(doc, cfg)	전처리 (LLM 없음).
 return {"kind": "preview", "doc": doc}	결과 사전.
+def start_parse_view(self) -> None:	파싱 점검 시작.
+"""선택한 보고서(없으면 파일 대화상자)의 파싱 점검 HTML 을 만들어 브라우저로 연다. 분류기·Ollama 불필요."""	설명 문자열.
+if self._busy():	작업 중이면
+return	끝.
+sel = [self.files_list.get(i) for i in self.files_list.curselection()]	목록에서 선택한 항목.
+path = Path(sel[0]) if sel and Path(sel[0]).is_file() else None	파일이면 그것.
+if path is None:	경로가 없으면
+p = filedialog.askopenfilename(title="파싱을 점검할 보고서", filetypes=[("보고서", "*.pdf *.pptx *.ppt")])	아니면 파일 대화상자.
+if not p:	취소하면
+return	끝.
+path = Path(p)	경로.
+cfg = self._cfg_or_error()	설정.
+if cfg is None:	오류면
+return	끝.
+self._start(self._parse_view_job, path, cfg)	작업 시작.
+def _parse_view_job(self, path: Path, cfg: Config) -> dict:	파싱 점검 작업.
+from .report.parse_view import write_parse_view	함수.
+self._log(f"파싱 점검 HTML 생성 중: {path.name}")	로그.
+out = write_parse_view(path, cfg)	생성(원본 옆).
+self._log(f"  → {out}  (브라우저로 엽니다. ⚠ 표시 쪽부터 보세요)")	로그.
+open_path(out)	브라우저로 열기.
+return {"kind": "parse_view", "out": out}	결과.
 def open_last_output(self) -> None:	'결과 Excel 열기' 버튼.
 if self.last_outputs:	결과가 있으면
 open_path(self.last_outputs[-1])	마지막 엑셀을 연다.

@@ -1,6 +1,6 @@
 # ip_finder/cli.py — 줄의 글<TAB>설명. tools/walkthrough/lib.py 가 읽는다.
 """ip-finder 명령.	파일 설명 첫 줄.
-일상 실행: extract / ui / check / switches / pages / layout	설명: 일상 명령.
+일상 실행: extract / parse / ui / check / switches / pages / layout	설명: 일상 명령에 parse.
 정확도 관리: gold-sheet / feedback / train / eval / history	설명: 정확도 관리 명령.
 실험(비교): compare-classifiers / run-all / ladder / compare-runs	설명: 실험 명령.
 모든 명령은 로컬에서만 동작한다 (Ollama 는 127.0.0.1 임베딩만)."""	설명: 로컬 전용.
@@ -180,6 +180,27 @@ print(f"  {'p':>3} {'관련성':<4} {'가중치':>5} {'근거':<18} {'상태':<2
 for pg in doc.pages:	페이지마다
 print(f"  {pg.no:>3} {pg.relevance:<4} {pg.weight:>5.2f} {pg.weight_reason[:18]:<18} {(pg.excluded_reason or '판정 ' + str(len(pg.active_lines())) + '문장')[:22]:<22} {pg.title[:50]}  [{pg.title_source}]")	번호, 관련성, 가중치, 근거, 상태(제외 사유 또는 '판정 N문장'), 제목, 제목 출처.
 return 0	성공.
+def cmd_parse(args) -> int:	parse 명령.
+"""파싱 점검 HTML: 쪽 그림 옆에 리더가 읽은 줄(레이아웃 분석 / 원시 읽기)과 현재 설정이 뺄 줄을 보여 준다. 분류기 없음."""	설명 문자열.
+import webbrowser	브라우저 열기.
+from .pipeline import find_inputs	입력 찾기.
+from .report.parse_view import write_parse_view	점검 HTML 함수.
+cfg = _cfg(args)	설정.
+files = find_inputs([Path(p) for p in args.paths])	입력 경로들(파일·폴더)에서 처리할 파일 목록을 만든다. 폴더면 안의 pdf·pptx·ppt 를 전부.
+if not files:	하나도 없으면
+print("처리할 파일이 없습니다 (.pdf, .pptx, .ppt)")	안내문을 찍고
+return 1	실패로 끝낸다.
+from collections import Counter	개수 세는 사전.
+from .report.parse_view import view_name	이름 함수.
+taken = Counter((f.parent if not args.out_dir else Path(args.out_dir), f.stem) for f in files)	(폴더, 이름) 별 개수.
+for f in files:	파일마다 반복.
+ext = taken[(f.parent if not args.out_dir else Path(args.out_dir), f.stem)] > 1          # 같은 이름의 pdf·pptx 는 확장자로 구분	같은 이름이 둘이면 확장자 포함.
+out = write_parse_view(f, cfg, (Path(args.out_dir) / view_name(f, ext)) if args.out_dir else None, images=not args.no_images, with_ext=ext)	생성.
+print(f"{f.name} → {out}")	경로 출력.
+if args.open:	--open 이면
+webbrowser.open(out.resolve().as_uri())	브라우저로.
+print("브라우저로 열어 ⚠ 표시 쪽부터 확인하세요. 원시 읽기와 비교하려면 위의 '원시 읽기도 보기'를 켭니다.")	안내.
+return 0	성공.
 def _page_set(spec: str) -> set[int]:	'3-5,8' 같은 문자열을 페이지 번호 집합으로 바꾸는 함수.
 """"3-5,8" → {3, 4, 5, 8}"""	설명.
 out: set[int] = set()	결과 집합.
@@ -247,7 +268,7 @@ cfg = _cfg(args)	설정.
 name = args.classifier or cfg.classifier	학습할 분류기 이름.
 if not REGISTRY[name].trainable:	학습형이 아니면
 print(f"{name} 은 학습하지 않는 분류기입니다. 학습형: " + ", ".join(k for k, c in REGISTRY.items() if c.trainable))	안내.
-return 1	실패로 끝낸다.
+return 1	실패.
 from .goldmap import find_gold_files	골드 파일 찾기.
 golds = find_gold_files(args.gold, None) if args.gold else cfg.gold_files()	지정 또는 설정.
 if not golds:	없으면
@@ -269,7 +290,7 @@ print(f"5겹 교차검증 정확도 {stats['cv_accuracy']:.1%}, 학습 데이터
 print(f"저장: {stats['out']}  → extract --classifier {name} 또는 설정 classifier = \"{name}\" 로 씁니다.")	저장 경로와 사용법.
 if stats["n"] < 100:	100문장 미만이면
 print("참고: 문장 100개 미만이면 교차검증 값이 크게 흔들립니다. 분류기 비교(compare-classifiers)의 표준편차를 함께 보세요.")	골드 적을 때 안내.
-return 0	성공.
+return 0	성공 종료.
 def cmd_eval(args) -> int:	eval 명령.
 from .cache import LabelCache	캐시.
 from .classify import load_classifier	분류기 로더.
@@ -285,7 +306,7 @@ report = evaluate(Path(args.gold), cfg, rerun=not args.stored, embedder=emb, cla
 finally:	finally:
 cache.close()	캐시 닫기.
 print_report(report)	결과 출력.
-return 0	성공 종료.
+return 0	성공.
 def cmd_history(args) -> int:	history 명령.
 from .history import History	이력.
 cfg = _cfg(args)	설정.
@@ -353,7 +374,7 @@ cfg = _cfg(args)	설정.
 files = find_inputs([Path(p) for p in args.paths])	입력 경로들(파일·폴더)에서 처리할 파일 목록을 만든다. 폴더면 안의 pdf·pptx·ppt 를 전부.
 if not files:	하나도 없으면
 print("처리할 파일이 없습니다 (.pdf, .pptx, .ppt)")	안내문을 찍고
-return 1	실패.
+return 1	종료 코드 1.
 out_dir = Path(args.out)	결과 폴더.
 out_dir.mkdir(parents=True, exist_ok=True)	만들기.
 cfg = cfg.copy(use_gold=False if args.no_gold or True else cfg.use_gold, history_path="")   # 실험: 골드 반영·이력 끔	실험 설정: 골드 반영·이력 끔.
@@ -448,6 +469,13 @@ p = sub.add_parser("pages", help="페이지 제목·관련성·가중치·제외
 p.add_argument("paths", nargs="+")	경로들.
 _common(p)	공통 옵션.
 p.set_defaults(func=cmd_pages)	처리 함수.
+p = sub.add_parser("parse", help="파싱 점검 HTML: 쪽 그림 옆에 읽어 낸 줄(레이아웃 분석/원시 읽기)과 규칙이 뺄 줄을 보여 줌 (분류기 없음)")	parse 하위 명령.
+p.add_argument("paths", nargs="+")	경로들.
+p.add_argument("--out-dir", help="HTML 을 모을 폴더 (기본: 원본 옆 <이름>_파싱점검.html)")	--out-dir.
+p.add_argument("--no-images", action="store_true", help="쪽 그림 없이 글만 (파일이 작아짐)")	--no-images.
+p.add_argument("--open", action="store_true", help="만든 뒤 브라우저로 연다")	--open.
+_common(p)	공통 옵션.
+p.set_defaults(func=cmd_parse)	실행 함수.
 p = sub.add_parser("layout", help="읽기 진단: 레이아웃 분석이 고른 제목과 블록(종류·글씨 크기·굵기·위치) 표시")	layout 하위 명령.
 p.add_argument("paths", nargs="+")	경로들.
 p.add_argument("--pages", help='보여 줄 페이지 (예: "3-5,8"). 기본 전체')	--pages.

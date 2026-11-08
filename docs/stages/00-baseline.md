@@ -14,6 +14,8 @@
 
 ## 측정 방법 (회사 PC)
 
+0) 먼저 읽기가 제대로 됐는지 본다: `parse.bat D:\reports` (쪽 그림 옆에 읽은 줄, ⚠ 표시 쪽부터). 여기서 글을 못 읽은 쪽·제목이 틀린 쪽을 적어 두면 1·2단계 숫자를 해석할 때 근거가 된다.
+
 ```bat
 run_all.bat results\s0-baseline D:\reports
 ```

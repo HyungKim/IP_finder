@@ -164,6 +164,7 @@ class App(tk.Tk):
         ttk.Button(btns, text="폴더 추가...", command=self.add_folder_dialog, width=14).pack(fill="x", pady=1)
         ttk.Button(btns, text="선택 제거", command=self.remove_selected, width=14).pack(fill="x", pady=1)
         ttk.Button(btns, text="모두 지우기", command=lambda: self.files_list.delete(0, "end"), width=14).pack(fill="x", pady=1)
+        ttk.Button(btns, text="파싱 점검 (HTML)", command=self.start_parse_view, width=14).pack(fill="x", pady=(6, 1))
 
         f_opt = ttk.LabelFrame(root, text=" 2. 옵션 ")
         f_opt.grid(row=1, column=0, sticky="ew", padx=6, pady=4)
@@ -835,6 +836,30 @@ class App(tk.Tk):
         doc = load_document(path, layout=cfg.layout_analysis)
         prepare(doc, cfg)
         return {"kind": "preview", "doc": doc}
+
+    def start_parse_view(self) -> None:
+        """선택한 보고서(없으면 파일 대화상자)의 파싱 점검 HTML 을 만들어 브라우저로 연다. 분류기·Ollama 불필요."""
+        if self._busy():
+            return
+        sel = [self.files_list.get(i) for i in self.files_list.curselection()]
+        path = Path(sel[0]) if sel and Path(sel[0]).is_file() else None
+        if path is None:
+            p = filedialog.askopenfilename(title="파싱을 점검할 보고서", filetypes=[("보고서", "*.pdf *.pptx *.ppt")])
+            if not p:
+                return
+            path = Path(p)
+        cfg = self._cfg_or_error()
+        if cfg is None:
+            return
+        self._start(self._parse_view_job, path, cfg)
+
+    def _parse_view_job(self, path: Path, cfg: Config) -> dict:
+        from .report.parse_view import write_parse_view
+        self._log(f"파싱 점검 HTML 생성 중: {path.name}")
+        out = write_parse_view(path, cfg)
+        self._log(f"  → {out}  (브라우저로 엽니다. ⚠ 표시 쪽부터 보세요)")
+        open_path(out)
+        return {"kind": "parse_view", "out": out}
 
     def open_last_output(self) -> None:
         if self.last_outputs:

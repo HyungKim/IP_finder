@@ -1,6 +1,6 @@
 """변경 리뷰 페이지의 파일별 머리말: 왜 바꿨나 / 어떻게 확인하나. 작업 단위마다 여기를 고쳐 쓴다."""
 SUMMARY = {
-    "title": "변경 리뷰: 0.6.2 → 1.0.0.dev1 (rebuild 0단계)",
+    "title": "변경 리뷰: 0.6.2 → 1.0.0.dev2 (rebuild 0단계)",
     "lead": "판정 파이프라인을 처음부터 단계별로 다시 쌓기 위한 첫 작업. LLM 2차 판정을 빼고, 모든 규칙을 스위치(기본 끔)로 바꾸고, 1차 분류기 7종과 개량 전후 비교 도구를 넣었다.",
     "points": [
         "읽기(원시/레이아웃) → 전처리(스위치) → 1차 분류기 → 후처리(스위치) → 점수 → Excel. 기준선 = 스위치 전부 끔.",
@@ -8,6 +8,7 @@ SUMMARY = {
         "비교 도구: run-all(한 설정으로 전부), compare-runs(결과 둘을 문장 단위로), ladder(스위치 사다리), compare-classifiers(골드 교차 검증). Excel + Markdown 요약.",
         "결과 Excel 에 '전처리 제외' 시트와 '설정 …' 행이 생겨 결과 파일만으로 전후 비교가 된다.",
         "테스트 84건(가짜 샘플·가짜 임베더, Ollama 없이).",
+        "추가(셋째 커밋): 파싱 점검 HTML(ip-finder parse / parse.bat / UI 단추): 쪽 그림 옆에 읽어 낸 줄(레이아웃·원시), 규칙이 뺄 줄, 점검 표시 ⚠.",
         "추가(둘째 커밋): 기준선 분류기(cue·ngram)를 비교 대상·UI 선택지에서 넣고 빼는 설정 baseline_classifiers(--baseline on|off, UI 체크). docs/classifiers.md(분류기 동작 원리), docs/REFERENCES.md(학술 출처).",
     ],
     "deleted_why": "LLM 2차 판정과 프롬프트. 3단계에서 스위치로 다시 붙인다(코드는 v0.6.2 태그에 있다).",
@@ -56,6 +57,7 @@ META = {
     "ip_finder/compare/ladder.py": {"why": "새 파일. 스위치 사다리(누적/단독).", "check": "test_ladder_cumulative_and_single; 회사 PC: ladder.bat."},
     "ip_finder/compare/xlsx.py": {"why": "새 파일. 비교 Excel 세 가지.", "check": "시트 이름 검사 테스트들."},
     "ip_finder/compare/markdown.py": {"why": "새 파일. 보고서용 Markdown 요약(숫자만).", "check": "각 명령 출력 끝의 .md 파일."},
+    "ip_finder/report/parse_view.py": {"why": "새 파일. 리더가 무엇을 읽어 냈는지 사람이 눈으로 점검하는 HTML(쪽 그림 + 레이아웃/원시 줄 + 규칙이 뺄 줄 + ⚠ 표시).", "check": "ip-finder parse demo/sample_report.pdf --open; tests/test_parse_view.py."},
     "ip_finder/report/xlsx.py": {"why": "시트 재구성(2차 제외 → 후처리 제외, 전처리 제외 추가), 확신 열, 실행 정보의 스위치 표·설정 행.", "check": "tests/test_pipeline.py::test_baseline_runs_classifier_on_every_line 의 시트·열 검사."},
     "tools/setup_windows.py": {"why": "LLM 모델 내려받기 삭제, 임베딩 모델만 필수.", "check": "install.bat 재실행 시 bge-m3 만 확인."},
     "ip_finder.example.toml": {"why": "새 설정 체계(분류기·스위치) 예시.", "check": "복사해 ip_finder.toml 로 쓰면 Config.load 가 읽는다."},
@@ -63,13 +65,13 @@ META = {
     "RELEASE_NOTES.md": {"why": "1.0.0.dev1 항목(설치 방법 포함) 추가.", "check": "—"},
     "tests/conftest.py": {"why": "가짜 LLM 삭제, 기준선/전부 켬 설정 픽스처.", "check": "pytest -q 84 passed."},
 }
-for p in ("tests/test_pipeline.py", "tests/test_compare.py", "tests/test_classify.py", "tests/test_prep.py", "tests/test_post.py", "tests/test_eval.py", "tests/test_cli.py", "tests/test_ui.py", "tests/test_readers.py"):
+for p in ("tests/test_parse_view.py", "tests/test_pipeline.py", "tests/test_compare.py", "tests/test_classify.py", "tests/test_prep.py", "tests/test_post.py", "tests/test_eval.py", "tests/test_cli.py", "tests/test_ui.py", "tests/test_readers.py"):
     META.setdefault(p, {"why": "새 구조에 맞춰 다시 쓴 테스트(Ollama 없이 가짜 임베더·가짜 보고서로 돈다).", "check": ".venv/bin/python -m pytest -q"})
 for p in ("docs/stages/README.md", "docs/stages/00-baseline.md", "docs/stages/01-classifier.md", "docs/stages/02-preprocessing.md", "docs/stages/03-llm.md"):
     META.setdefault(p, {"group": "문서·설정·배치", "why": "단계별 가설·측정 방법·결과표(회사 PC 에서 채움).", "check": "—"})
 for p in ("ladders/switches.toml", "ladders/classifiers.toml"):
     META.setdefault(p, {"group": "문서·설정·배치", "why": "사다리 설정 예시.", "check": "ip-finder ladder … --ladder 이 파일"})
-for p in ("run_all.bat", "ladder.bat", "compare_runs.bat", "compare_classifiers.bat"):
+for p in ("parse.bat", "run_all.bat", "ladder.bat", "compare_runs.bat", "compare_classifiers.bat"):
     META.setdefault(p, {"group": "문서·설정·배치", "why": "회사 PC 에서 더블클릭·명령줄로 실험 명령을 부르는 ASCII 배치 파일.", "check": "인자 없이 실행하면 사용법."})
 META.setdefault("tools/setup_windows.py", {"group": "문서·설정·배치", "why": "LLM 모델 내려받기 삭제.", "check": "install.bat"})
 META.setdefault("ip_finder.example.toml", {"group": "문서·설정·배치", "why": "새 설정 예시.", "check": "—"})
